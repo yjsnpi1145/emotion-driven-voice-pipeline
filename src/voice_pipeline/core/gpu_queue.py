@@ -214,15 +214,15 @@ class SerialGpuQueue:
                 await abort_active(deadline)
             except Exception:
                 pass
-        # Confirm zero activity within the deadline budget.
+        # Confirm zero activity with a short bounded settle window after abort.
         if self._active_count > 0:
-            remaining = max(0.0, deadline - loop.time())
-            if remaining > 0:
+            settle = min(0.5, max(0.0, deadline - loop.time()))
+            if settle > 0:
                 try:
-                    await asyncio.wait_for(self._wait_active_zero(), timeout=remaining)
+                    await asyncio.wait_for(self._wait_active_zero(), timeout=settle)
                 except TimeoutError:
                     pass
-        # Cancel and await the single consumer.
+        # Cancel and await the single consumer (forces the factory to unwind).
         consumer = self._consumer
         if consumer is not None and not consumer.done():
             consumer.cancel()

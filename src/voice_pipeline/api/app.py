@@ -130,6 +130,7 @@ def create_app(
         version="0.1.0",
         lifespan=lifespan,
     )
+    app.state.plane = plane
 
     @app.exception_handler(RequestValidationError)
     async def _validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
