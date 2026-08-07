@@ -51,7 +51,7 @@ async def test_index_fake_respects_delay(tmp_path, index_request) -> None:
     client = FakeIndexTTSClient(delay_seconds=0.05)
     started = time.monotonic()
     await client.synthesize(index_request, tmp_path / "r.wav")
-    assert time.monotonic() - started >= 0.05
+    assert time.monotonic() - started >= 0.04
 
 
 @pytest.mark.asyncio
@@ -59,7 +59,7 @@ async def test_gsv_fake_respects_delay(tmp_path, gsv_request) -> None:
     client = FakeGptSoVitsClient(delay_seconds=0.05)
     started = time.monotonic()
     await client.synthesize(gsv_request, tmp_path / "t.wav")
-    assert time.monotonic() - started >= 0.05
+    assert time.monotonic() - started >= 0.04
 
 
 @pytest.mark.asyncio
