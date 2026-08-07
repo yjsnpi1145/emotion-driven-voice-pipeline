@@ -1,0 +1,607 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+import sys
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+from uuid import UUID
+
+import psutil
+
+from voice_pipeline.core.errors import ErrorCode, PipelineError
+from voice_pipeline.core.inference_tracker import (
+    InferenceTracker,
+    TrackerLease,
+    fake_fingerprint,
+)
+from voice_pipeline.models.schemas import (
+    EngineFingerprint,
+    EngineIdentity,
+    ExecutionContext,
+    GsvJobRequest,
+    GsvSynthesisRequest,
+    GsvSynthesisResult,
+    IndexSynthesisRequest,
+    ReferenceBinding,
+    ReferenceJobRequest,
+    ReferenceSynthesisResult,
+    RuntimeHealth,
+    SegmentSynthesisRequest,
+    SegmentSynthesisResult,
+    WorkerHealth,
+    WorkerName,
+    WorkersHealth,
+)
+from voice_pipeline.modules.audio.atomic_output import atomic_write_json
+from voice_pipeline.modules.audio.wav_probe import probe_wav, sha256_file
+
+
+def _sha256_hex(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def build_reference_manifest(
+    context: ExecutionContext,
+    request: ReferenceJobRequest | SegmentSynthesisRequest,
+    binding: ReferenceBinding,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "manifest_type": "reference",
+        "job_id": str(context.job_id),
+        "request_id": str(context.request_id),
+        "request_snapshot": request.model_dump(mode="json"),
+        "seed": request.seed,
+        "effective_inference_parameters": {
+            "use_random": False,
+            "require_reference_window": True,
+        },
+        "engine_and_checkpoint_fingerprints": binding.engine_fingerprint.model_dump(mode="json"),
+        "output_audio_metrics_and_sha256": binding.audio.model_dump(mode="json"),
+        "reference": binding.model_dump(mode="json"),
+        "created_at_utc": datetime.now(UTC).isoformat(),
+    }
+
+
+def build_run_manifest(
+    context: ExecutionContext,
+    request: SegmentSynthesisRequest,
+    result: SegmentSynthesisResult,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "manifest_type": "run",
+        "job_id": str(context.job_id),
+        "request_id": str(context.request_id),
+        "request_snapshot": request.model_dump(mode="json"),
+        "seed": request.seed,
+        "effective_inference_parameters": {
+            "speed_factor": request.speed_factor,
+            "target_language": request.target_language,
+        },
+        "engine_and_checkpoint_fingerprints": (
+            result.reference_binding.engine_fingerprint.model_dump(mode="json")
+        ),
+        "output_audio_metrics_and_sha256": {
+            "reference": result.reference.model_dump(mode="json"),
+            "target": result.target.model_dump(mode="json"),
+        },
+        "reference_manifest_path": str(result.reference_manifest_path),
+        "created_at_utc": datetime.now(UTC).isoformat(),
+    }
+
+
+def build_gsv_run_manifest(
+    context: ExecutionContext,
+    request: GsvJobRequest,
+    binding: ReferenceBinding,
+    target_audio: Any,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "manifest_type": "run",
+        "job_id": str(context.job_id),
+        "request_id": str(context.request_id),
+        "request_snapshot": request.model_dump(mode="json"),
+        "seed": request.seed,
+        "effective_inference_parameters": {
+            "speed_factor": request.speed_factor,
+            "target_language": request.target_language,
+        },
+        "engine_and_checkpoint_fingerprints": binding.engine_fingerprint.model_dump(mode="json"),
+        "output_audio_metrics_and_sha256": {"target": target_audio.model_dump(mode="json")},
+        "reference_content_sha256": binding.audio.content_sha256,
+        "created_at_utc": datetime.now(UTC).isoformat(),
+    }
+
+
+class NoopEngineRuntime:
+    """In-process fake-mode runtime: no subprocesses, tracker-backed leases."""
+
+    def __init__(self) -> None:
+        self._tracker = InferenceTracker()
+        self._fingerprints: dict[WorkerName, EngineFingerprint] = {
+            "indextts": fake_fingerprint("indextts"),
+            "gpt_sovits": fake_fingerprint("gpt_sovits"),
+        }
+        self._state: dict[WorkerName, str] = {
+            "indextts": "ready",
+            "gpt_sovits": "ready",
+        }
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self, *, deadline: float | None = None) -> None:
+        return None
+
+    async def ensure_engine(self, engine: WorkerName) -> None:
+        self._require_known(engine)
+        self._state[engine] = "ready"
+
+    async def abort_engine(
+        self,
+        engine: WorkerName,
+        *,
+        reason: str,
+        deadline: float | None = None,
+    ) -> None:
+        self._require_known(engine)
+        # The lease confirm_aborted() zeroes active inference; nothing to kill.
+
+    def engine_identity(self, engine: WorkerName) -> EngineIdentity:
+        self._require_known(engine)
+        if self._state[engine] != "ready" or self._tracker.is_unknown(engine):
+            raise PipelineError(
+                ErrorCode.ENGINE_UNAVAILABLE,
+                "runtime",
+                f"{engine} is not ready",
+                retryable=False,
+            )
+        return EngineIdentity(
+            worker=engine,
+            pid=os.getpid(),
+            create_time=psutil.Process().create_time(),
+            python_executable=Path(sys.executable),
+            fingerprint=self._fingerprints[engine],
+        )
+
+    def health(self) -> RuntimeHealth:
+        workers: dict[str, WorkerHealth] = {}
+        for engine in ("indextts", "gpt_sovits"):
+            state = "unknown" if self._tracker.is_unknown(engine) else self._state[engine]
+            fingerprint = self._fingerprints[engine]
+            workers[engine] = WorkerHealth(
+                state=state,  # type: ignore[arg-type]
+                pid=os.getpid(),
+                create_time=psutil.Process().create_time(),
+                python_executable=Path(sys.executable),
+                python_version=sys.version.split()[0],
+                source_revision="in-process-fake",
+                fingerprint=fingerprint,
+                preflight_ok=True,
+                active_inference=self._tracker.active_count(engine),
+            )
+        degraded = any(worker.state in ("unknown", "unhealthy") for worker in workers.values())
+        return RuntimeHealth(
+            status="degraded" if degraded else "ready",
+            workers=WorkersHealth(indextts=workers["indextts"], gpt_sovits=workers["gpt_sovits"]),
+        )
+
+    async def begin_inference(self, engine: WorkerName, *, job_id: UUID) -> TrackerLease:
+        self._require_known(engine)
+        return await self._tracker.begin(engine, job_id=job_id)
+
+    @staticmethod
+    def _require_known(engine: WorkerName) -> None:
+        if engine not in ("indextts", "gpt_sovits"):
+            raise ValueError(f"unknown engine: {engine}")
+
+
+class SynthesisService:
+    def __init__(self, *, index: Any, gsv: Any, runtime: Any, audit: Any) -> None:
+        self._index = index
+        self._gsv = gsv
+        self._runtime = runtime
+        self._audit = audit
+
+    # ------------------------------------------------------------------ #
+    # validation
+    # ------------------------------------------------------------------ #
+
+    def _validate_context(self, context: ExecutionContext, request_id: UUID) -> None:
+        if context.request_id != request_id:
+            raise PipelineError(
+                ErrorCode.INVALID_INPUT,
+                "input",
+                "context request_id does not match request request_id",
+                retryable=False,
+            )
+
+    def _validate_input_path(self, path: Path) -> None:
+        if not path.is_absolute():
+            raise PipelineError(
+                ErrorCode.INVALID_INPUT,
+                "input",
+                f"path must be absolute: {path}",
+                retryable=False,
+            )
+        if path.is_symlink():
+            raise PipelineError(
+                ErrorCode.INVALID_INPUT,
+                "input",
+                f"path must not be a symlink: {path}",
+                retryable=False,
+            )
+        if not path.is_file():
+            raise PipelineError(
+                ErrorCode.INVALID_INPUT,
+                "input",
+                f"path must be an existing regular file: {path}",
+                retryable=False,
+            )
+
+    def _validate_inputs(self, request: object) -> None:
+        if isinstance(request, (SegmentSynthesisRequest, ReferenceJobRequest)):
+            self._validate_input_path(request.base_voice_path)
+        elif isinstance(request, GsvJobRequest):
+            self._validate_input_path(request.reference_manifest_path)
+        else:
+            raise PipelineError(
+                ErrorCode.INVALID_INPUT,
+                "input",
+                "unsupported request type",
+                retryable=False,
+            )
+
+    # ------------------------------------------------------------------ #
+    # engine invocation
+    # ------------------------------------------------------------------ #
+
+    async def _invoke_engine(
+        self,
+        engine: WorkerName,
+        factory: Callable[[], Awaitable[Any]],
+        *,
+        job_id: UUID,
+    ) -> Any:
+        lease = await self._runtime.begin_inference(engine, job_id=job_id)
+        try:
+            result = await factory()
+        except PipelineError as exc:
+            if exc.requires_engine_abort:
+                await self._abort_or_mark_unknown(engine, lease)
+            else:
+                await lease.confirm_completed()
+            raise
+        except asyncio.CancelledError:
+            await asyncio.shield(self._abort_or_mark_unknown(engine, lease))
+            raise
+        else:
+            await lease.confirm_completed()
+            return result
+
+    async def _abort_or_mark_unknown(self, engine: WorkerName, lease: Any) -> None:
+        try:
+            await self._runtime.abort_engine(engine, reason="engine inference outcome uncertain")
+        except Exception as exc:
+            try:
+                await lease.mark_unknown()
+            except Exception:
+                pass
+            raise PipelineError(
+                ErrorCode.ENGINE_UNAVAILABLE,
+                "runtime",
+                "abort could not be confirmed",
+                retryable=False,
+                poison_queue=True,
+            ) from exc
+        await lease.confirm_aborted()
+
+    # ------------------------------------------------------------------ #
+    # audit
+    # ------------------------------------------------------------------ #
+
+    def _write_audit(
+        self,
+        *,
+        job_id: UUID,
+        request_id: UUID,
+        engine: WorkerName,
+        event: str,
+        identity: EngineIdentity,
+        target_text_sha256_or_null: str | None = None,
+        reference_sha256_or_null: str | None = None,
+        fingerprint: EngineFingerprint | None = None,
+    ) -> None:
+        try:
+            self._audit.write(
+                job_id=job_id,
+                request_id=request_id,
+                engine=engine,
+                event=event,
+                engine_pid=identity.pid,
+                engine_create_time=identity.create_time,
+                target_text_sha256_or_null=target_text_sha256_or_null,
+                reference_sha256_or_null=reference_sha256_or_null,
+                engine_fingerprint=fingerprint,
+            )
+        except Exception as exc:
+            raise PipelineError(
+                ErrorCode.ENGINE_UNAVAILABLE,
+                "audit",
+                "audit write failed; refusing to continue inference",
+                retryable=False,
+            ) from exc
+
+    # ------------------------------------------------------------------ #
+    # service methods
+    # ------------------------------------------------------------------ #
+
+    async def generate_reference(
+        self, context: ExecutionContext, request: ReferenceJobRequest
+    ) -> ReferenceSynthesisResult:
+        self._validate_context(context, request.request_id)
+        self._validate_inputs(request)
+        job_dir = context.job_dir
+        job_dir.mkdir(parents=True, exist_ok=False)
+        reference_path = job_dir / "reference.wav"
+
+        index_request = IndexSynthesisRequest(
+            request_id=request.request_id,
+            text=request.ref_text_cn,
+            speaker_audio_path=request.base_voice_path,
+            emotion_vector=request.emotion_vector,
+            seed=request.seed,
+            use_random=False,
+        )
+        await self._runtime.ensure_engine("indextts")
+        identity = self._runtime.engine_identity("indextts")
+        self._write_audit(
+            job_id=context.job_id,
+            request_id=context.request_id,
+            engine="indextts",
+            event="inference_started",
+            identity=identity,
+            target_text_sha256_or_null=_sha256_hex(request.ref_text_cn),
+            fingerprint=self._index.fingerprint(),
+        )
+        reference_audio = await self._invoke_engine(
+            "indextts",
+            lambda: self._index.synthesize(index_request, reference_path),
+            job_id=context.job_id,
+        )
+        reference_audio = probe_wav(reference_audio.path, require_reference_window=True)
+        self._write_audit(
+            job_id=context.job_id,
+            request_id=context.request_id,
+            engine="indextts",
+            event="inference_completed",
+            identity=identity,
+            target_text_sha256_or_null=_sha256_hex(request.ref_text_cn),
+            reference_sha256_or_null=reference_audio.content_sha256,
+            fingerprint=self._index.fingerprint(),
+        )
+        binding = ReferenceBinding(
+            audio=reference_audio,
+            ref_text_cn=request.ref_text_cn,
+            emotion_vector=request.emotion_vector,
+            base_voice_sha256=sha256_file(request.base_voice_path),
+            engine_fingerprint=self._index.fingerprint(),
+        )
+        reference_manifest_path = job_dir / "reference-manifest.json"
+        atomic_write_json(
+            reference_manifest_path,
+            build_reference_manifest(context, request, binding),
+        )
+        return ReferenceSynthesisResult(
+            job_id=context.job_id,
+            request_id=context.request_id,
+            reference=binding,
+            manifest_path=reference_manifest_path,
+        )
+
+    async def generate_gsv(
+        self, context: ExecutionContext, request: GsvJobRequest
+    ) -> GsvSynthesisResult:
+        self._validate_context(context, request.request_id)
+        self._validate_inputs(request)
+        manifest_path = request.reference_manifest_path
+        manifest_raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+        binding = ReferenceBinding.model_validate(manifest_raw["reference"])
+        self._validate_input_path(binding.audio.path)
+        reference_audio = probe_wav(binding.audio.path, require_reference_window=True)
+        if reference_audio.content_sha256 != binding.audio.content_sha256:
+            raise PipelineError(
+                ErrorCode.INVALID_INPUT,
+                "input",
+                "reference wav sha256 does not match its manifest",
+                retryable=False,
+            )
+        before_reference_sha = sha256_file(binding.audio.path)
+        before_manifest_sha = sha256_file(manifest_path)
+
+        job_dir = context.job_dir
+        job_dir.mkdir(parents=True, exist_ok=False)
+        target_path = job_dir / "target.wav"
+
+        gsv_request = GsvSynthesisRequest(
+            request_id=request.request_id,
+            reference=binding,
+            text=request.target_text,
+            text_lang=request.target_language,
+            speed_factor=request.speed_factor,
+            seed=request.seed,
+        )
+        await self._runtime.ensure_engine("gpt_sovits")
+        identity = self._runtime.engine_identity("gpt_sovits")
+        self._write_audit(
+            job_id=context.job_id,
+            request_id=context.request_id,
+            engine="gpt_sovits",
+            event="inference_started",
+            identity=identity,
+            target_text_sha256_or_null=_sha256_hex(request.target_text),
+            reference_sha256_or_null=binding.audio.content_sha256,
+            fingerprint=self._gsv.fingerprint(),
+        )
+        target_audio = await self._invoke_engine(
+            "gpt_sovits",
+            lambda: self._gsv.synthesize(gsv_request, target_path),
+            job_id=context.job_id,
+        )
+        target_audio = probe_wav(target_audio.path, require_reference_window=False)
+        self._write_audit(
+            job_id=context.job_id,
+            request_id=context.request_id,
+            engine="gpt_sovits",
+            event="inference_completed",
+            identity=identity,
+            target_text_sha256_or_null=_sha256_hex(request.target_text),
+            reference_sha256_or_null=binding.audio.content_sha256,
+            fingerprint=self._gsv.fingerprint(),
+        )
+
+        if sha256_file(binding.audio.path) != before_reference_sha:
+            raise PipelineError(
+                ErrorCode.GSV_ENGINE_ERROR,
+                "gsv",
+                "reference wav changed during gsv generation",
+                retryable=False,
+            )
+        if sha256_file(manifest_path) != before_manifest_sha:
+            raise PipelineError(
+                ErrorCode.GSV_ENGINE_ERROR,
+                "gsv",
+                "reference manifest changed during gsv generation",
+                retryable=False,
+            )
+
+        run_manifest_path = job_dir / "run-manifest.json"
+        atomic_write_json(
+            run_manifest_path,
+            build_gsv_run_manifest(context, request, binding, target_audio),
+        )
+        return GsvSynthesisResult(
+            job_id=context.job_id,
+            request_id=context.request_id,
+            target=target_audio,
+            reference_content_sha256=binding.audio.content_sha256,
+            manifest_path=run_manifest_path,
+        )
+
+    async def synthesize_segment(
+        self,
+        context: ExecutionContext,
+        request: SegmentSynthesisRequest,
+    ) -> SegmentSynthesisResult:
+        self._validate_context(context, request.request_id)
+        self._validate_inputs(request)
+        job_dir = context.job_dir
+        job_dir.mkdir(parents=True, exist_ok=False)
+        reference_path = job_dir / "reference.wav"
+        target_path = job_dir / "target.wav"
+
+        index_request = IndexSynthesisRequest(
+            request_id=request.request_id,
+            text=request.ref_text_cn,
+            speaker_audio_path=request.base_voice_path,
+            emotion_vector=request.emotion_vector,
+            seed=request.seed,
+            use_random=False,
+        )
+        await self._runtime.ensure_engine("indextts")
+        identity = self._runtime.engine_identity("indextts")
+        self._write_audit(
+            job_id=context.job_id,
+            request_id=context.request_id,
+            engine="indextts",
+            event="inference_started",
+            identity=identity,
+            target_text_sha256_or_null=_sha256_hex(request.ref_text_cn),
+            fingerprint=self._index.fingerprint(),
+        )
+        reference_audio = await self._invoke_engine(
+            "indextts",
+            lambda: self._index.synthesize(index_request, reference_path),
+            job_id=context.job_id,
+        )
+        reference_audio = probe_wav(reference_audio.path, require_reference_window=True)
+        self._write_audit(
+            job_id=context.job_id,
+            request_id=context.request_id,
+            engine="indextts",
+            event="inference_completed",
+            identity=identity,
+            target_text_sha256_or_null=_sha256_hex(request.ref_text_cn),
+            reference_sha256_or_null=reference_audio.content_sha256,
+            fingerprint=self._index.fingerprint(),
+        )
+        binding = ReferenceBinding(
+            audio=reference_audio,
+            ref_text_cn=request.ref_text_cn,
+            emotion_vector=request.emotion_vector,
+            base_voice_sha256=sha256_file(request.base_voice_path),
+            engine_fingerprint=self._index.fingerprint(),
+        )
+        reference_manifest_path = job_dir / "reference-manifest.json"
+        atomic_write_json(
+            reference_manifest_path,
+            build_reference_manifest(context, request, binding),
+        )
+
+        gsv_request = GsvSynthesisRequest(
+            request_id=request.request_id,
+            reference=binding,
+            text=request.target_text,
+            text_lang=request.target_language,
+            speed_factor=request.speed_factor,
+            seed=request.seed,
+        )
+        await self._runtime.ensure_engine("gpt_sovits")
+        gsv_identity = self._runtime.engine_identity("gpt_sovits")
+        self._write_audit(
+            job_id=context.job_id,
+            request_id=context.request_id,
+            engine="gpt_sovits",
+            event="inference_started",
+            identity=gsv_identity,
+            target_text_sha256_or_null=_sha256_hex(request.target_text),
+            reference_sha256_or_null=binding.audio.content_sha256,
+            fingerprint=self._gsv.fingerprint(),
+        )
+        target_audio = await self._invoke_engine(
+            "gpt_sovits",
+            lambda: self._gsv.synthesize(gsv_request, target_path),
+            job_id=context.job_id,
+        )
+        target_audio = probe_wav(target_audio.path, require_reference_window=False)
+        self._write_audit(
+            job_id=context.job_id,
+            request_id=context.request_id,
+            engine="gpt_sovits",
+            event="inference_completed",
+            identity=gsv_identity,
+            target_text_sha256_or_null=_sha256_hex(request.target_text),
+            reference_sha256_or_null=binding.audio.content_sha256,
+            fingerprint=self._gsv.fingerprint(),
+        )
+        result = SegmentSynthesisResult(
+            job_id=context.job_id,
+            request_id=context.request_id,
+            reference=reference_audio,
+            target=target_audio,
+            reference_binding=binding,
+            reference_manifest_path=reference_manifest_path,
+            run_manifest_path=job_dir / "run-manifest.json",
+        )
+        atomic_write_json(
+            result.run_manifest_path,
+            build_run_manifest(context, request, result),
+        )
+        return result

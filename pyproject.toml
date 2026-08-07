@@ -27,6 +27,7 @@ dev = [
   "respx>=0.22,<1",
   "ruff>=0.9,<1",
   "types-PyYAML>=6.0.12,<7",
+  "types-psutil>=6.1,<8",
 ]
 
 [project.scripts]
@@ -57,5 +58,5 @@ strict = true
 files = ["src/voice_pipeline", "workers"]
 
 [[tool.mypy.overrides]]
-module = ["indextts", "indextts.*", "torch", "torch.*"]
+module = ["indextts", "indextts.*", "torch", "torch.*", "soundfile"]
 ignore_missing_imports = true

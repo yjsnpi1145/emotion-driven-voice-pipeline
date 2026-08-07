@@ -1,0 +1,259 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from tests.unit.conftest import (
+    RecordingAuditWriter,
+    RecordingEngineRuntime,
+    RecordingGsvClient,
+    RecordingIndexClient,
+    make_context,
+    make_request,
+    write_tone,
+)
+from voice_pipeline.core.pipeline import SynthesisService
+from voice_pipeline.models.schemas import ExecutionContext, SegmentSynthesisRequest
+
+
+@pytest.mark.asyncio
+async def test_segment_runs_index_then_gsv_with_bound_prompt(tmp_path) -> None:
+    calls: list[tuple[str, object]] = []
+    audit_events: list[dict[str, object]] = []
+    index = RecordingIndexClient(calls, duration_seconds=4.0)
+    gsv = RecordingGsvClient(calls)
+    runtime = RecordingEngineRuntime(calls)
+    service = SynthesisService(
+        index=index,
+        gsv=gsv,
+        runtime=runtime,
+        audit=RecordingAuditWriter(audit_events),
+    )
+    request = SegmentSynthesisRequest(
+        request_id="cf2deece-f4e8-4114-954b-bfc907730e01",
+        base_voice_path=(tmp_path / "音色 voice.wav").resolve(),
+        ref_text_cn="我已经失去了一切，可我仍然活着。",
+        emotion_vector=[0, 0.02, 0.28, 0.03, 0, 0.27, 0, 0.20],
+        target_text="私はすべてを失った。それでも、まだ生きている。",
+        target_language="ja",
+        seed=1234,
+    )
+    write_tone(request.base_voice_path, seconds=5.0)
+    context = ExecutionContext(
+        job_id="aaaaaaaa-0000-4000-8000-000000000001",
+        request_id=request.request_id,
+        job_dir=tmp_path / "jobs" / "aaaaaaaa-0000-4000-8000-000000000001",
+    )
+
+    result = await service.synthesize_segment(context, request)
+
+    assert [name for name, _ in calls] == [
+        "ensure:indextts",
+        "index",
+        "ensure:gpt_sovits",
+        "gsv",
+    ]
+    gsv_request = calls[3][1]
+    assert gsv_request.reference.ref_text_cn == request.ref_text_cn
+    assert gsv_request.reference.audio.path == result.reference.path
+    assert result.job_id == context.job_id
+    assert result.reference.path.parent == context.job_dir
+    assert [event["engine"] for event in audit_events if event["event"] == "inference_started"] == [
+        "indextts",
+        "gpt_sovits",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invalid_reference_never_calls_gsv(tmp_path) -> None:
+    calls: list[tuple[str, object]] = []
+    audit_events: list[dict[str, object]] = []
+    service = SynthesisService(
+        index=RecordingIndexClient(calls, duration_seconds=2.0),
+        gsv=RecordingGsvClient(calls),
+        runtime=RecordingEngineRuntime(calls),
+        audit=RecordingAuditWriter(audit_events),
+    )
+    request = make_request(tmp_path)
+    write_tone(request.base_voice_path, seconds=5.0)
+    context = make_context(tmp_path, request.request_id)
+    with pytest.raises(Exception, match="REFERENCE_DURATION_OUT_OF_RANGE"):
+        await service.synthesize_segment(context, request)
+    assert [name for name, _ in calls] == ["ensure:indextts", "index"]
+
+
+@pytest.mark.asyncio
+async def test_reference_job_only_calls_index(tmp_path) -> None:
+    calls: list[tuple[str, object]] = []
+    audit_events: list[dict[str, object]] = []
+    service = SynthesisService(
+        index=RecordingIndexClient(calls, duration_seconds=4.0),
+        gsv=RecordingGsvClient(calls),
+        runtime=RecordingEngineRuntime(calls),
+        audit=RecordingAuditWriter(audit_events),
+    )
+    request = make_request(tmp_path)
+    write_tone(request.base_voice_path, seconds=5.0)
+    context = make_context(tmp_path, request.request_id)
+
+    result = await service.generate_reference(context, request)
+
+    assert [name for name, _ in calls] == ["ensure:indextts", "index"]
+    assert result.manifest_path.exists()
+    assert result.reference.ref_text_cn == request.ref_text_cn
+
+
+@pytest.mark.asyncio
+async def test_mismatched_request_id_is_rejected_before_file_creation(tmp_path) -> None:
+    calls: list[tuple[str, object]] = []
+    service = SynthesisService(
+        index=RecordingIndexClient(calls),
+        gsv=RecordingGsvClient(calls),
+        runtime=RecordingEngineRuntime(calls),
+        audit=RecordingAuditWriter([]),
+    )
+    request = make_request(tmp_path)
+    write_tone(request.base_voice_path, seconds=5.0)
+    context = make_context(tmp_path, "11111111-2222-4333-8444-555555555555")
+    with pytest.raises(Exception, match="INVALID_INPUT"):
+        await service.synthesize_segment(context, request)
+    assert not context.job_dir.exists()
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_missing_base_voice_is_rejected_before_job_dir(tmp_path) -> None:
+    calls: list[tuple[str, object]] = []
+    service = SynthesisService(
+        index=RecordingIndexClient(calls),
+        gsv=RecordingGsvClient(calls),
+        runtime=RecordingEngineRuntime(calls),
+        audit=RecordingAuditWriter([]),
+    )
+    request = make_request(tmp_path)
+    context = make_context(tmp_path, request.request_id)
+    with pytest.raises(Exception, match="INVALID_INPUT"):
+        await service.synthesize_segment(context, request)
+    assert not context.job_dir.exists()
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_relative_base_voice_path_is_rejected(tmp_path) -> None:
+    calls: list[tuple[str, object]] = []
+    service = SynthesisService(
+        index=RecordingIndexClient(calls),
+        gsv=RecordingGsvClient(calls),
+        runtime=RecordingEngineRuntime(calls),
+        audit=RecordingAuditWriter([]),
+    )
+    request = make_request(tmp_path)
+    write_tone(request.base_voice_path, seconds=5.0)
+    request = request.model_copy(update={"base_voice_path": Path("relative/voice.wav")})
+    context = make_context(tmp_path, request.request_id)
+    with pytest.raises(Exception, match="INVALID_INPUT"):
+        await service.synthesize_segment(context, request)
+    assert not context.job_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_same_request_id_twice_creates_distinct_job_dirs(tmp_path) -> None:
+    calls: list[tuple[str, object]] = []
+    service = SynthesisService(
+        index=RecordingIndexClient(calls, duration_seconds=4.0),
+        gsv=RecordingGsvClient(calls),
+        runtime=RecordingEngineRuntime(calls),
+        audit=RecordingAuditWriter([]),
+    )
+    request = make_request(tmp_path)
+    write_tone(request.base_voice_path, seconds=5.0)
+    context1 = make_context(tmp_path, request.request_id)
+    context2 = make_context(tmp_path, request.request_id)
+
+    result1 = await service.synthesize_segment(context1, request)
+    result2 = await service.synthesize_segment(context2, request)
+
+    assert context1.job_dir != context2.job_dir
+    assert result1.job_id != result2.job_id
+    assert result1.reference.path.parent == context1.job_dir
+    assert result2.reference.path.parent == context2.job_dir
+
+
+@pytest.mark.asyncio
+async def test_gsv_job_rejects_manifest_sha_mismatch(tmp_path) -> None:
+    from voice_pipeline.core.errors import ErrorCode, PipelineError
+    from voice_pipeline.models.schemas import GsvJobRequest
+
+    calls: list[tuple[str, object]] = []
+    service = SynthesisService(
+        index=RecordingIndexClient(calls),
+        gsv=RecordingGsvClient(calls),
+        runtime=RecordingEngineRuntime(calls),
+        audit=RecordingAuditWriter([]),
+    )
+    request = make_request(tmp_path)
+    write_tone(request.base_voice_path, seconds=5.0)
+    context = make_context(tmp_path, request.request_id)
+    ref_result = await service.generate_reference(context, request)
+
+    # Tamper with the reference wav so its sha no longer matches the manifest.
+    # Offset 44 is the PCM data start for a 16-bit mono header; write at a
+    # non-zero sample position so the bytes actually change.
+    import asyncio
+
+    def _tamper() -> None:
+        with open(ref_result.reference.audio.path, "r+b") as fh:
+            fh.seek(44 + 22050)
+            fh.write(b"\xff\x7f")
+
+    await asyncio.to_thread(_tamper)
+
+    gsv_request = GsvJobRequest(
+        request_id="22222222-3333-4444-8555-666666666666",
+        reference_manifest_path=ref_result.manifest_path,
+        target_text="私はまだ生きている。",
+        target_language="ja",
+        seed=1234,
+    )
+    gsv_context = make_context(tmp_path, gsv_request.request_id)
+    with pytest.raises(PipelineError) as exc_info:
+        await service.generate_gsv(gsv_context, gsv_request)
+    assert exc_info.value.code == ErrorCode.INVALID_INPUT
+    assert [name for name, _ in calls] == ["ensure:indextts", "index"]
+
+
+@pytest.mark.asyncio
+async def test_gsv_job_uses_manifest_binding(tmp_path) -> None:
+    calls: list[tuple[str, object]] = []
+    service = SynthesisService(
+        index=RecordingIndexClient(calls, duration_seconds=4.0),
+        gsv=RecordingGsvClient(calls),
+        runtime=RecordingEngineRuntime(calls),
+        audit=RecordingAuditWriter([]),
+    )
+    request = make_request(tmp_path)
+    write_tone(request.base_voice_path, seconds=5.0)
+    context = make_context(tmp_path, request.request_id)
+    ref_result = await service.generate_reference(context, request)
+
+    gsv_request = make_gsv_request(ref_result.manifest_path)
+    gsv_context = make_context(tmp_path, gsv_request.request_id)
+    result = await service.generate_gsv(gsv_context, gsv_request)
+
+    assert [name for name, _ in calls] == ["ensure:indextts", "index", "ensure:gpt_sovits", "gsv"]
+    gsv_call = calls[3][1]
+    assert gsv_call.reference.ref_text_cn == ref_result.reference.ref_text_cn
+    assert result.reference_content_sha256 == ref_result.reference.audio.content_sha256
+
+
+def make_gsv_request(manifest_path):
+    from voice_pipeline.models.schemas import GsvJobRequest
+
+    return GsvJobRequest(
+        request_id="22222222-3333-4444-8555-666666666666",
+        reference_manifest_path=manifest_path,
+        target_text="私はまだ生きている。",
+        target_language="ja",
+        seed=1234,
+    )
