@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "case_id": "zh-en-001",
+  "asset_key": "user_verified_primary",
+  "case_data_key": "user_verified_zh_en",
+  "target_language": "en"
+}
