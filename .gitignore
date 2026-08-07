@@ -7,7 +7,7 @@ __pycache__/
 *.py[cod]
 .acceptance/
 external/
-runtime/
+/runtime/
 config/*.local.yaml
 config/*.local.yml
 *.key
@@ -16,3 +16,4 @@ config/*.local.yml
 *.safetensors
 .brainstorm-server.out
 .brainstorm-server.err
+Emotion_Driven_TTS_Pipeline_Design.md

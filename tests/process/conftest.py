@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
 from pathlib import Path
@@ -46,7 +47,8 @@ class FakeChildProcesses:
         )
 
     async def start_engine(self, engine: str) -> None:
-        proc = subprocess.Popen(
+        proc = await asyncio.to_thread(
+            subprocess.Popen,
             [sys.executable, "-c", _PARENT_SCRIPT],
             cwd=str(self._cwd),
             stdin=subprocess.DEVNULL,
@@ -56,7 +58,9 @@ class FakeChildProcesses:
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         self._procs[engine] = proc
-        self._create_times[engine] = psutil.Process(proc.pid).create_time()
+        self._create_times[engine] = await asyncio.to_thread(
+            lambda: psutil.Process(proc.pid).create_time()
+        )
 
     async def stop_engine(self, engine: str, *, deadline: float | None = None) -> None:
         proc = self._procs.pop(engine, None)
