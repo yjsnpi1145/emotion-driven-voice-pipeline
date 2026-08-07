@@ -34,7 +34,7 @@ uv run python -c "import sys; assert sys.version_info[:2] == (3, 11); print(sys.
 
 # 2. Control venv
 if (-not (Test-Path -LiteralPath $ControlPython -PathType Leaf)) {
-  Invoke-Checked 'uv' @('venv', (Join-Path $RepoRoot '.venv-control'), '--python', '3.11', '--seed')
+  Invoke-Checked 'uv' @('venv', (Join-Path $RepoRoot '.venv-control'), '--python', '3.11')
 }
 
 # 3. Initial env locks (only once, only with the explicit flag)

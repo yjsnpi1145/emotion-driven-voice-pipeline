@@ -2575,7 +2575,7 @@ Set-Location 'D:\TTSsystem'
 uv python install 3.11
 uv sync --frozen --extra dev --python 3.11
 uv run python -c "import sys; assert sys.version_info[:2] == (3, 11); print(sys.executable)"
-uv venv D:\TTSsystem\.venv-control --python 3.11 --seed
+uv venv D:\TTSsystem\.venv-control --python 3.11
 uv pip sync --python D:\TTSsystem\.venv-control\Scripts\python.exe --require-hashes `
   D:\TTSsystem\config\env-locks\control-runtime-requirements.lock.txt
 uv build --wheel --out-dir D:\TTSsystem\runtime\control-wheel
@@ -3356,7 +3356,7 @@ Invoke-NativeChecked $Uv @('build','--wheel','--out-dir',"$Evidence\dist") `
 $Wheel = (Get-ChildItem "$Evidence\dist\*.whl" | Select-Object -First 1).FullName
 if (-not $Wheel) { throw 'wheel missing' }
 $CleanVenv = Join-Path $env:TEMP "$RunId-control"
-Invoke-NativeChecked $Uv @('venv',$CleanVenv,'--python','3.11','--seed') `
+Invoke-NativeChecked $Uv @('venv',$CleanVenv,'--python','3.11') `
   "$Evidence\clean-venv.txt" | Out-Null
 $CleanPython = Join-Path $CleanVenv 'Scripts\python.exe'
 $ControlRuntimeLock = 'D:\TTSsystem\config\env-locks\control-runtime-requirements.lock.txt'

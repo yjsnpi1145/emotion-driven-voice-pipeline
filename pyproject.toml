@@ -39,6 +39,7 @@ packages = ["src/voice_pipeline"]
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
 asyncio_mode = "auto"
+testpaths = ["tests"]
 markers = [
   "gpu: requires real CUDA models and checkpoints",
   "gpu_residency: runs the isolated resident-versus-exclusive GPU lifecycle probe",
