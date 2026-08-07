@@ -10,8 +10,9 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
 
@@ -40,9 +41,7 @@ def gpu_settings() -> Any:
 
     settings = load_settings(config_path)
     if settings.mode != "real":
-        pytest.fail(
-            f"GPU gates require mode=real but config declares mode={settings.mode}"
-        )
+        pytest.fail(f"GPU gates require mode=real but config declares mode={settings.mode}")
     return settings
 
 
@@ -83,9 +82,7 @@ def _asset_path(mapping: dict[str, Any], key: str) -> Path:
     return path
 
 
-def render_golden_request(
-    template_path: Path, mapping: dict[str, Any]
-) -> dict[str, Any]:
+def render_golden_request(template_path: Path, mapping: dict[str, Any]) -> dict[str, Any]:
     """Merge a golden template with the local verified-asset mapping."""
     template = json.loads(template_path.read_text(encoding="utf-8"))
     if template.get("schema_version") != 1:
@@ -93,9 +90,7 @@ def render_golden_request(
     case_id = template["case_id"]
     case_data = mapping.get("cases", {}).get(template["case_data_key"])
     if not case_data:
-        pytest.fail(
-            f"golden mapping missing case {template['case_data_key']!r} for {case_id}"
-        )
+        pytest.fail(f"golden mapping missing case {template['case_data_key']!r} for {case_id}")
     if case_data.get("target_language", case_data.get("target_text_language")) not in (
         None,
         template["target_language"],

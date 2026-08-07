@@ -21,9 +21,11 @@ async def _run_segment(
     *,
     base_url: str,
 ) -> dict[str, Any]:
-    case_dir.mkdir(parents=True, exist_ok=True)
-    (case_dir / "request.json").write_text(
-        json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8"
+    await asyncio.to_thread(case_dir.mkdir, parents=True, exist_ok=True)
+    await asyncio.to_thread(
+        (case_dir / "request.json").write_text,
+        json.dumps(request, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
     async with httpx.AsyncClient(base_url=base_url, timeout=600) as client:
         resp = await client.post("/api/v1/jobs/segment", json=request)
@@ -40,13 +42,13 @@ async def _run_segment(
 
         reference = await client.get(f"/api/v1/jobs/{job_id}/audio/reference")
         assert reference.status_code == 200, reference.text
-        (case_dir / "reference.wav").write_bytes(reference.content)
+        await asyncio.to_thread((case_dir / "reference.wav").write_bytes, reference.content)
         target = await client.get(f"/api/v1/jobs/{job_id}/audio/target")
         assert target.status_code == 200, target.text
-        (case_dir / "target.wav").write_bytes(target.content)
+        await asyncio.to_thread((case_dir / "target.wav").write_bytes, target.content)
         manifest = await client.get(f"/api/v1/jobs/{job_id}/manifest/run")
         assert manifest.status_code == 200, manifest.text
-        (case_dir / "run-manifest.json").write_bytes(manifest.content)
+        await asyncio.to_thread((case_dir / "run-manifest.json").write_bytes, manifest.content)
     return {
         "request": request,
         "job_id": job_id,
@@ -88,9 +90,7 @@ async def test_manifest_reference_matches_gsv_audit_log(
     result = await _run_segment(
         gpu_settings, zh_ja_request, run_manifest_dir / "zh-ja-001-audit", base_url=base_url
     )
-    manifest = json.loads(
-        (result["case_dir"] / "run-manifest.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((result["case_dir"] / "run-manifest.json").read_text(encoding="utf-8"))
     reference_sha = manifest["reference"]["audio"]["content_sha256"]
 
     # The GSV adapter audit log must record the same reference SHA-256.
@@ -101,8 +101,9 @@ async def test_manifest_reference_matches_gsv_audit_log(
             if not line.strip():
                 continue
             row = json.loads(line)
-            if row.get("engine") == "gpt_sovits" and row.get(
-                "reference_sha256_or_null"
-            ) == reference_sha:
+            if (
+                row.get("engine") == "gpt_sovits"
+                and row.get("reference_sha256_or_null") == reference_sha
+            ):
                 matches.append(row)
     assert matches, "no gsv audit row recorded the manifest reference SHA-256"

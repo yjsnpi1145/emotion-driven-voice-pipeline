@@ -6,8 +6,6 @@ import asyncio
 import hashlib
 import json
 import time
-from pathlib import Path
-from typing import Any
 
 import httpx
 import pytest
@@ -34,9 +32,7 @@ async def test_dynamic_challenge_goes_through_real_chain(
     base_url = f"http://{gpu_settings.server.host}:{gpu_settings.server.port}"
     case_dir = run_manifest_dir / "dynamic"
     case_dir.mkdir(parents=True, exist_ok=True)
-    text_sha = hashlib.sha256(
-        dynamic_challenge["target_text"].encode("utf-8")
-    ).hexdigest()
+    text_sha = hashlib.sha256(dynamic_challenge["target_text"].encode("utf-8")).hexdigest()
 
     async with httpx.AsyncClient(base_url=base_url, timeout=600) as client:
         resp = await client.post("/api/v1/jobs/segment", json=dynamic_challenge)
@@ -97,9 +93,7 @@ async def test_dynamic_challenge_goes_through_real_chain(
 
 
 @pytest.mark.gpu
-def test_logs_have_no_oom_traceback_or_fake_fallback(
-    gpu_settings, run_manifest_dir
-) -> None:
+def test_logs_have_no_oom_traceback_or_fake_fallback(gpu_settings, run_manifest_dir) -> None:
     audit_dir = gpu_settings.runtime_dir / "logs"
     forbidden = ("OutOfMemoryError", "CUDA out of memory", "Traceback", "fake")
     matches: list[str] = []

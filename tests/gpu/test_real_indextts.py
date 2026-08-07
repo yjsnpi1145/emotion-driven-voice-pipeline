@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
-from typing import Any
 
 import httpx
 import pytest
@@ -17,7 +16,6 @@ from voice_pipeline.modules.audio.wav_probe import probe_wav
 async def test_real_index_reference_is_decodable_and_in_window(
     gpu_settings, zh_ja_request, run_manifest_dir
 ) -> None:
-    from voice_pipeline.core.errors import ErrorCode, PipelineError
 
     base_url = f"http://{gpu_settings.server.host}:{gpu_settings.server.port}"
     case_dir = run_manifest_dir / "zh-ja-001"
@@ -63,7 +61,6 @@ async def test_real_index_reference_is_decodable_and_in_window(
 @pytest.mark.gpu
 def test_reference_probe_rejects_silent_audio(gpu_settings, tmp_path: Path) -> None:
     """The fixed -50 dBFS silence threshold must reject a silent reference."""
-    import math
     import struct
     import wave
 
@@ -72,9 +69,7 @@ def test_reference_probe_rejects_silent_audio(gpu_settings, tmp_path: Path) -> N
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(22050)
-        frames = b"".join(
-            struct.pack("<h", 0) for _ in range(int(4.0 * 22050))
-        )
+        frames = b"".join(struct.pack("<h", 0) for _ in range(int(4.0 * 22050)))
         wf.writeframes(frames)
 
     from voice_pipeline.core.errors import ErrorCode, PipelineError

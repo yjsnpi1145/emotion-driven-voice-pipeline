@@ -76,6 +76,24 @@ voice-pipeline synthesize-segment --server SERVER_URL --request REQUEST_JSON --o
 
 `--json` 时 stdout 只有恰好一个 JSON 对象；日志与进度只写 stderr。
 
+## 任务输出目录
+
+所有任务输出以 `runtime_dir/jobs/<job_id>/` 为工作目录（`runtime_dir` 由配置决定）：
+
+```text
+runtime_dir/jobs/<job_id>/
+├── reference.wav              # Index 生成的参考音频（已发布）
+├── reference-manifest.json    # 参考绑定清单（含 SHA-256）
+├── run-manifest.json          # 整段运行清单（含 SHA-256、GPU 时间）
+├── target.wav                 # GSV 生成的目标音频（已发布）
+└── *.partial.wav / *.working* # 未完成产物，失败/完成时清理
+```
+
+- 输出通过 `O_EXCL` 零字节保留 + `os.replace` 原子发布，失败不泄漏半成品；
+- CLI `--output` / `--output-dir` 是最终交付位置；参考 CLI 额外生成
+  `<output>.reference-manifest.json` portable 清单；
+- 同名任务请求 `request_id` 必须不同，否则按 `OUTPUT_CONFLICT` 拒绝。
+
 ## 错误码
 
 ```text
@@ -114,7 +132,17 @@ uv run pytest tests/unit tests/contract tests/integration_cpu tests/process -m "
 
 ## 生命周期选择
 
-`resident` 与 `exclusive_process` 共享同一 API 与测试。先探测双驻留（`probe-engine-lifecycle.ps1`），16GB 显存不足时真实配置固定使用 `exclusive_process`。
+`resident` 与 `exclusive_process` 共享同一 API 与测试，`config/app.*.yaml` 中
+`engine_lifecycle` 决定：
+
+- **`resident`**：Index 与 GSV 两个 worker 常驻，`ensure_engine` 直接复用；
+- **`exclusive_process`**：同一时刻只允许一个 worker 运行，切换引擎时先停止另一个
+  （进程树终止 + PID registry 更新）。
+
+选择方式：先用 `scripts/probe-engine-lifecycle.ps1` 探测双驻留显存预算
+（`combined_peak + required_reserve <= total_mib` 才允许 `resident`）；16GB 显存
+不足时真实配置固定使用 `exclusive_process`。`doctor` 输出会校验生命周期下 worker
+状态组合是否合法。
 
 ## 非目标
 

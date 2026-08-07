@@ -90,21 +90,21 @@ def test_lifecycle_decision_schema_and_memory_budget() -> None:
     stop_receipt = evidence / "stop-receipt.json"
     if stop_receipt.is_file():
         receipt = json.loads(stop_receipt.read_text(encoding="utf-8"))
-        stopped = {
-            (int(p["pid"]), float(p["create_time"]))
-            for p in receipt.get("processes", [])
-        }
+        stopped = {(int(p["pid"]), float(p["create_time"])) for p in receipt.get("processes", [])}
         for candidate in decision["candidate_processes"]:
-            assert (
-                int(candidate["pid"]), float(candidate["create_time"])
-            ) in stopped, f"candidate {candidate} not verified stopped"
+            assert (int(candidate["pid"]), float(candidate["create_time"])) in stopped, (
+                f"candidate {candidate} not verified stopped"
+            )
             assert candidate["verified_exited"] is True
     else:
         assert decision["candidate_processes"] == []
 
-    assert decision["stop_receipt_sha256"] == re.fullmatch(
-        r"[0-9a-f]{64}", decision["stop_receipt_sha256"]
-    ).group() if decision["stop_receipt_sha256"] else True
+    assert (
+        decision["stop_receipt_sha256"]
+        == re.fullmatch(r"[0-9a-f]{64}", decision["stop_receipt_sha256"]).group()
+        if decision["stop_receipt_sha256"]
+        else True
+    )
     assert isinstance(decision["evidence_paths"], list)
 
 
