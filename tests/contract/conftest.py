@@ -90,6 +90,61 @@ def gsv_request(tmp_path: Path):
 
 
 @pytest.fixture
+def doctor_payload() -> dict[str, object]:
+    """A strict, valid doctor payload matching the RuntimeHealth/WorkerHealth shape."""
+    return {
+        "schema_version": 1,
+        "mode": "real",
+        "engine_lifecycle": "resident",
+        "control": {
+            "pid": 1234,
+            "instance_id": "10676aa6-86e1-424d-a8dd-77f6ce09fc57",
+            "python_executable": r"D:\envs\control\python.exe",
+            "python_version": "3.11.15",
+            "audit_log": r"D:\runtime\logs\x\engine-audit.jsonl",
+        },
+        "workers": {
+            "indextts": {
+                "state": "ready",
+                "pid": 1001,
+                "create_time": 100.0,
+                "python_executable": r"D:\envs\index\python.exe",
+                "python_version": "3.11.15",
+                "source_revision": "90ca4d608209584bad3a5bd5becc0b80c146e60f",
+                "active_inference": 0,
+                "digest_mismatch": False,
+            },
+            "gpt_sovits": {
+                "state": "ready",
+                "pid": 1002,
+                "create_time": 200.0,
+                "python_executable": r"D:\envs\gsv\python.exe",
+                "python_version": "3.11.15",
+                "source_revision": "d523079fc05d9a8028d6085bffe4a2757c32abb6",
+                "active_inference": 0,
+                "digest_mismatch": False,
+            },
+        },
+        "gpu_queue": {
+            "state": "accepting",
+            "active_count": 0,
+            "queued_count": 0,
+            "max_active_observed": 1,
+            "max_concurrency": 1,
+        },
+        "engine_lock_sha256": "0" * 64,
+        "checkpoint_lock_sha256": "1" * 64,
+        "uv_lock_mismatch": False,
+        "env_lock_mismatch": False,
+        "inventory_mismatch": False,
+        "pid_registry_stale": False,
+        "model_revision_mismatch": False,
+        "cuda": {"available": True, "name": "NVIDIA GeForce RTX 5080", "uuid": "GPU-0000"},
+        "source_revisions": {},
+    }
+
+
+@pytest.fixture
 def fake_settings(tmp_path: Path):
     config_dir = tmp_path / "config"
     config_dir.mkdir()

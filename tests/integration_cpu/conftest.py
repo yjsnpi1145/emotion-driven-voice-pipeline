@@ -21,6 +21,41 @@ def write_tone(
 
 
 @pytest.fixture
+def external_servers(tmp_path: Path):
+    from tests.fixtures.external_harness import FakeServerProcess
+
+    ready_dir = tmp_path / "fake-servers"
+    ready_dir.mkdir()
+    index_server = FakeServerProcess("indextts", ready_dir, delay_ms=400)
+    gsv_server = FakeServerProcess("gpt_sovits", ready_dir, delay_ms=400)
+    index_server.start()
+    gsv_server.start()
+    try:
+        yield index_server, gsv_server
+    finally:
+        index_server.stop()
+        gsv_server.stop()
+
+
+@pytest.fixture
+def external_settings(external_servers, tmp_path: Path):
+    from tests.fixtures.external_harness import build_external_config
+
+    index_server, gsv_server = external_servers
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config = build_external_config(
+        config_dir=config_dir,
+        runtime_dir=tmp_path / "runtime",
+        index_server=index_server,
+        gsv_server=gsv_server,
+        queue_timeout_seconds=1.0,
+        request_timeout_seconds=4.0,
+    )
+    return load_settings(config)
+
+
+@pytest.fixture
 def fake_settings(tmp_path: Path):
     config_dir = tmp_path / "config"
     config_dir.mkdir()

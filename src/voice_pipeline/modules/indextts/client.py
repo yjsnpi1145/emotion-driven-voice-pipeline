@@ -107,7 +107,7 @@ class IndexTTSHttpClient:
                 )
             result = probe_wav(working, require_reference_window=False)
             reservation.publish(working)
-            return result
+            return result.model_copy(update={"path": reservation.path})
         except PipelineError:
             self._cleanup(reservation, working)
             raise

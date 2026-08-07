@@ -135,6 +135,71 @@ async def test_worker_engine_failure_returns_500(tmp_path: Path) -> None:
         resp = await client.post("/v1/synthesize", json=payload)
         assert resp.status_code == 500
         assert (await asyncio.to_thread(Path(payload["output_path"]).exists)) is False
+        detail = resp.json()["detail"]["error"]
+        assert detail["code"] == "INDEX_ENGINE_ERROR"
+        assert detail["stage"] == "index"
+        assert detail["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_relative_output(tmp_path: Path) -> None:
+    jobs_root = tmp_path / "jobs"
+    jobs_root.mkdir()
+    app = create_worker_app(
+        FakeWorkerEngine(),
+        jobs_root=jobs_root,
+        expected_fingerprint=EXPECTED_INDEX_FINGERPRINT,
+    )
+    payload = _payload(tmp_path, output_name="reference.wav")
+    payload["output_path"] = "jobs/reference.wav"  # not absolute
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://worker"
+    ) as client:
+        resp = await client.post("/v1/synthesize", json=payload)
+        assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_symlink_output(tmp_path: Path, monkeypatch) -> None:
+    from pathlib import Path as P
+
+    jobs_root = tmp_path / "jobs"
+    jobs_root.mkdir()
+    app = create_worker_app(
+        FakeWorkerEngine(),
+        jobs_root=jobs_root,
+        expected_fingerprint=EXPECTED_INDEX_FINGERPRINT,
+    )
+    # Simulate a symlink target without requiring Windows symlink privileges.
+    monkeypatch.setattr(P, "is_symlink", lambda self: True)
+    payload = _payload(tmp_path, output_name="link.wav")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://worker"
+    ) as client:
+        resp = await client.post("/v1/synthesize", json=payload)
+        assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_worker_stop_rejects_non_loopback(tmp_path: Path) -> None:
+    jobs_root = tmp_path / "jobs"
+    jobs_root.mkdir()
+    app = create_worker_app(
+        FakeWorkerEngine(),
+        jobs_root=jobs_root,
+        expected_fingerprint=EXPECTED_INDEX_FINGERPRINT,
+    )
+
+    async def app_remote(scope, receive, send) -> None:
+        if scope["type"] == "http":
+            scope["client"] = ("203.0.113.1", 4321)
+        await app(scope, receive, send)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app_remote), base_url="http://worker"
+    ) as client:
+        resp = await client.post("/v1/control/stop")
+        assert resp.status_code == 403
 
 
 def test_worker_schema_rejects_blank_text(tmp_path: Path) -> None:

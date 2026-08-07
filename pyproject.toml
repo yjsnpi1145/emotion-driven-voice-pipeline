@@ -43,6 +43,7 @@ markers = [
   "gpu: requires real CUDA models and checkpoints",
   "gpu_residency: runs the isolated resident-versus-exclusive GPU lifecycle probe",
   "process: starts local subprocesses",
+  "integration_cpu: exercises the full control plane over loopback without real models",
 ]
 
 [tool.ruff]
@@ -51,6 +52,9 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/voice_pipeline/cli.py" = ["B008", "B904"]
 
 [tool.mypy]
 python_version = "3.11"
