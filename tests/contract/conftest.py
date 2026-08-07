@@ -1,10 +1,92 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
+import numpy as np
 import pytest
+import soundfile as sf
 
 from voice_pipeline.core.config import load_settings
+from voice_pipeline.models.schemas import EngineFingerprint
+
+
+def _fingerprint(engine: str, salt: str) -> EngineFingerprint:
+    import hashlib
+
+    def h(field: str) -> str:
+        return hashlib.sha256(f"{engine}:{salt}:{field}".encode()).hexdigest()
+
+    return EngineFingerprint(
+        schema_version=1,
+        engine=engine,  # type: ignore[arg-type]
+        source_revision=f"{engine}-src-{salt}",
+        model_revision="1",
+        engine_lock_sha256=h("engine-lock"),
+        checkpoint_lock_sha256=h("checkpoint-lock"),
+        environment_lock_sha256=h("environment-lock"),
+        runtime_config_sha256=h("runtime-config"),
+    )
+
+
+EXPECTED_INDEX_FINGERPRINT = _fingerprint("indextts", "contract-index")
+EXPECTED_GSV_FINGERPRINT = _fingerprint("gpt_sovits", "contract-gsv")
+
+
+def write_valid_reference(path: Path, seconds: float = 4.0) -> None:
+    sample_rate = 22050
+    t = np.arange(int(seconds * sample_rate)) / sample_rate
+    data = 0.2 * np.sin(2 * np.pi * 220 * t)
+    sf.write(path, data.astype(np.float32), sample_rate, subtype="PCM_16")
+
+
+def valid_wav_bytes(seconds: float = 1.5, sample_rate: int = 32000) -> bytes:
+    t = np.arange(int(seconds * sample_rate)) / sample_rate
+    data = 0.2 * np.sin(2 * np.pi * 300 * t)
+    buffer = io.BytesIO()
+    sf.write(buffer, data.astype(np.float32), sample_rate, format="WAV", subtype="PCM_16")
+    return buffer.getvalue()
+
+
+@pytest.fixture
+def index_request(tmp_path: Path):
+    from voice_pipeline.models.schemas import IndexSynthesisRequest
+
+    return IndexSynthesisRequest(
+        request_id="d613a571-1d69-4f6e-a1b7-3222f61657b8",
+        text="我已经失去了一切，可我仍然活着。",
+        speaker_audio_path=(tmp_path / "voice.wav").resolve(),
+        emotion_vector=[0.0, 0.02, 0.28, 0.03, 0.0, 0.27, 0.0, 0.20],
+        seed=1234,
+    )
+
+
+@pytest.fixture
+def gsv_request(tmp_path: Path):
+    from voice_pipeline.models.schemas import GsvSynthesisRequest, ReferenceBinding
+
+    return GsvSynthesisRequest(
+        request_id="d613a571-1d69-4f6e-a1b7-3222f61657b8",
+        reference=ReferenceBinding(
+            audio={
+                "path": str((tmp_path / "reference.wav").resolve()),
+                "duration_seconds": 4.0,
+                "sample_rate": 22050,
+                "channels": 1,
+                "frames": 88200,
+                "content_sha256": "0" * 64,
+                "rms_dbfs": -17.0,
+                "peak_dbfs": -14.0,
+            },
+            ref_text_cn="我已经失去了一切，可我仍然活着。",
+            emotion_vector=[0.0, 0.02, 0.28, 0.03, 0.0, 0.27, 0.0, 0.20],
+            base_voice_sha256="1" * 64,
+            engine_fingerprint=EXPECTED_INDEX_FINGERPRINT,
+        ),
+        text="私はまだ生きている。",
+        text_lang="ja",
+        seed=1234,
+    )
 
 
 @pytest.fixture
