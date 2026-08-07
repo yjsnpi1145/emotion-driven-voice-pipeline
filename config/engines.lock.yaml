@@ -1,0 +1,26 @@
+schema_version: 1
+indextts:
+  repository: https://github.com/index-tts/index-tts.git
+  revision: 90ca4d608209584bad3a5bd5becc0b80c146e60f
+  model_id: IndexTeam/IndexTTS-2
+  model_revision: 740dcaff396282ffb241903d150ac011cd4b1ede
+  auxiliary_models:
+    w2v_bert:
+      repository: facebook/w2v-bert-2.0
+      revision: da985ba0987f70aaeb84a80f2851cfac8c697a7b
+    semantic_codec:
+      repository: amphion/MaskGCT
+      revision: b9ccc6487b9f486b5b4c22c93010e0b54ddce2e2
+    campplus:
+      repository: funasr/campplus
+      revision: e4b6ede7ce16997aff4ae69fbca1f0175e2afede
+    bigvgan:
+      repository: nvidia/bigvgan_v2_22khz_80band_256x
+      revision: d7b6990ac772ed0ebd93f814912b0027629a7978
+gpt_sovits:
+  repository: https://github.com/RVC-Boss/GPT-SoVITS.git
+  revision: d523079fc05d9a8028d6085bffe4a2757c32abb6
+  model_version: v2
+  pretrained_repository: XXXXRT/GPT-SoVITS-Pretrained
+  pretrained_revision: 4fae8ec36d3d0373864e580b5d8acfba8da29630
+  pretrained_archive_sha256: 82881ee064a0a49c84160908fd08e4dd0c8946e32567ff8df1ad4dad4c358793

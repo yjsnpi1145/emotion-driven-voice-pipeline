@@ -1,0 +1,226 @@
+schema_version: 1
+modules:
+  - module_id: indextts2_inference
+    need: 由中文参考文本与 8 维情绪向量生成参考 WAV
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/index-tts/index-tts
+        spdx_license: MIT
+        pin: 90ca4d608209584bad3a5bd5becc0b80c146e60f
+    selected: https://github.com/index-tts/index-tts
+    decision_reason: 官方推理实现，维护活跃；固定 commit 依赖并在独立 worker 环境中调用
+    wrapper_boundary: 本项目的薄 Index HTTP worker 仅做参数校验、路径限制、指纹校验与进程封装；不复制 infer_v2 源码
+    lock_reference: config/engines.lock.yaml (indextts.revision)
+
+  - module_id: gpt_sovits_api_v2
+    need: 由绑定参考音频与目标文本生成日语/英语目标语音
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/RVC-Boss/GPT-SoVITS
+        spdx_license: MIT
+        pin: d523079fc05d9a8028d6085bffe4a2757c32abb6
+    selected: https://github.com/RVC-Boss/GPT-SoVITS
+    decision_reason: 官方 api_v2.py 提供 /tts HTTP 接口；直接固定 commit 使用，不 fork 不修改
+    wrapper_boundary: 控制面只通过 HTTP adapter 调用官方 api_v2.py；adapter 负责绑定 prompt_text 与参考音频校验
+    lock_reference: config/engines.lock.yaml (gpt_sovits.revision)
+
+  - module_id: fastapi
+    need: 控制面与 Index worker 的 HTTP 服务框架
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/fastapi/fastapi
+        spdx_license: MIT
+        pin: ">=0.115.2,<1"
+    selected: https://github.com/fastapi/fastapi
+    decision_reason: 成熟、维护活跃的异步 Web 框架；作为依赖直接使用
+    wrapper_boundary: 无包装，直接作为依赖使用
+    lock_reference: pyproject.toml dependencies + uv.lock
+
+  - module_id: uvicorn
+    need: ASGI 服务器，单 worker 运行控制面
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/encode/uvicorn
+        spdx_license: BSD-3-Clause
+        pin: ">=0.34,<1"
+    selected: https://github.com/encode/uvicorn
+    decision_reason: FastAPI 官方推荐的 ASGI 服务器；固定 workers=1
+    wrapper_boundary: 无包装；CLI 显式构造 uvicorn.Config/Server
+    lock_reference: pyproject.toml dependencies + uv.lock
+
+  - module_id: httpx
+    need: 控制面 HTTP adapter 与 CLI 客户端
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/encode/httpx
+        spdx_license: BSD-3-Clause
+        pin: ">=0.28,<1"
+    selected: https://github.com/encode/httpx
+    decision_reason: 成熟异步 HTTP 客户端；支持 timeout/stream 精确控制
+    wrapper_boundary: adapter 薄封装，仅做错误映射与产物发布
+    lock_reference: pyproject.toml dependencies + uv.lock
+
+  - module_id: pydantic
+    need: 强类型请求/响应 schema 与配置校验
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/pydantic/pydantic
+        spdx_license: MIT
+        pin: ">=2.10,<3"
+    selected: https://github.com/pydantic/pydantic
+    decision_reason: 维护活跃的校验库；v2 模型用于全部公共契约
+    wrapper_boundary: 无包装，直接作为依赖使用
+    lock_reference: pyproject.toml dependencies + uv.lock
+
+  - module_id: typer
+    need: CLI 命令框架
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/fastapi/typer
+        spdx_license: MIT
+        pin: ">=0.15,<1"
+    selected: https://github.com/fastapi/typer
+    decision_reason: 成熟 CLI 框架，与 FastAPI 同生态
+    wrapper_boundary: 无包装，直接作为依赖使用
+    lock_reference: pyproject.toml dependencies + uv.lock
+
+  - module_id: psutil
+    need: Windows 进程树管理与健康探测
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/giampaolo/psutil
+        spdx_license: BSD-3-Clause
+        pin: ">=6.1,<8"
+    selected: https://github.com/giampaolo/psutil
+    decision_reason: 标准进程/网络查询库；用于递归处理 children 与端口 owner 校验
+    wrapper_boundary: 在 ManagedProcess/Supervisor 内薄封装
+    lock_reference: pyproject.toml dependencies + uv.lock
+
+  - module_id: soundfile
+    need: 独立 WAV 解码与门禁探测
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/bastibe/python-soundfile
+        spdx_license: BSD-3-Clause
+        pin: ">=0.13,<1"
+    selected: https://github.com/bastibe/python-soundfile
+    decision_reason: libsndfile 绑定，维护活跃；独立读取真实文件计算指标
+    wrapper_boundary: wav_probe 模块内薄封装
+    lock_reference: pyproject.toml dependencies + uv.lock
+
+  - module_id: huggingface_hub
+    need: 固定 revision 下载模型与预训练资产
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/huggingface/huggingface_hub
+        spdx_license: Apache-2.0
+        pin: cli+hf_xet (uv tool run)
+    selected: https://github.com/huggingface/huggingface_hub
+    decision_reason: 官方下载客户端；按固定 revision 下载，禁用 main 自动下载
+    wrapper_boundary: 仅出现在 setup 脚本命令行
+    lock_reference: scripts/setup-indextts.ps1 / setup-gpt-sovits.ps1
+
+  - module_id: uv
+    need: Python 环境与依赖锁定管理
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/astral-sh/uv
+        spdx_license: MIT OR Apache-2.0
+        pin: 0.11.24
+    selected: https://github.com/astral-sh/uv
+    decision_reason: 官方维护的 Python 包管理器；用于三环境隔离与 hash 锁
+    wrapper_boundary: 仅出现在 setup 脚本命令行
+    lock_reference: scripts/setup-*.ps1
+
+  - module_id: numpy
+    need: 数值计算与 RMS/peak 指标
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/numpy/numpy
+        spdx_license: BSD-3-Clause
+        pin: ">=2.1,<3"
+    selected: https://github.com/numpy/numpy
+    decision_reason: 标准数值库，维护活跃
+    wrapper_boundary: 无包装，直接作为依赖使用
+    lock_reference: pyproject.toml dependencies + uv.lock
+
+  - module_id: pytest_ecosystem
+    need: 测试框架（pytest/pytest-asyncio/pytest-cov/respx/ruff/mypy）
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/pytest-dev/pytest
+        spdx_license: MIT
+        pin: ">=8.3,<9"
+    selected: https://github.com/pytest-dev/pytest
+    decision_reason: 标准测试栈，dev 依赖直接使用
+    wrapper_boundary: 无包装
+    lock_reference: pyproject.toml [project.optional-dependencies].dev
+
+  - module_id: indextts_http_worker
+    need: 控制面与 IndexTTS2 之间的独立 loopback 进程与安全边界
+    disposition: thin_wrapper
+    candidates:
+      - repository: https://github.com/index-tts/index-tts
+        spdx_license: MIT
+        pin: 90ca4d608209584bad3a5bd5becc0b80c146e60f
+    selected: https://github.com/index-tts/index-tts (上游推理) + 本项目薄 worker
+    decision_reason: 项目安全边界需要独立进程、路径限制、指纹握手与原子发布；内部仍调用官方 IndexTTS2.infer
+    wrapper_boundary: workers/indextts2/* 仅做 HTTP 外壳、参数校验与进程封装；推理逻辑全部委托上游
+    lock_reference: config/engines.lock.yaml
+
+  - module_id: http_adapters
+    need: 控制面到两个引擎的 HTTP 适配层
+    disposition: thin_wrapper
+    candidates:
+      - repository: https://github.com/encode/httpx
+        spdx_license: BSD-3-Clause
+        pin: ">=0.28,<1"
+    selected: https://github.com/encode/httpx (底层) + 本项目薄 adapter
+    decision_reason: 适配层负责请求契约映射、错误分类与原子发布；不重写 HTTP 能力
+    wrapper_boundary: src/voice_pipeline/modules/{indextts,gpt_sovits}/client.py
+    lock_reference: pyproject.toml dependencies + uv.lock
+
+  - module_id: atomic_output
+    need: 不可变产物的 O_EXCL 保留与原子发布
+    disposition: custom
+    candidates: []
+    selected: null
+    decision_reason: Windows 上 os.O_CREAT|O_EXCL 保留 + os.replace 原子发布的语义是项目安全边界，无现成维护活跃组件
+    wrapper_boundary: src/voice_pipeline/modules/audio/atomic_output.py
+    lock_reference: null
+    rejected_reasons:
+      - 未发现同时提供 O_EXCL 保留、ownership 跟踪与 rollback 语义的维护活跃开源库
+
+  - module_id: wav_gates
+    need: 独立 WAV 解码门禁（时长/静音/单声道/有限数值）
+    disposition: custom
+    candidates: []
+    selected: null
+    decision_reason: 基于 soundfile+numpy 的几行判定逻辑，直接复用底层库，无整库可复用
+    wrapper_boundary: src/voice_pipeline/modules/audio/wav_probe.py
+    lock_reference: null
+    rejected_reasons:
+      - 使用 VAD/ASR 等重组件超出批次 1 范围；librosa 等库不提供本项目所需固定阈值语义
+
+  - module_id: gpu_queue
+    need: 单消费者 GPU 串行队列
+    disposition: custom
+    candidates: []
+    selected: null
+    decision_reason: 单进程 asyncio 队列 + 恰好一个 consumer 的语义简单且无需引入分布式组件
+    wrapper_boundary: src/voice_pipeline/core/gpu_queue.py
+    lock_reference: null
+    rejected_reasons:
+      - 引入 SQLite/Redis/Celery 属于批次 1 明确非目标
+
+  - module_id: process_supervisor
+    need: Windows 受管进程生命周期与 PID registry
+    disposition: custom
+    candidates: []
+    selected: null
+    decision_reason: 双引擎生命周期（resident/exclusive）、deadline 共享、进程树终止与原子 PID registry 是项目安全边界
+    wrapper_boundary: src/voice_pipeline/runtime/supervisor.py + process.py
+    lock_reference: null
+    rejected_reasons:
+      - supervisor 类库（如 supervisor/superlance）面向 POSIX 且生命周期语义不符
+      - psutil 已作为底层复用，进程编排逻辑需按项目 deadline 约束自研

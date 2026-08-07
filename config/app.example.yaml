@@ -1,0 +1,23 @@
+schema_version: 1
+mode: fake
+engine_lifecycle: resident
+server:
+  host: 127.0.0.1
+  port: 8765
+runtime_dir: ../runtime
+engine_lock_path: engines.lock.yaml
+checkpoint_lock_path: checkpoints.lock.yaml
+queue:
+  max_concurrency: 1
+  queue_timeout_seconds: 60
+engines:
+  indextts:
+    base_url: http://127.0.0.1:9871
+    python_executable: ../external/index-tts/.venv/Scripts/python.exe
+    repo_dir: ../external/index-tts
+    request_timeout_seconds: 300
+  gpt_sovits:
+    base_url: http://127.0.0.1:9880
+    python_executable: ../external/GPT-SoVITS/.conda/python.exe
+    repo_dir: ../external/GPT-SoVITS
+    request_timeout_seconds: 300
