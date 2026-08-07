@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import pytest
 
 from voice_pipeline.core.errors import ErrorCode, PipelineError
-from voice_pipeline.core.gpu_queue import SerialGpuQueue
+from voice_pipeline.core.gpu_queue import QueueItem, SerialGpuQueue
 
 
 async def wait_until(predicate, wait_seconds: float = 1.0) -> None:
@@ -221,3 +222,103 @@ async def test_stop_fails_queued_items_and_reaches_stopped() -> None:
         await second_task
     with pytest.raises(PipelineError):
         await first_task
+
+
+@pytest.mark.asyncio
+async def test_queue_guard_and_recovery_error_paths() -> None:
+    queue = SerialGpuQueue(queue_timeout_seconds=0.05)
+    with pytest.raises(RuntimeError, match="not started"):
+        await queue.run(lambda: asyncio.sleep(0))
+    await queue.start()
+    await queue.start()  # idempotent start
+    queue.poison("manual")
+    with pytest.raises(PipelineError, match="manual"):
+        await queue.run(lambda: asyncio.sleep(0))
+    with pytest.raises(ValueError, match="health is not ready"):
+        queue.resume_after_verified_recovery(
+            _ready_health().__class__.model_validate(
+                {**_ready_health().model_dump(), "status": "degraded"}
+            )
+        )
+    queue.resume_after_verified_recovery(_ready_health())
+    assert await queue.run(lambda: asyncio.sleep(0, result="ok")) == "ok"
+    await queue.stop()
+    await queue.stop()  # already stopped branch
+
+
+@pytest.mark.asyncio
+async def test_stop_handles_abort_failure_and_expired_deadline() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    queue = SerialGpuQueue(queue_timeout_seconds=1)
+    await queue.start()
+
+    async def active() -> None:
+        started.set()
+        await release.wait()
+
+    async def broken_abort(_deadline: float) -> None:
+        raise RuntimeError("abort transport failed")
+
+    task = asyncio.create_task(queue.run(active))
+    await started.wait()
+    await queue.stop(
+        deadline=asyncio.get_running_loop().time(),
+        grace_seconds=0,
+        abort_active=broken_abort,
+    )
+    with pytest.raises(PipelineError, match="consumer cancelled"):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_consumer_skips_cancelled_item_and_poison_fails_queued_item() -> None:
+    queue = SerialGpuQueue(queue_timeout_seconds=1)
+    await queue.start()
+    loop = asyncio.get_running_loop()
+
+    async def never() -> None:
+        raise AssertionError("cancelled item must not run")
+
+    cancelled = QueueItem[Any](
+        factory=never,
+        future=loop.create_future(),
+        started=loop.create_future(),
+        enqueued_at=loop.time(),
+        cancelled=True,
+    )
+    await queue._items.put(cancelled)
+    await queue._items.join()
+
+    hold = asyncio.Event()
+    blocker = asyncio.create_task(queue.run(lambda: hold.wait()))
+    await wait_until(lambda: queue.stats().active_count == 1)
+    queued = QueueItem[Any](
+        factory=never,
+        future=loop.create_future(),
+        started=loop.create_future(),
+        enqueued_at=loop.time(),
+    )
+    await queue._items.put(queued)
+    queue.poison("manual poison")
+    with pytest.raises(PipelineError, match="manual poison"):
+        await queued.future
+    hold.set()
+    await blocker
+    await queue.stop()
+
+
+@pytest.mark.asyncio
+async def test_recovery_rejects_wrong_state_and_unknown_worker() -> None:
+    queue = SerialGpuQueue(queue_timeout_seconds=1)
+    with pytest.raises(ValueError, match="not poisoned"):
+        queue.resume_after_verified_recovery(_ready_health())
+    await queue.start()
+    queue.poison("x")
+    bad = _ready_health().model_dump()
+    bad["workers"]["gpt_sovits"]["state"] = "unknown"
+    from voice_pipeline.models.schemas import RuntimeHealth
+
+    with pytest.raises(ValueError, match="unknown"):
+        queue.resume_after_verified_recovery(RuntimeHealth.model_validate(bad))
+    await queue.stop()

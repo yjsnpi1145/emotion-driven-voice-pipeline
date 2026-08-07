@@ -81,3 +81,28 @@ def test_atomic_write_json_writes_valid_utf8_json(tmp_path) -> None:
     atomic_write_json(target, {"job_id": "x", "列表": [1, 2], "文本": "日本語"})
     data = json.loads(target.read_text(encoding="utf-8"))
     assert data == {"job_id": "x", "列表": [1, 2], "文本": "日本語"}
+
+
+def test_reservation_rejects_lost_ownership_and_second_cleanup(tmp_path) -> None:
+    target = tmp_path / "target.wav"
+    reservation = reserve_output_path(target)
+    target.write_bytes(b"someone else")
+    with pytest.raises(PipelineError, match="ownership lost"):
+        reservation.publish(tmp_path / "missing.partial")
+    with pytest.raises(PipelineError, match="OUTPUT_CONFLICT"):
+        reservation.rollback()
+
+
+def test_atomic_json_rolls_back_when_payload_cannot_be_encoded(tmp_path) -> None:
+    target = tmp_path / "bad.json"
+    with pytest.raises(TypeError):
+        atomic_write_json(target, {"not_json": object()})
+    assert not target.exists()
+
+
+def test_rollback_leaves_nonempty_unowned_target_untouched(tmp_path) -> None:
+    target = tmp_path / "occupied.wav"
+    reservation = reserve_output_path(target)
+    target.write_bytes(b"not our empty reservation")
+    reservation.rollback()
+    assert target.read_bytes() == b"not our empty reservation"
