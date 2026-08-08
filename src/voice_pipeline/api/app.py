@@ -230,6 +230,7 @@ def create_app(
             plane.last_recovery_report = await StorageRecovery(
                 database, plane.artifact_store
             ).reconcile()
+            await plane.retention_executor.resume_deletions()
             if settings.mode == "real":
                 plane.configure_quality(
                     FasterWhisperQualityAnalyzer(

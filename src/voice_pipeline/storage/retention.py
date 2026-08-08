@@ -188,12 +188,80 @@ class RetentionExecutor:
                 .where(retention_plans.c.plan_id == str(plan_id))
                 .values(status="applied", applied_at_utc=_now())
             )
+        await self._trash_version_manifests(tuple(UUID(str(value)) for value in candidates))
         await self._garbage_collect_blobs()
         return RetentionReceipt(
             plan_id=plan_id,
             status="applied",
             deleted_version_ids=tuple(UUID(str(value)) for value in candidates),
         )
+
+    async def resume_deletions(self) -> tuple[UUID, ...]:
+        """Finish the durable ``deleting`` phase left by an interrupted cleanup.
+
+        A version only enters this state after the retention planner has protected
+        current, dependent and in-flight records.  Recovery intentionally never
+        chooses a replacement current pointer; it only completes the already
+        recorded deletion decision.
+        """
+        async with self._database.write_session() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        artifact_versions.c.version_id,
+                        artifact_versions.c.manifest_relative_path,
+                    )
+                    .join(
+                        artifact_version_state,
+                        artifact_versions.c.version_id == artifact_version_state.c.version_id,
+                    )
+                    .where(artifact_version_state.c.state == "deleting")
+                )
+            ).all()
+            version_ids = tuple(UUID(str(row.version_id)) for row in rows)
+            if version_ids:
+                await session.execute(
+                    update(artifact_version_state)
+                    .where(
+                        artifact_version_state.c.version_id.in_(
+                            [str(value) for value in version_ids]
+                        )
+                    )
+                    .where(artifact_version_state.c.state == "deleting")
+                    .values(state="deleted", checked_at_utc=_now())
+                )
+        await self._trash_version_manifests(version_ids)
+        if version_ids:
+            await self._garbage_collect_blobs()
+        return version_ids
+
+    def _trash_manifest(self, relative_path: Path) -> None:
+        source = (self._artifacts.root / relative_path).resolve()
+        manifests = (self._artifacts.root / "manifests").resolve()
+        try:
+            source.relative_to(manifests)
+        except ValueError:
+            return
+        if not source.is_file() or source.is_symlink():
+            return
+        destination = self._artifacts.root / "trash" / "retention" / "manifests" / source.name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if not destination.exists():
+            source.replace(destination)
+
+    async def _trash_version_manifests(self, version_ids: tuple[UUID, ...]) -> None:
+        if not version_ids:
+            return
+        async with self._database.read_session() as session:
+            rows = (
+                await session.execute(
+                    select(artifact_versions.c.manifest_relative_path).where(
+                        artifact_versions.c.version_id.in_([str(value) for value in version_ids])
+                    )
+                )
+            ).scalars()
+        for relative_path in rows:
+            self._trash_manifest(Path(str(relative_path)))
 
     async def _garbage_collect_blobs(self) -> None:
         async with self._database.read_session() as session:
