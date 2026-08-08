@@ -393,3 +393,51 @@ modules:
     decision_reason: 复用维护活跃的解码、编码和数组运算；项目层仅定义 selected-version、pause 和原子 timeline 语义。
     wrapper_boundary: composer.py 不实现音频 codec，只组织 ready artifact WAV、声道归一和静音数组后调用依赖库。
     lock_reference: pyproject.toml dependencies + uv.lock
+
+  - module_id: starlette_static_sse
+    introduced_in_batch: 4
+    need: Local-only packaged static workbench assets and server-sent progress events
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/encode/starlette
+        spdx_license: BSD-3-Clause
+        pin: ">=0.40,<1"
+    selected: FastAPI bundled Starlette FileResponse + StreamingResponse
+    decision_reason: Reuses the installed ASGI response primitives instead of writing a custom HTTP file server or event transport.
+    wrapper_boundary: workbench_routes.py only allow-lists packaged files and serializes path-free chapter DTOs.
+    lock_reference: pyproject.toml fastapi dependency + uv.lock (starlette)
+
+  - module_id: native_browser_workbench
+    introduced_in_batch: 4
+    need: Local master-detail editor, audio controls and SSE consumer without a separate frontend runtime
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/whatwg/html
+        spdx_license: CC-BY-4.0
+        pin: living-standard
+      - repository: https://github.com/whatwg/dom
+        spdx_license: CC-BY-4.0
+        pin: living-standard
+    selected: Native HTML, CSS and ES modules provided by the local browser
+    decision_reason: No Node build chain, CDN, telemetry or client credential surface is required for a loopback-only workbench.
+    wrapper_boundary: webui/app.js only calls the versioned control-plane HTTP API; it never contacts model workers.
+    lock_reference: packaged src/voice_pipeline/webui assets
+
+  - module_id: react_vue_frontend_framework
+    introduced_in_batch: 4
+    need: Candidate component framework for the local workbench
+    disposition: custom
+    candidates:
+      - repository: https://github.com/facebook/react
+        spdx_license: MIT
+        pin: 19.1.1
+      - repository: https://github.com/vuejs/core
+        spdx_license: MIT
+        pin: 3.5.21
+    selected: null
+    decision_reason: Rejected because a local single-user page does not need a Node build, runtime framework or dependency update surface.
+    wrapper_boundary: none
+    lock_reference: null
+    rejected_reasons:
+      - Native browser APIs provide the required fixed-list, form and audio-control behavior.
+      - React/Vue would add a frontend package manager without improving the control-plane contract.

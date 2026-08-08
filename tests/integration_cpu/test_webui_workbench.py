@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from uuid import uuid4
+
+import httpx
+import pytest
+
+from tests.integration_cpu.conftest import write_tone
+from voice_pipeline.api.app import create_app
+
+
+async def _import_profile(client: httpx.AsyncClient, tmp_path: Path) -> str:
+    source = tmp_path / "models"
+    source.mkdir()
+    gpt = source / "voice.ckpt"
+    sovits = source / "voice.pth"
+    gpt.write_bytes(b"gpt")
+    sovits.write_bytes(b"sovits")
+    created = await client.post(
+        "/api/v1/model-profiles/import",
+        json={
+            "display_name": "workbench-voice",
+            "gpt_source_path": str(gpt.resolve()),
+            "sovits_source_path": str(sovits.resolve()),
+        },
+    )
+    assert created.status_code == 201
+    profile_id = created.json()["profile_id"]
+    assert (await client.post(f"/api/v1/model-profiles/{profile_id}/activate")).status_code == 200
+    return profile_id
+
+
+async def _wait_for_chapter(client: httpx.AsyncClient, run_id: str) -> dict[str, object]:
+    for _ in range(400):
+        response = await client.get(f"/api/v1/chapters/{run_id}")
+        assert response.status_code == 200
+        payload = response.json()
+        if payload["status"] in {"succeeded", "failed", "interrupted"}:
+            return payload
+        await asyncio.sleep(0.01)
+    raise AssertionError("chapter did not complete")
+
+
+@pytest.mark.asyncio
+async def test_workbench_chapter_progress_draft_edit_and_current_audio(
+    fake_settings, tmp_path: Path
+) -> None:
+    fake_settings.model_library.models_root = tmp_path / "library"
+    fake_settings.model_library.allowed_import_roots = [tmp_path / "models"]
+    base_voice = tmp_path / "base.wav"
+    write_tone(base_voice, 5.0)
+    app = create_app(fake_settings)
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            profile_id = await _import_profile(client, tmp_path)
+            accepted = await client.post(
+                "/api/v1/chapters",
+                json={
+                    "request_id": str(uuid4()),
+                    "title": "webui chapter",
+                    "source_text": "第一句。第二句。",
+                    "target_language": "ja",
+                    "base_voice_path": str(base_voice.resolve()),
+                    "model_profile_id": profile_id,
+                },
+            )
+            assert accepted.status_code == 202
+            run_id = accepted.json()["run_id"]
+            assert (await _wait_for_chapter(client, run_id))["status"] == "succeeded"
+
+            progress = await client.get(f"/api/v1/chapters/{run_id}/progress")
+            assert progress.status_code == 200
+            rows = progress.json()["segments"]
+            assert len(rows) == 2
+            assert all(row["active_gsv_version_id"] for row in rows)
+            assert "base_voice_path" not in progress.text
+
+            segment_id = rows[0]["segment_id"]
+            before = await client.get(f"/api/v1/segments/{segment_id}")
+            assert before.status_code == 200
+            before_payload = before.json()
+            jobs_before = await app.state.plane.database.scalar_int(
+                "SELECT count(*) FROM generation_jobs"
+            )
+            patched = await client.patch(
+                f"/api/v1/segments/{segment_id}/inputs",
+                json={
+                    "expected_ref_draft_revision": before_payload["ref_draft_revision"],
+                    "expected_gsv_draft_revision": before_payload["gsv_draft_revision"],
+                    "ref_text_cn": "这是手动微调后的中文参考文本。",
+                    "synthesis_text": "これは手動で編集した日本語です。",
+                    "current_emotion_vector": [0.1] * 8,
+                },
+            )
+            assert patched.status_code == 200
+            assert patched.json()["ref_draft_revision"] == before_payload["ref_draft_revision"] + 1
+            assert patched.json()["gsv_draft_revision"] == before_payload["gsv_draft_revision"] + 1
+            assert (
+                await app.state.plane.database.scalar_int("SELECT count(*) FROM generation_jobs")
+                == jobs_before
+            )
+
+            audio = await client.get(f"/api/v1/versions/{rows[0]['active_gsv_version_id']}/audio")
+            assert audio.status_code == 200
+            assert audio.headers["content-type"].startswith("audio/wav")
+            assert audio.content[:4] == b"RIFF"

@@ -195,3 +195,16 @@ voice-pipeline synthesize-chapter --server http://127.0.0.1:8765 --request chapt
 `base_voice_path` 和已导入的 `model_profile_id`。命令通过 HTTP 等待章节运行，然后原子
 下载 `final.wav` 和 `timeline.json`；同名输出绝不覆盖。章节状态可从
 `GET /api/v1/chapters/{run_id}` 查询，成功后可下载 `/audio` 与 `/timeline`。
+
+## 批次 4：本地 WebUI 工作台
+
+控制面启动后，在同一台机器浏览器打开 `http://127.0.0.1:8765/`。页面没有 CDN、在线
+遥测或浏览器端模型调用；它只访问本地 `/api/v1`，并且不会显示 API key、模型绝对路径或
+artifact 文件路径。
+
+- 顶部表单可提交批次 3 的整篇任务，左侧列出章节及其分块进度，右侧可以试听当前
+  reference/GSV WAV；
+- 可编辑中文参考文本、合成文本、速度、停顿、种子和八维情绪向量。保存仅更新草稿，绝不
+  自动排队推理；“恢复 LLM 值”只将当前向量复原为该段已保存的 LLM 向量；
+- 任务进度通过章节 SSE 更新。连接中断时页面回退为本地 REST 刷新；
+- 历史版本激活、reference/GSV 局部重生成和显式重拼接属于批次 5，不在这个工作台版本中。
