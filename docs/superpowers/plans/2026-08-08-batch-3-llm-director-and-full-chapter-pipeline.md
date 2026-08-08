@@ -56,10 +56,16 @@ class LlmSettings(BaseModel):
     max_retries: int = Field(ge=0, le=5)
     max_reference_corrections: int = Field(ge=0, le=5)
 
+
 class ChapterSynthesisRequest(StrictModel):
-    request_id: UUID; title: NonBlankText; source_text: NonBlankText
-    target_language: LanguageCode; base_voice_path: Path; model_profile_id: UUID
-    output_spec: OutputAudioSpec; seed: int
+    request_id: UUID
+    title: NonBlankText
+    source_text: NonBlankText
+    target_language: LanguageCode
+    base_voice_path: Path
+    model_profile_id: UUID
+    output_spec: OutputAudioSpec
+    seed: int
 ```
 `ChapterRunRecord` 必须有 `run_id/task_id/status/snapshot/director_plan/error/final_audio/timeline/created_at/started_at/finished_at`。迁移从 `0001_batch2_foundation` 创建 chapter tables，`chapter_run_segments` 用 `(run_id, ordinal)` 主键和 segment FK；`PACKAGED_HEAD` 变为 `0002_batch3_chapter_runs`。
 
@@ -76,17 +82,29 @@ class ChapterSynthesisRequest(StrictModel):
 **Produces:**
 ```python
 class DirectedSegment(StrictModel):
-    ordinal: int; source_start: int; source_end: int
-    emotion_description: NonBlankText; emotion_vector: EmotionVector
-    ref_text_cn: NonBlankText; pause_after_ms: int; speed_factor: float; seed: int
+    ordinal: int
+    source_start: int
+    source_end: int
+    emotion_description: NonBlankText
+    emotion_vector: EmotionVector
+    ref_text_cn: NonBlankText
+    pause_after_ms: int
+    speed_factor: float
+    seed: int
+
 
 class DirectorPlan(StrictModel):
     source_text_sha256: str
     segments: tuple[DirectedSegment, ...]
 
+
 async def create_plan(source_text: str, target_language: LanguageCode) -> DirectorPlan: ...
-async def correct_reference_text(current: str, direction: Literal["shorten", "lengthen"], emotion_description: str) -> str: ...
-def validate_director_plan(source_text: str, response: DirectorPlan) -> tuple[MaterializedDirectedSegment, ...]: ...
+async def correct_reference_text(
+    current: str, direction: Literal["shorten", "lengthen"], emotion_description: str
+) -> str: ...
+def validate_director_plan(
+    source_text: str, response: DirectorPlan
+) -> tuple[MaterializedDirectedSegment, ...]: ...
 ```
 
 - [ ] 用 `respx` 写失败测试：请求是 `POST /chat/completions`、header 有 Bearer 但 plan 的 repr/错误中没有 secret；JSON/sha/gap/overlap/越界/向量非法在任一引擎调用前被拒绝；切片保持中文/日文 Unicode 原文。
@@ -104,7 +122,10 @@ def validate_director_plan(source_text: str, response: DirectorPlan) -> tuple[Ma
 class ReferenceDurationProbe(Protocol):
     async def generate_and_measure(self, text: str, vector: EmotionVector, seed: int) -> float: ...
 
-async def resolve_reference_text(segment: DirectedSegment, probe: ReferenceDurationProbe) -> ResolvedDirectedSegment: ...
+
+async def resolve_reference_text(
+    segment: DirectedSegment, probe: ReferenceDurationProbe
+) -> ResolvedDirectedSegment: ...
 ```
 
 - [ ] 写失败测试，probe 依次返回 `2.2, 10.1, 4.0` 时只变 ref text、保留向量/区间并记录 correction=2；超过次数仍未进 3–9 时抛 `REFERENCE_DURATION_INVALID`。
@@ -119,12 +140,21 @@ async def resolve_reference_text(segment: DirectedSegment, probe: ReferenceDurat
 
 **Produces:**
 ```python
-async def create_queued(request: ChapterSynthesisRequest, plan: DirectorPlan, profile: GsvModelSnapshot, base_voice_sha256: str) -> ChapterRunRecord: ...
+async def create_queued(
+    request: ChapterSynthesisRequest,
+    plan: DirectorPlan,
+    profile: GsvModelSnapshot,
+    base_voice_sha256: str,
+) -> ChapterRunRecord: ...
 async def mark_running(run_id: UUID) -> ChapterRunRecord: ...
-async def mark_succeeded(run_id: UUID, final: AudioResult, timeline: ChapterTimeline) -> ChapterRunRecord: ...
+async def mark_succeeded(
+    run_id: UUID, final: AudioResult, timeline: ChapterTimeline
+) -> ChapterRunRecord: ...
 async def mark_failed(run_id: UUID, error: dict[str, JsonValue]) -> ChapterRunRecord: ...
 async def mark_interrupted_running() -> tuple[UUID, ...]: ...
-async def create_segments(task_id: UUID, requests: tuple[CreateSegmentRequest, ...]) -> tuple[SegmentRecord, ...]: ...
+async def create_segments(
+    task_id: UUID, requests: tuple[CreateSegmentRequest, ...]
+) -> tuple[SegmentRecord, ...]: ...
 ```
 
 - [ ] 写失败集成测试：一次 `create_queued` 在同一事务创建 task/segments/run 映射；连续 source text 正确；`running -> interrupted` 不删除 segments。
@@ -139,10 +169,20 @@ async def create_segments(task_id: UUID, requests: tuple[CreateSegmentRequest, .
 **Produces:**
 ```python
 class ComposeInput(StrictModel):
-    ordinal: int; segment_id: UUID; gsv_version: ArtifactVersionView
-    blob_path: Path; pause_after_ms: int
+    ordinal: int
+    segment_id: UUID
+    gsv_version: ArtifactVersionView
+    blob_path: Path
+    pause_after_ms: int
 
-def compose_final(*, ordered_inputs: tuple[ComposeInput, ...], output_spec: OutputAudioSpec, output_path: Path, timeline_path: Path) -> ComposedChapterAudio: ...
+
+def compose_final(
+    *,
+    ordered_inputs: tuple[ComposeInput, ...],
+    output_spec: OutputAudioSpec,
+    output_path: Path,
+    timeline_path: Path,
+) -> ComposedChapterAudio: ...
 ```
 
 - [ ] 写失败测试：1 秒+500ms+2秒 的时长约 3.5 秒；timeline 第二段从 1.5 开始；最后段的 999ms pause 不生效；缺/非 ready 文件失败且没有 final。
