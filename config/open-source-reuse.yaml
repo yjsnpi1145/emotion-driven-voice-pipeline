@@ -319,7 +319,7 @@ modules:
   - module_id: sqlmodel
     introduced_in_batch: 2
     need: Combined Pydantic and ORM candidate
-    disposition: rejected
+    disposition: custom
     candidates:
       - repository: https://github.com/fastapi/sqlmodel
         spdx_license: MIT
@@ -335,7 +335,7 @@ modules:
   - module_id: diskcache
     introduced_in_batch: 2
     need: Local cache candidate
-    disposition: rejected
+    disposition: custom
     candidates:
       - repository: https://github.com/grantjenks/python-diskcache
         spdx_license: Apache-2.0

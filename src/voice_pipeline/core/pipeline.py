@@ -41,9 +41,16 @@ from voice_pipeline.models.schemas import (
 )
 from voice_pipeline.modules.audio.atomic_output import atomic_write_json
 from voice_pipeline.modules.audio.wav_probe import probe_wav, sha256_file
-from voice_pipeline.modules.cache.keys import build_gsv_cache_key, build_reference_cache_key
+from voice_pipeline.modules.cache.keys import (
+    build_gsv_cache_key,
+    build_quality_cache_key,
+    build_reference_cache_key,
+)
+from voice_pipeline.modules.quality.models import QualityReport
+from voice_pipeline.modules.quality.ports import QualityAnalyzer
 from voice_pipeline.storage.artifact_store import ArtifactStore
 from voice_pipeline.storage.cache_store import CacheStore
+from voice_pipeline.storage.quality_cache import QualityCacheStore
 
 
 def _sha256_hex(text: str) -> str:
@@ -54,8 +61,9 @@ def build_reference_manifest(
     context: ExecutionContext,
     request: ReferenceJobRequest | SegmentSynthesisRequest,
     binding: ReferenceBinding,
+    quality_result: QualityReport | None = None,
 ) -> dict[str, Any]:
-    return {
+    result: dict[str, Any] = {
         "schema_version": 1,
         "manifest_type": "reference",
         "job_id": str(context.job_id),
@@ -71,6 +79,9 @@ def build_reference_manifest(
         "reference": binding.model_dump(mode="json"),
         "created_at_utc": datetime.now(UTC).isoformat(),
     }
+    if quality_result is not None:
+        result["quality_result"] = quality_result.model_dump(mode="json")
+    return result
 
 
 def build_run_manifest(
@@ -220,10 +231,79 @@ class SynthesisService:
         self._require_model_profile = False
         self._cache: CacheStore | None = None
         self._artifact_store: ArtifactStore | None = None
+        self._quality_analyzer: QualityAnalyzer | None = None
+        self._quality_cache: QualityCacheStore | None = None
 
     def configure_cache(self, cache: CacheStore, artifact_store: ArtifactStore) -> None:
         self._cache = cache
         self._artifact_store = artifact_store
+
+    def configure_quality(self, analyzer: QualityAnalyzer) -> None:
+        self._quality_analyzer = analyzer
+
+    def configure_quality_cache(self, cache: QualityCacheStore) -> None:
+        self._quality_cache = cache
+
+    async def _check_reference_quality(
+        self, *, audio_path: Path, expected_text: str
+    ) -> QualityReport | None:
+        analyzer = self._quality_analyzer
+        if analyzer is None:
+            return None
+        key = build_quality_cache_key(
+            audio_sha256=sha256_file(audio_path),
+            expected_text=expected_text,
+            policy_fingerprint=analyzer.policy_fingerprint,
+        )
+        report = await self._quality_cache.get_valid(key) if self._quality_cache else None
+        if report is None:
+            report = await analyzer.analyze_reference(
+                audio_path=audio_path,
+                expected_text=expected_text,
+            )
+            if self._quality_cache is not None:
+                await self._quality_cache.put(key, report)
+        if report.passed:
+            return report
+        code = (
+            ErrorCode.QUALITY_VAD_FAILED
+            if report.failure_code == "QUALITY_VAD_FAILED"
+            else ErrorCode.QUALITY_TEXT_MISMATCH
+        )
+        raise PipelineError(
+            code,
+            "quality",
+            "reference audio did not satisfy the configured quality policy",
+            retryable=False,
+            details={"quality_result": report.model_dump(mode="json")},
+        )
+
+    def _require_saved_reference_quality(self, manifest: dict[str, Any]) -> QualityReport | None:
+        analyzer = self._quality_analyzer
+        if analyzer is None:
+            return None
+        try:
+            report = QualityReport.model_validate(manifest["quality_result"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PipelineError(
+                ErrorCode.QUALITY_TEXT_MISMATCH,
+                "quality",
+                "reference manifest does not contain a valid quality report",
+                retryable=False,
+            ) from exc
+        if not report.passed or report.policy_fingerprint != analyzer.policy_fingerprint:
+            code = (
+                ErrorCode.QUALITY_VAD_FAILED
+                if report.failure_code == "QUALITY_VAD_FAILED"
+                else ErrorCode.QUALITY_TEXT_MISMATCH
+            )
+            raise PipelineError(
+                code,
+                "quality",
+                "reference manifest quality report is not valid for this policy",
+                retryable=False,
+            )
+        return report
 
     async def _cache_hit(self, key: Any, destination: Path, *, reference: bool) -> Any | None:
         if self._cache is None or self._artifact_store is None:
@@ -468,8 +548,12 @@ class SynthesisService:
                 reference_sha256_or_null=reference_audio.content_sha256,
                 fingerprint=self._index.fingerprint(),
             )
-            if request.seed >= 0:
-                await self._cache_put(reference_key, reference_audio.path)
+        quality_result = await self._check_reference_quality(
+            audio_path=reference_audio.path,
+            expected_text=request.ref_text_cn,
+        )
+        if request.seed >= 0:
+            await self._cache_put(reference_key, reference_audio.path)
         binding = ReferenceBinding(
             audio=reference_audio,
             ref_text_cn=request.ref_text_cn,
@@ -480,7 +564,7 @@ class SynthesisService:
         reference_manifest_path = job_dir / "reference-manifest.json"
         atomic_write_json(
             reference_manifest_path,
-            build_reference_manifest(context, request, binding),
+            build_reference_manifest(context, request, binding, quality_result),
         )
         return ReferenceSynthesisResult(
             job_id=context.job_id,
@@ -497,6 +581,7 @@ class SynthesisService:
         manifest_path = request.reference_manifest_path
         manifest_raw = json.loads(manifest_path.read_text(encoding="utf-8"))
         binding = ReferenceBinding.model_validate(manifest_raw["reference"])
+        self._require_saved_reference_quality(manifest_raw)
         self._validate_input_path(binding.audio.path)
         reference_audio = probe_wav(binding.audio.path, require_reference_window=True)
         if reference_audio.content_sha256 != binding.audio.content_sha256:
@@ -639,8 +724,12 @@ class SynthesisService:
                 reference_sha256_or_null=reference_audio.content_sha256,
                 fingerprint=self._index.fingerprint(),
             )
-            if request.seed >= 0:
-                await self._cache_put(reference_key, reference_audio.path)
+        quality_result = await self._check_reference_quality(
+            audio_path=reference_audio.path,
+            expected_text=request.ref_text_cn,
+        )
+        if request.seed >= 0:
+            await self._cache_put(reference_key, reference_audio.path)
         binding = ReferenceBinding(
             audio=reference_audio,
             ref_text_cn=request.ref_text_cn,
@@ -651,7 +740,7 @@ class SynthesisService:
         reference_manifest_path = job_dir / "reference-manifest.json"
         atomic_write_json(
             reference_manifest_path,
-            build_reference_manifest(context, request, binding),
+            build_reference_manifest(context, request, binding, quality_result),
         )
 
         gsv_request = GsvSynthesisRequest(

@@ -6,6 +6,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from voice_pipeline.modules.quality.models import QualityPolicy
+
 
 class ServerSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -72,6 +74,14 @@ class StorageSettings(BaseModel):
         return self
 
 
+class QualitySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["fake", "faster_whisper"] = "fake"
+    model_path: Path = Path("../runtime/models/faster-whisper-small")
+    model_lock_path: Path = Path("quality-model.lock.yaml")
+    policy: QualityPolicy = Field(default_factory=QualityPolicy)
+
+
 class AppSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal[1]
@@ -85,6 +95,17 @@ class AppSettings(BaseModel):
     engines: EnginesSettings
     model_library: ModelLibrarySettings = Field(default_factory=ModelLibrarySettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
+    quality: QualitySettings = Field(default_factory=QualitySettings)
+
+    @model_validator(mode="after")
+    def require_real_quality_adapter(self) -> AppSettings:
+        if self.mode == "real" and "quality" not in self.model_fields_set:
+            self.quality = QualitySettings(mode="faster_whisper")
+        if self.mode == "real" and self.quality.mode != "faster_whisper":
+            raise ValueError("real mode requires quality.mode=faster_whisper")
+        if self.mode != "real" and self.quality.mode != "fake":
+            raise ValueError("fake and external_test modes require quality.mode=fake")
+        return self
 
 
 def _resolve_path(base: Path, value: Path) -> Path:
@@ -113,6 +134,8 @@ def load_settings(config_path: Path) -> AppSettings:
     ]
     settings.model_library.validate_against_runtime(settings.runtime_dir)
     settings.storage.resolve_against_runtime(settings.runtime_dir)
+    settings.quality.model_path = _resolve_path(base, settings.quality.model_path)
+    settings.quality.model_lock_path = _resolve_path(base, settings.quality.model_lock_path)
     for engine in (settings.engines.indextts, settings.engines.gpt_sovits):
         engine.python_executable = _resolve_path(base, engine.python_executable)
         engine.repo_dir = _resolve_path(base, engine.repo_dir)

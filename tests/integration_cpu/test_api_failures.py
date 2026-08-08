@@ -137,5 +137,11 @@ async def test_health_reports_ready_in_fake_mode(fake_settings) -> None:
             assert health["gpu_queue"]["max_concurrency"] == 1
             assert health["workers"]["indextts"]["state"] == "ready"
             assert health["workers"]["gpt_sovits"]["state"] == "ready"
+            assert health["quality"] == {
+                "mode": "fake",
+                "status": "ready",
+                "policy_fingerprint_sha256": health["quality"]["policy_fingerprint_sha256"],
+            }
+            assert len(health["quality"]["policy_fingerprint_sha256"]) == 64
             assert health["control"]["instance_id"]
             assert health["control"]["audit_log"]

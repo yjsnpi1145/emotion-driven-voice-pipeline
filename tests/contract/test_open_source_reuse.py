@@ -4,7 +4,6 @@ from pathlib import Path
 
 import yaml
 
-
 REQUIRED = {
     "sqlalchemy": "reuse",
     "alembic": "reuse",
@@ -13,8 +12,8 @@ REQUIRED = {
     "faster_whisper": "reuse",
     "silero_vad": "reuse",
     "rapidfuzz": "reuse",
-    "sqlmodel": "rejected",
-    "diskcache": "rejected",
+    "sqlmodel": "custom",
+    "diskcache": "custom",
 }
 
 

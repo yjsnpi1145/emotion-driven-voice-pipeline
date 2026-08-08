@@ -21,6 +21,9 @@ from voice_pipeline.core.job_executor import JobExecutor
 from voice_pipeline.core.jobs import InMemoryJobRegistry
 from voice_pipeline.core.model_profile_service import ModelProfileService
 from voice_pipeline.core.pipeline import SynthesisService
+from voice_pipeline.modules.quality.fake import DeterministicQualityAnalyzer
+from voice_pipeline.modules.quality.faster_whisper import FasterWhisperQualityAnalyzer
+from voice_pipeline.modules.quality.ports import QualityAnalyzer
 from voice_pipeline.runtime.audit import EngineAuditWriter
 from voice_pipeline.storage.artifact_store import ArtifactStore
 from voice_pipeline.storage.cache_store import CacheStore
@@ -28,6 +31,7 @@ from voice_pipeline.storage.database import Database
 from voice_pipeline.storage.job_store import SqliteJobStore
 from voice_pipeline.storage.model_importer import ModelProfileImporter
 from voice_pipeline.storage.model_profile_store import SqliteModelProfileStore
+from voice_pipeline.storage.quality_cache import QualityCacheStore
 from voice_pipeline.storage.recovery import StorageRecovery
 from voice_pipeline.storage.segment_store import SegmentStore
 from voice_pipeline.storage.version_store import VersionStore
@@ -64,10 +68,15 @@ class ControlPlane:
         self.artifact_store: ArtifactStore | None = None
         self.segment_store: SegmentStore | None = None
         self.version_store: VersionStore | None = None
+        self.quality_analyzer: QualityAnalyzer | None = None
 
     def attach_durable_state(self, database: Database, model_profiles: ModelProfileService) -> None:
         self.database = database
         self.model_profiles = model_profiles
+
+    def configure_quality(self, analyzer: QualityAnalyzer) -> None:
+        self.quality_analyzer = analyzer
+        self.service.configure_quality(analyzer)
 
     def set_exit_callback(self, callback: Callable[[], None]) -> None:
         self._exit_callback = callback
@@ -155,6 +164,8 @@ def create_app(
     queue = SerialGpuQueue(queue_timeout_seconds=settings.queue.queue_timeout_seconds)
     service = SynthesisService(index=index, gsv=gsv, runtime=runtime, audit=audit)
     plane = ControlPlane(settings, index, gsv, runtime, audit, registry, queue, service)
+    if settings.mode in ("fake", "external_test"):
+        plane.configure_quality(DeterministicQualityAnalyzer())
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -178,6 +189,7 @@ def create_app(
         plane.service.configure_cache(
             CacheStore(database, plane.artifact_store), plane.artifact_store
         )
+        plane.service.configure_quality_cache(QualityCacheStore(database))
         plane.segment_store = SegmentStore(database)
         plane.version_store = VersionStore(database)
         plane.dispatcher = DurableJobDispatcher(
@@ -189,6 +201,14 @@ def create_app(
         )
         try:
             await StorageRecovery(database, plane.artifact_store).reconcile()
+            if settings.mode == "real":
+                plane.configure_quality(
+                    FasterWhisperQualityAnalyzer(
+                        model_path=settings.quality.model_path,
+                        model_lock_path=settings.quality.model_lock_path,
+                        policy=settings.quality.policy,
+                    )
+                )
             await runtime.start()
             await queue.start()
             await plane.dispatcher.start()

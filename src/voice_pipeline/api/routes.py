@@ -35,6 +35,14 @@ def build_router(plane: Any) -> APIRouter:
         for engine in ("indextts", "gpt_sovits"):
             worker = getattr(runtime_health.workers, engine)
             workers[engine] = worker.model_dump(mode="json")
+        quality = getattr(plane, "quality_analyzer", None)
+        quality_health = {
+            "mode": plane.settings.quality.mode,
+            "status": "ready" if quality is not None else "unavailable",
+            "policy_fingerprint_sha256": quality.policy_fingerprint
+            if quality is not None
+            else None,
+        }
         return {
             "status": _overall_status(runtime_health, plane.settings.engine_lifecycle, queue_stats),
             "mode": plane.settings.mode,
@@ -46,6 +54,7 @@ def build_router(plane: Any) -> APIRouter:
                 "audit_log": str(plane.audit.log_path),
             },
             "workers": workers,
+            "quality": quality_health,
             "gpu_queue": {
                 "state": queue_stats.state,
                 "poison_reason": queue_stats.poison_reason,

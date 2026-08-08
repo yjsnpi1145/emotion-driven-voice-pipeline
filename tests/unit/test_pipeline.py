@@ -15,6 +15,9 @@ from tests.unit.conftest import (
 )
 from voice_pipeline.core.pipeline import SynthesisService
 from voice_pipeline.models.schemas import ExecutionContext, SegmentSynthesisRequest
+from voice_pipeline.modules.quality.fake import DeterministicQualityAnalyzer
+from voice_pipeline.modules.quality.models import QualityPolicy
+from voice_pipeline.modules.quality.text import evaluate_quality
 
 
 @pytest.mark.asyncio
@@ -102,6 +105,70 @@ async def test_reference_job_only_calls_index(tmp_path) -> None:
     assert [name for name, _ in calls] == ["ensure:indextts", "index"]
     assert result.manifest_path.exists()
     assert result.reference.ref_text_cn == request.ref_text_cn
+
+
+@pytest.mark.asyncio
+async def test_quality_failure_keeps_index_diagnostic_and_never_calls_gsv(tmp_path) -> None:
+    from voice_pipeline.core.errors import ErrorCode, PipelineError
+
+    class RejectingAnalyzer:
+        @property
+        def policy_fingerprint(self) -> str:
+            return QualityPolicy().fingerprint()
+
+        async def analyze_reference(self, *, audio_path: Path, expected_text: str):
+            return evaluate_quality(
+                total_seconds=4.0,
+                speech_seconds=0.0,
+                expected_text=expected_text,
+                transcript="",
+                policy=QualityPolicy(),
+            )
+
+    calls: list[tuple[str, object]] = []
+    request = make_request(tmp_path)
+    write_tone(request.base_voice_path, seconds=5.0)
+    context = make_context(tmp_path, request.request_id)
+    service = SynthesisService(
+        index=RecordingIndexClient(calls, duration_seconds=4.0),
+        gsv=RecordingGsvClient(calls),
+        runtime=RecordingEngineRuntime(calls),
+        audit=RecordingAuditWriter([]),
+    )
+    service.configure_quality(RejectingAnalyzer())
+
+    with pytest.raises(PipelineError) as exc_info:
+        await service.synthesize_segment(context, request)
+
+    assert exc_info.value.code == ErrorCode.QUALITY_VAD_FAILED
+    assert (context.job_dir / "reference.wav").is_file()
+    assert not (context.job_dir / "reference-manifest.json").exists()
+    assert [name for name, _ in calls] == ["ensure:indextts", "index"]
+
+
+@pytest.mark.asyncio
+async def test_reference_manifest_contains_quality_result(tmp_path) -> None:
+    import json
+
+    calls: list[tuple[str, object]] = []
+    request = make_request(tmp_path)
+    write_tone(request.base_voice_path, seconds=5.0)
+    context = make_context(tmp_path, request.request_id)
+    service = SynthesisService(
+        index=RecordingIndexClient(calls, duration_seconds=4.0),
+        gsv=RecordingGsvClient(calls),
+        runtime=RecordingEngineRuntime(calls),
+        audit=RecordingAuditWriter([]),
+    )
+    service.configure_quality(DeterministicQualityAnalyzer())
+
+    result = await service.generate_reference(context, request)
+
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["quality_result"]["passed"] is True
+    assert manifest["quality_result"]["policy_fingerprint"] == (
+        DeterministicQualityAnalyzer().policy_fingerprint
+    )
 
 
 @pytest.mark.asyncio
@@ -245,6 +312,38 @@ async def test_gsv_job_uses_manifest_binding(tmp_path) -> None:
     gsv_call = calls[3][1]
     assert gsv_call.reference.ref_text_cn == ref_result.reference.ref_text_cn
     assert result.reference_content_sha256 == ref_result.reference.audio.content_sha256
+
+
+@pytest.mark.asyncio
+async def test_gsv_quality_enabled_service_rejects_legacy_manifest_without_report(tmp_path) -> None:
+    from voice_pipeline.core.errors import ErrorCode, PipelineError
+
+    calls: list[tuple[str, object]] = []
+    request = make_request(tmp_path)
+    write_tone(request.base_voice_path, seconds=5.0)
+    reference_service = SynthesisService(
+        index=RecordingIndexClient(calls, duration_seconds=4.0),
+        gsv=RecordingGsvClient(calls),
+        runtime=RecordingEngineRuntime(calls),
+        audit=RecordingAuditWriter([]),
+    )
+    ref_result = await reference_service.generate_reference(
+        make_context(tmp_path, request.request_id), request
+    )
+    gsv_service = SynthesisService(
+        index=RecordingIndexClient(calls, duration_seconds=4.0),
+        gsv=RecordingGsvClient(calls),
+        runtime=RecordingEngineRuntime(calls),
+        audit=RecordingAuditWriter([]),
+    )
+    gsv_service.configure_quality(DeterministicQualityAnalyzer())
+    gsv_request = make_gsv_request(ref_result.manifest_path)
+
+    with pytest.raises(PipelineError) as exc_info:
+        await gsv_service.generate_gsv(make_context(tmp_path, gsv_request.request_id), gsv_request)
+
+    assert exc_info.value.code == ErrorCode.QUALITY_TEXT_MISMATCH
+    assert [name for name, _ in calls] == ["ensure:indextts", "index"]
 
 
 def make_gsv_request(manifest_path):

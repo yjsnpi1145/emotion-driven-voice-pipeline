@@ -85,3 +85,17 @@ def build_gsv_cache_key(
             "output_spec": output_spec.model_dump(mode="json"),
         },
     )
+
+
+def build_quality_cache_key(
+    *, audio_sha256: str, expected_text: str, policy_fingerprint: str
+) -> CanonicalCacheKey:
+    expected_text_sha256 = hashlib.sha256(expected_text.encode("utf-8")).hexdigest()
+    return canonical_key(
+        "reference_quality",
+        {
+            "audio_sha256": audio_sha256,
+            "expected_text_sha256": expected_text_sha256,
+            "policy_fingerprint": policy_fingerprint,
+        },
+    )
