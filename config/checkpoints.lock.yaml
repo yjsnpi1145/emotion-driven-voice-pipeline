@@ -82,6 +82,21 @@
       "sha256": "3caa7e27973c6cd2181b5ee817702cf2d52091a4dea8e3c640ae29331411cf2e"
     },
     {
+      "path": "corpora/cmudict.zip",
+      "size": 896069,
+      "sha256": "d07cca47fd72ad32ea9d8ad1219f85301eeaf4568f8b6b73747506a71fb5afd6"
+    },
+    {
+      "path": "corpora/cmudict/README",
+      "size": 3808,
+      "sha256": "b0556be7a2b12bea6a667277b75864f802dd4854480657ce298c62e6897e766b"
+    },
+    {
+      "path": "corpora/cmudict/cmudict",
+      "size": 3820830,
+      "sha256": "cad209c39eb87677d64e93d97f8eed10b7e6f9bdd42de8e7ca8efc8e17d62e8a"
+    },
+    {
       "path": "fast_langdetect/lid.176.bin",
       "size": 131266198,
       "sha256": "7e69ec5451bc261cc7844e49e4792a85d7f09c06789ec800fc4a44aec362764e"
@@ -310,6 +325,31 @@
       "path": "sv/pretrained_eres2netv2w24s4ep4.ckpt",
       "size": 107528697,
       "sha256": "4f5a0bf73c61eb41b174e1bb54e7ee3c83233892be8e0af1f187024e8e581a35"
+    },
+    {
+      "path": "taggers/averaged_perceptron_tagger.zip",
+      "size": 2526731,
+      "sha256": "e1f13cf2532daadfd6f3bc481a49859f0b8ea6432ccdcd83e6a49a5f19008de9"
+    },
+    {
+      "path": "taggers/averaged_perceptron_tagger/averaged_perceptron_tagger.pickle",
+      "size": 6138625,
+      "sha256": "25a5a19c7ced7b2bac3831da5bc0afcc2c34e5dd01cd4f361bb799949a696238"
+    },
+    {
+      "path": "taggers/averaged_perceptron_tagger_eng/averaged_perceptron_tagger_eng.classes.json",
+      "size": 285,
+      "sha256": "fcbd38c0c6ebc5c0653ecda5034911d8a18d184ed9d3c8e74ed4ca09bcf44261"
+    },
+    {
+      "path": "taggers/averaged_perceptron_tagger_eng/averaged_perceptron_tagger_eng.tagdict.json",
+      "size": 25788,
+      "sha256": "e4444a7a5babf1c172843e6e00825655801c98b5627604edabd3ae16bdb2d862"
+    },
+    {
+      "path": "taggers/averaged_perceptron_tagger_eng/averaged_perceptron_tagger_eng.weights.json",
+      "size": 5677744,
+      "sha256": "de262bee2d2751e676742b01004dda694963c1c78bad3983748b18230d04eeeb"
     },
     {
       "path": "v2Pro/s2Dv2Pro.pth",
