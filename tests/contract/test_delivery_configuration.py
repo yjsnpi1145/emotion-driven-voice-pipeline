@@ -56,3 +56,9 @@ def test_gsv_setup_reconciles_existing_conda_env_with_the_cuda_lock() -> None:
     assert "$NeedsPipSync" in script
     assert "'--extra-index-url','https://download.pytorch.org/whl/cu128'" in script
     assert "'--index-strategy','unsafe-best-match'" in script
+
+
+def test_gsv_conda_lock_is_a_valid_explicit_conda_specification() -> None:
+    lock = (ROOT / "config" / "env-locks" / "gsv-conda-explicit.txt").read_text(encoding="utf-8")
+
+    assert "@EXPLICIT" in lock
