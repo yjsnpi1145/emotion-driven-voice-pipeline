@@ -51,6 +51,27 @@ class ModelLibrarySettings(BaseModel):
         return self
 
 
+class StorageSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    database_path: Path = Path("state/pipeline.sqlite3")
+    artifact_root: Path = Path("artifacts")
+    control_lock_path: Path = Path("state/control.lock")
+    busy_timeout_ms: int = Field(default=5000, ge=100, le=60_000)
+    wal_autocheckpoint_pages: int = Field(default=1000, ge=1)
+    history_limit: Literal[5] = 5
+    cache_max_entries_per_kind: int = Field(default=500, ge=10)
+    cache_max_age_days: int = Field(default=90, ge=1)
+
+    def resolve_against_runtime(self, runtime_dir: Path) -> StorageSettings:
+        for field_name in ("database_path", "artifact_root", "control_lock_path"):
+            raw = getattr(self, field_name)
+            resolved = raw.resolve() if raw.is_absolute() else (runtime_dir / raw).resolve()
+            if str(resolved).startswith("\\\\") or not _is_within(resolved, runtime_dir):
+                raise ValueError(f"{field_name} must be a local path within runtime_dir")
+            setattr(self, field_name, resolved)
+        return self
+
+
 class AppSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal[1]
@@ -63,6 +84,7 @@ class AppSettings(BaseModel):
     queue: QueueSettings
     engines: EnginesSettings
     model_library: ModelLibrarySettings = Field(default_factory=ModelLibrarySettings)
+    storage: StorageSettings = Field(default_factory=StorageSettings)
 
 
 def _resolve_path(base: Path, value: Path) -> Path:
@@ -90,6 +112,7 @@ def load_settings(config_path: Path) -> AppSettings:
         _resolve_path(base, root) for root in settings.model_library.allowed_import_roots
     ]
     settings.model_library.validate_against_runtime(settings.runtime_dir)
+    settings.storage.resolve_against_runtime(settings.runtime_dir)
     for engine in (settings.engines.indextts, settings.engines.gpt_sovits):
         engine.python_executable = _resolve_path(base, engine.python_executable)
         engine.repo_dir = _resolve_path(base, engine.repo_dir)
