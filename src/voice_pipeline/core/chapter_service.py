@@ -158,12 +158,16 @@ class ChapterService:
                     segment.segment_id,
                     SegmentReferenceJobRequest(request_id=uuid4(), base_voice_path=base_voice),
                 )
+                await self._chapters.set_segment_job(
+                    run_id, segment.ordinal, "reference", reference.job_id
+                )
                 await self._notify_jobs()
                 await self._await_job(reference.job_id)
                 gsv = await self._segment_jobs.submit_gsv(
                     segment.segment_id,
                     SegmentGsvJobRequest(request_id=uuid4(), model_profile_id=model_profile_id),
                 )
+                await self._chapters.set_segment_job(run_id, segment.ordinal, "gsv", gsv.job_id)
                 await self._notify_jobs()
                 await self._await_job(gsv.job_id)
             await self._compose(run_id)

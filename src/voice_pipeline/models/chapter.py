@@ -8,7 +8,7 @@ from uuid import UUID
 from pydantic import Field
 from pydantic import JsonValue as PydanticJsonValue
 
-from voice_pipeline.models.persistence import OutputAudioSpec
+from voice_pipeline.models.persistence import JobStatus, OutputAudioSpec
 from voice_pipeline.models.schemas import AudioResult, LanguageCode, NonBlankText, StrictModel
 
 ChapterRunStatus = Literal["queued", "running", "succeeded", "failed", "cancelled", "interrupted"]
@@ -56,3 +56,15 @@ class ChapterRunRecord(StrictModel):
     created_at_utc: datetime
     started_at_utc: datetime | None = None
     finished_at_utc: datetime | None = None
+
+
+class ChapterSegmentProgress(StrictModel):
+    """Public, path-free progress details for one chapter segment."""
+
+    ordinal: int = Field(ge=0)
+    segment_id: UUID
+    source_summary: str
+    reference_job_status: JobStatus | None = None
+    gsv_job_status: JobStatus | None = None
+    active_ref_version_id: UUID | None = None
+    active_gsv_version_id: UUID | None = None

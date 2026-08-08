@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import insert, select, update
@@ -10,19 +10,21 @@ from sqlalchemy.engine import CursorResult
 
 from voice_pipeline.models.chapter import (
     ChapterRunRecord,
+    ChapterSegmentProgress,
     ChapterSynthesisRequest,
     ChapterTimeline,
 )
 from voice_pipeline.models.persistence import (
     CreateDubbingTaskRequest,
     CreateSegmentRequest,
+    JobStatus,
     SegmentRecord,
 )
 from voice_pipeline.models.schemas import AudioResult
 from voice_pipeline.modules.llm.director import validate_director_plan
 from voice_pipeline.modules.llm.models import DirectorPlan
 from voice_pipeline.storage.database import Database
-from voice_pipeline.storage.orm import chapter_run_segments, chapter_runs
+from voice_pipeline.storage.orm import chapter_run_segments, chapter_runs, generation_jobs, segments
 from voice_pipeline.storage.segment_store import SegmentStore
 
 
@@ -125,9 +127,90 @@ class ChapterStore:
             raise KeyError(f"unknown chapter run: {run_id}")
         return _record(dict(row))
 
+    async def list_runs(self, *, limit: int = 100) -> list[ChapterRunRecord]:
+        """Return recent chapter runs without exposing their private snapshots."""
+        async with self._database.read_session() as session:
+            rows = (
+                await session.execute(
+                    select(chapter_runs)
+                    .order_by(chapter_runs.c.created_at_utc.desc(), chapter_runs.c.run_id.desc())
+                    .limit(limit)
+                )
+            ).mappings()
+            return [_record(dict(row)) for row in rows]
+
     async def list_segments(self, run_id: UUID) -> list[SegmentRecord]:
         run = await self.get(run_id)
         return await self._segments.list_segments(run.task_id)
+
+    async def set_segment_job(
+        self,
+        run_id: UUID,
+        ordinal: int,
+        kind: Literal["reference", "gsv"],
+        job_id: UUID,
+    ) -> None:
+        """Persist a submitted job before any worker has a chance to complete it."""
+        column = (
+            chapter_run_segments.c.reference_job_id
+            if kind == "reference"
+            else chapter_run_segments.c.gsv_job_id
+        )
+        async with self._database.write_session() as session:
+            result = await session.execute(
+                update(chapter_run_segments)
+                .where(chapter_run_segments.c.run_id == str(run_id))
+                .where(chapter_run_segments.c.ordinal == ordinal)
+                .values({column.key: str(job_id)})
+            )
+            if cast(CursorResult[Any], result).rowcount != 1:
+                raise KeyError(f"unknown chapter segment: {run_id}/{ordinal}")
+
+    async def progress(self, run_id: UUID) -> tuple[ChapterSegmentProgress, ...]:
+        """Return ordered progress using only durable job and segment state."""
+        await self.get(run_id)
+        reference_jobs = generation_jobs.alias("reference_jobs")
+        gsv_jobs = generation_jobs.alias("gsv_jobs")
+        statement = (
+            select(
+                chapter_run_segments.c.ordinal,
+                chapter_run_segments.c.segment_id,
+                segments.c.source_text,
+                segments.c.active_ref_version_id,
+                segments.c.active_gsv_version_id,
+                reference_jobs.c.status.label("reference_job_status"),
+                gsv_jobs.c.status.label("gsv_job_status"),
+            )
+            .join(segments, segments.c.segment_id == chapter_run_segments.c.segment_id)
+            .outerjoin(
+                reference_jobs, reference_jobs.c.job_id == chapter_run_segments.c.reference_job_id
+            )
+            .outerjoin(gsv_jobs, gsv_jobs.c.job_id == chapter_run_segments.c.gsv_job_id)
+            .where(chapter_run_segments.c.run_id == str(run_id))
+            .order_by(chapter_run_segments.c.ordinal)
+        )
+        async with self._database.read_session() as session:
+            rows = (await session.execute(statement)).mappings().all()
+        return tuple(
+            ChapterSegmentProgress(
+                ordinal=int(row["ordinal"]),
+                segment_id=UUID(str(row["segment_id"])),
+                source_summary=_source_summary(str(row["source_text"])),
+                reference_job_status=_job_status(row["reference_job_status"]),
+                gsv_job_status=_job_status(row["gsv_job_status"]),
+                active_ref_version_id=(
+                    UUID(str(row["active_ref_version_id"]))
+                    if row["active_ref_version_id"] is not None
+                    else None
+                ),
+                active_gsv_version_id=(
+                    UUID(str(row["active_gsv_version_id"]))
+                    if row["active_gsv_version_id"] is not None
+                    else None
+                ),
+            )
+            for row in rows
+        )
 
     async def mark_running(self, run_id: UUID) -> ChapterRunRecord:
         return await self._transition(run_id, from_status=("queued",), to_status="running")
@@ -249,6 +332,15 @@ def _record(row: dict[str, Any]) -> ChapterRunRecord:
 
 def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+
+
+def _source_summary(source_text: str) -> str:
+    normalized = " ".join(source_text.split())
+    return normalized if len(normalized) <= 120 else f"{normalized[:117]}..."
+
+
+def _job_status(value: object) -> JobStatus | None:
+    return cast(JobStatus, str(value)) if value is not None else None
 
 
 def _now() -> str:

@@ -8,9 +8,11 @@ import pytest
 
 from voice_pipeline.core.config import StorageSettings
 from voice_pipeline.models.chapter import ChapterSynthesisRequest
+from voice_pipeline.models.persistence import SegmentJobSnapshot
 from voice_pipeline.modules.llm.fake import FakeDirector
 from voice_pipeline.storage.chapter_store import ChapterStore
 from voice_pipeline.storage.database import Database
+from voice_pipeline.storage.job_store import SqliteJobStore
 from voice_pipeline.storage.segment_store import SegmentStore
 
 
@@ -82,5 +84,65 @@ async def test_chapter_store_recovery_marks_running_run_interrupted(tmp_path: Pa
         assert await store.mark_interrupted_running() == (run.run_id,)
         assert (await store.get(run.run_id)).status == "interrupted"
         assert len(await store.list_segments(run.run_id)) == 1
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_chapter_progress_persists_job_ids_and_hides_private_snapshot(tmp_path: Path) -> None:
+    database = await Database.open(_settings(tmp_path), instance_id=uuid4(), migrate=True)
+    try:
+        source = "第一句。"
+        request = ChapterSynthesisRequest(
+            request_id=uuid4(),
+            title="chapter",
+            source_text=source,
+            target_language="en",
+            base_voice_path=tmp_path / "private-voice.wav",
+            model_profile_id=uuid4(),
+        )
+        segment_store = SegmentStore(database)
+        store = ChapterStore(database, segment_store)
+        plan = await FakeDirector().create_plan(source_text=source, target_language="en")
+        run = await store.create_queued(
+            request=request,
+            director_plan=plan,
+            model_profile_snapshot={"profile_id": str(request.model_profile_id)},
+            base_voice_sha256="a" * 64,
+        )
+        segment = (await store.list_segments(run.run_id))[0]
+        jobs = SqliteJobStore(database, jobs_root=tmp_path / "jobs")
+        snapshot = SegmentJobSnapshot(
+            task_id=segment.task_id,
+            segment_id=segment.segment_id,
+            ref_draft_revision=segment.ref_draft_revision,
+            gsv_draft_revision=segment.gsv_draft_revision,
+            selection_revision=segment.selection_revision,
+            activate_on_success=True,
+        )
+        reference = await jobs.create(
+            request_id=uuid4(),
+            kind="reference",
+            request_snapshot={"kind": "reference"},
+            segment_snapshot=snapshot,
+        )
+        gsv = await jobs.create(
+            request_id=uuid4(),
+            kind="gsv",
+            request_snapshot={"kind": "gsv"},
+            segment_snapshot=snapshot,
+        )
+
+        await store.set_segment_job(run.run_id, segment.ordinal, "reference", reference.job_id)
+        await store.set_segment_job(run.run_id, segment.ordinal, "gsv", gsv.job_id)
+
+        progress = await store.progress(run.run_id)
+
+        assert len(progress) == 1
+        assert progress[0].ordinal == 0
+        assert progress[0].segment_id == segment.segment_id
+        assert progress[0].reference_job_status == "queued"
+        assert progress[0].gsv_job_status == "queued"
+        assert "private-voice" not in progress[0].source_summary
     finally:
         await database.close()
