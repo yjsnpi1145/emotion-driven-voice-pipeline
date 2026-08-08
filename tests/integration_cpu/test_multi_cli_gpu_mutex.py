@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import socket
+import sqlite3
 import subprocess
 import time
 from pathlib import Path
@@ -21,7 +23,7 @@ def _interval_overlap(a: tuple[float, float], b: tuple[float, float]) -> bool:
 
 
 @pytest.mark.integration_cpu
-def test_multi_cli_gpu_mutex_with_six_clients(tmp_path: Path) -> None:
+def test_multi_cli_gpu_mutex_with_twelve_clients(tmp_path: Path) -> None:
     control_python = _REPO / ".venv" / "Scripts" / "python.exe"
     if not control_python.is_file():
         pytest.skip("root dev venv not available")
@@ -35,12 +37,16 @@ def test_multi_cli_gpu_mutex_with_six_clients(tmp_path: Path) -> None:
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        control_port = int(probe.getsockname()[1])
     config = build_external_config(
         config_dir=config_dir,
         runtime_dir=tmp_path / "runtime",
         index_server=index_server,
         gsv_server=gsv_server,
-        queue_timeout_seconds=5.0,
+        server_port=control_port,
+        queue_timeout_seconds=30.0,
         request_timeout_seconds=15.0,
     )
 
@@ -60,7 +66,7 @@ def test_multi_cli_gpu_mutex_with_six_clients(tmp_path: Path) -> None:
             shell=False,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        base_url = "http://127.0.0.1:18765"
+        base_url = f"http://127.0.0.1:{control_port}"
         import urllib.request
 
         deadline = time.monotonic() + 60
@@ -84,7 +90,7 @@ def test_multi_cli_gpu_mutex_with_six_clients(tmp_path: Path) -> None:
                 )
             )
 
-        # Build six request files: two reference, two gsv, two segment.
+        # Build the request payloads for reference, GSV and compound segment jobs.
         import uuid
 
         _EMOTION = [0.0, 0.02, 0.28, 0.03, 0.0, 0.27, 0.0, 0.20]
@@ -118,10 +124,10 @@ def test_multi_cli_gpu_mutex_with_six_clients(tmp_path: Path) -> None:
                 "seed": 100 + idx,
             }
 
-        # Pre-create the two reference jobs via CLI; this also writes the
-        # portable reference manifests consumed by the gsv jobs.
+        # Pre-create four reference jobs via CLI; this also writes the
+        # portable reference manifests consumed by the GSV jobs.
         ref_manifest_paths = []
-        for idx in range(2):
+        for idx in range(4):
             payload = _request("reference", idx)
             req_path = tmp_path / f"reference-{idx}.json"
             req_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -149,9 +155,9 @@ def test_multi_cli_gpu_mutex_with_six_clients(tmp_path: Path) -> None:
 
         assert all(Path(p).is_file() for p in ref_manifest_paths)
 
-        # Build the six command specs (2 reference, 2 gsv, 2 segment).
+        # Build twelve command specs (4 reference, 4 GSV, 4 segment).
         commands = []
-        for idx in range(2):
+        for idx in range(4):
             for kind in ("reference", "gsv", "segment"):
                 payload = _request(kind, idx)
                 req_path = tmp_path / f"{kind}-{idx}.json"
@@ -168,7 +174,7 @@ def test_multi_cli_gpu_mutex_with_six_clients(tmp_path: Path) -> None:
                     cmd = ["synthesize-segment", "--output-dir", str(tmp_path / f"out-seg-{idx}")]
                 commands.append((kind, idx, req_path, cmd))
 
-        # Launch all six CLI processes concurrently.
+        # Launch all twelve CLI processes concurrently.
         procs = []
         for _kind, _idx, req_path, cmd in commands:
             argv = (
@@ -207,6 +213,17 @@ def test_multi_cli_gpu_mutex_with_six_clients(tmp_path: Path) -> None:
         assert health["gpu_queue"]["max_active_observed"] == 1
         assert health["gpu_queue"]["active_count"] == 0
         assert health["gpu_queue"]["queued_count"] == 0
+
+        for server in (index_server, gsv_server):
+            with urllib.request.urlopen(f"{server.base_url}/__control/status", timeout=5) as resp:
+                engine_status = json.loads(resp.read().decode("utf-8"))
+            assert engine_status["active_inference"] == 0
+            assert engine_status["max_active_observed"] == 1
+
+        db_path = tmp_path / "runtime" / "state" / "pipeline.sqlite3"
+        with sqlite3.connect(db_path) as connection:
+            assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
+            assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
         # GPU intervals from audit logs must be pairwise non-overlapping.
         intervals = []
