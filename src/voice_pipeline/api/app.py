@@ -23,6 +23,7 @@ from voice_pipeline.core.model_profile_service import ModelProfileService
 from voice_pipeline.core.pipeline import SynthesisService
 from voice_pipeline.runtime.audit import EngineAuditWriter
 from voice_pipeline.storage.artifact_store import ArtifactStore
+from voice_pipeline.storage.cache_store import CacheStore
 from voice_pipeline.storage.database import Database
 from voice_pipeline.storage.job_store import SqliteJobStore
 from voice_pipeline.storage.model_importer import ModelProfileImporter
@@ -174,6 +175,9 @@ def create_app(
         )
         plane.registry = SqliteJobStore(database, jobs_root=runtime_dir / "jobs")
         plane.artifact_store = ArtifactStore(settings.storage.artifact_root)
+        plane.service.configure_cache(
+            CacheStore(database, plane.artifact_store), plane.artifact_store
+        )
         plane.segment_store = SegmentStore(database)
         plane.version_store = VersionStore(database)
         plane.dispatcher = DurableJobDispatcher(

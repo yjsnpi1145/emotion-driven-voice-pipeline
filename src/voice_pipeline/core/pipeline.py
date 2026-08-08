@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import psutil
 
@@ -20,6 +20,7 @@ from voice_pipeline.core.inference_tracker import (
     fake_fingerprint,
 )
 from voice_pipeline.models.model_profiles import ResolvedModelProfile
+from voice_pipeline.models.persistence import OutputAudioSpec
 from voice_pipeline.models.schemas import (
     EngineFingerprint,
     EngineIdentity,
@@ -40,6 +41,9 @@ from voice_pipeline.models.schemas import (
 )
 from voice_pipeline.modules.audio.atomic_output import atomic_write_json
 from voice_pipeline.modules.audio.wav_probe import probe_wav, sha256_file
+from voice_pipeline.modules.cache.keys import build_gsv_cache_key, build_reference_cache_key
+from voice_pipeline.storage.artifact_store import ArtifactStore
+from voice_pipeline.storage.cache_store import CacheStore
 
 
 def _sha256_hex(text: str) -> str:
@@ -214,6 +218,29 @@ class SynthesisService:
             Callable[[UUID | None], Awaitable[ResolvedModelProfile]] | None
         ) = None
         self._require_model_profile = False
+        self._cache: CacheStore | None = None
+        self._artifact_store: ArtifactStore | None = None
+
+    def configure_cache(self, cache: CacheStore, artifact_store: ArtifactStore) -> None:
+        self._cache = cache
+        self._artifact_store = artifact_store
+
+    async def _cache_hit(self, key: Any, destination: Path, *, reference: bool) -> Any | None:
+        if self._cache is None or self._artifact_store is None:
+            return None
+        hit = await self._cache.get_valid(key)
+        if hit is None:
+            return None
+        copied = self._artifact_store.materialize_job_output(hit.blob, destination)
+        return probe_wav(copied.path, require_reference_window=reference)
+
+    async def _cache_put(self, key: Any, audio_path: Path) -> None:
+        if self._cache is None or self._artifact_store is None:
+            return
+        blob = self._artifact_store.publish_blob(
+            self._artifact_store.stage_audio(uuid4(), audio_path)
+        )
+        await self._cache.put(key, blob)
 
     def configure_model_profile_resolver(
         self,
@@ -402,33 +429,47 @@ class SynthesisService:
             seed=request.seed,
             use_random=False,
         )
-        await self._runtime.ensure_engine("indextts")
-        identity = self._runtime.engine_identity("indextts")
-        self._write_audit(
-            job_id=context.job_id,
-            request_id=context.request_id,
-            engine="indextts",
-            event="inference_started",
-            identity=identity,
-            target_text_sha256_or_null=_sha256_hex(request.ref_text_cn),
-            fingerprint=self._index.fingerprint(),
+        reference_key = build_reference_cache_key(
+            index_request,
+            base_voice_sha256=sha256_file(request.base_voice_path),
+            engine_fingerprint=self._index.fingerprint(),
+            output_spec=OutputAudioSpec(sample_rate=22050),
         )
-        reference_audio = await self._invoke_engine(
-            "indextts",
-            lambda: self._index.synthesize(index_request, reference_path),
-            job_id=context.job_id,
+        reference_audio = (
+            await self._cache_hit(reference_key, reference_path, reference=True)
+            if request.seed >= 0
+            else None
         )
-        reference_audio = probe_wav(reference_audio.path, require_reference_window=True)
-        self._write_audit(
-            job_id=context.job_id,
-            request_id=context.request_id,
-            engine="indextts",
-            event="inference_completed",
-            identity=identity,
-            target_text_sha256_or_null=_sha256_hex(request.ref_text_cn),
-            reference_sha256_or_null=reference_audio.content_sha256,
-            fingerprint=self._index.fingerprint(),
-        )
+        if reference_audio is None:
+            await self._runtime.ensure_engine("indextts")
+            identity = self._runtime.engine_identity("indextts")
+            self._write_audit(
+                job_id=context.job_id,
+                request_id=context.request_id,
+                engine="indextts",
+                event="inference_started",
+                identity=identity,
+                target_text_sha256_or_null=_sha256_hex(request.ref_text_cn),
+                fingerprint=self._index.fingerprint(),
+            )
+            reference_audio = await self._invoke_engine(
+                "indextts",
+                lambda: self._index.synthesize(index_request, reference_path),
+                job_id=context.job_id,
+            )
+            reference_audio = probe_wav(reference_audio.path, require_reference_window=True)
+            self._write_audit(
+                job_id=context.job_id,
+                request_id=context.request_id,
+                engine="indextts",
+                event="inference_completed",
+                identity=identity,
+                target_text_sha256_or_null=_sha256_hex(request.ref_text_cn),
+                reference_sha256_or_null=reference_audio.content_sha256,
+                fingerprint=self._index.fingerprint(),
+            )
+            if request.seed >= 0:
+                await self._cache_put(reference_key, reference_audio.path)
         binding = ReferenceBinding(
             audio=reference_audio,
             ref_text_cn=request.ref_text_cn,
@@ -559,33 +600,47 @@ class SynthesisService:
             seed=request.seed,
             use_random=False,
         )
-        await self._runtime.ensure_engine("indextts")
-        identity = self._runtime.engine_identity("indextts")
-        self._write_audit(
-            job_id=context.job_id,
-            request_id=context.request_id,
-            engine="indextts",
-            event="inference_started",
-            identity=identity,
-            target_text_sha256_or_null=_sha256_hex(request.ref_text_cn),
-            fingerprint=self._index.fingerprint(),
+        reference_key = build_reference_cache_key(
+            index_request,
+            base_voice_sha256=sha256_file(request.base_voice_path),
+            engine_fingerprint=self._index.fingerprint(),
+            output_spec=OutputAudioSpec(sample_rate=22050),
         )
-        reference_audio = await self._invoke_engine(
-            "indextts",
-            lambda: self._index.synthesize(index_request, reference_path),
-            job_id=context.job_id,
+        reference_audio = (
+            await self._cache_hit(reference_key, reference_path, reference=True)
+            if request.seed >= 0
+            else None
         )
-        reference_audio = probe_wav(reference_audio.path, require_reference_window=True)
-        self._write_audit(
-            job_id=context.job_id,
-            request_id=context.request_id,
-            engine="indextts",
-            event="inference_completed",
-            identity=identity,
-            target_text_sha256_or_null=_sha256_hex(request.ref_text_cn),
-            reference_sha256_or_null=reference_audio.content_sha256,
-            fingerprint=self._index.fingerprint(),
-        )
+        if reference_audio is None:
+            await self._runtime.ensure_engine("indextts")
+            identity = self._runtime.engine_identity("indextts")
+            self._write_audit(
+                job_id=context.job_id,
+                request_id=context.request_id,
+                engine="indextts",
+                event="inference_started",
+                identity=identity,
+                target_text_sha256_or_null=_sha256_hex(request.ref_text_cn),
+                fingerprint=self._index.fingerprint(),
+            )
+            reference_audio = await self._invoke_engine(
+                "indextts",
+                lambda: self._index.synthesize(index_request, reference_path),
+                job_id=context.job_id,
+            )
+            reference_audio = probe_wav(reference_audio.path, require_reference_window=True)
+            self._write_audit(
+                job_id=context.job_id,
+                request_id=context.request_id,
+                engine="indextts",
+                event="inference_completed",
+                identity=identity,
+                target_text_sha256_or_null=_sha256_hex(request.ref_text_cn),
+                reference_sha256_or_null=reference_audio.content_sha256,
+                fingerprint=self._index.fingerprint(),
+            )
+            if request.seed >= 0:
+                await self._cache_put(reference_key, reference_audio.path)
         binding = ReferenceBinding(
             audio=reference_audio,
             ref_text_cn=request.ref_text_cn,
@@ -608,35 +663,48 @@ class SynthesisService:
             seed=request.seed,
             model_profile_id=request.model_profile_id,
         )
-        await self._runtime.ensure_engine("gpt_sovits")
-        model_profile = await self._resolve_model_profile(request.model_profile_id)
-        gsv_identity = self._runtime.engine_identity("gpt_sovits")
-        self._write_audit(
-            job_id=context.job_id,
-            request_id=context.request_id,
-            engine="gpt_sovits",
-            event="inference_started",
-            identity=gsv_identity,
-            target_text_sha256_or_null=_sha256_hex(request.target_text),
-            reference_sha256_or_null=binding.audio.content_sha256,
-            fingerprint=self._gsv.fingerprint(),
+        gsv_key = build_gsv_cache_key(
+            gsv_request,
+            engine_fingerprint=self._gsv.fingerprint(),
+            output_spec=OutputAudioSpec(sample_rate=32000),
         )
-        target_audio = await self._invoke_engine(
-            "gpt_sovits",
-            lambda: self._load_and_synthesize_gsv(model_profile, gsv_request, target_path),
-            job_id=context.job_id,
+        target_audio = (
+            await self._cache_hit(gsv_key, target_path, reference=False)
+            if request.seed >= 0
+            else None
         )
-        target_audio = probe_wav(target_audio.path, require_reference_window=False)
-        self._write_audit(
-            job_id=context.job_id,
-            request_id=context.request_id,
-            engine="gpt_sovits",
-            event="inference_completed",
-            identity=gsv_identity,
-            target_text_sha256_or_null=_sha256_hex(request.target_text),
-            reference_sha256_or_null=binding.audio.content_sha256,
-            fingerprint=self._gsv.fingerprint(),
-        )
+        if target_audio is None:
+            await self._runtime.ensure_engine("gpt_sovits")
+            model_profile = await self._resolve_model_profile(request.model_profile_id)
+            gsv_identity = self._runtime.engine_identity("gpt_sovits")
+            self._write_audit(
+                job_id=context.job_id,
+                request_id=context.request_id,
+                engine="gpt_sovits",
+                event="inference_started",
+                identity=gsv_identity,
+                target_text_sha256_or_null=_sha256_hex(request.target_text),
+                reference_sha256_or_null=binding.audio.content_sha256,
+                fingerprint=self._gsv.fingerprint(),
+            )
+            target_audio = await self._invoke_engine(
+                "gpt_sovits",
+                lambda: self._load_and_synthesize_gsv(model_profile, gsv_request, target_path),
+                job_id=context.job_id,
+            )
+            target_audio = probe_wav(target_audio.path, require_reference_window=False)
+            self._write_audit(
+                job_id=context.job_id,
+                request_id=context.request_id,
+                engine="gpt_sovits",
+                event="inference_completed",
+                identity=gsv_identity,
+                target_text_sha256_or_null=_sha256_hex(request.target_text),
+                reference_sha256_or_null=binding.audio.content_sha256,
+                fingerprint=self._gsv.fingerprint(),
+            )
+            if request.seed >= 0:
+                await self._cache_put(gsv_key, target_audio.path)
         result = SegmentSynthesisResult(
             job_id=context.job_id,
             request_id=context.request_id,

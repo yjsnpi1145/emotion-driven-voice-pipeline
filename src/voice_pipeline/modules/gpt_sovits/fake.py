@@ -31,6 +31,7 @@ class FakeGptSoVitsClient:
         self._delay_seconds = delay_seconds
         self._failure = failure
         self.loaded_profiles: list[ResolvedModelProfile] = []
+        self.calls = 0
 
     def fingerprint(self) -> EngineFingerprint:
         return fake_fingerprint("gpt_sovits")
@@ -39,6 +40,7 @@ class FakeGptSoVitsClient:
         self.loaded_profiles.append(profile)
 
     async def synthesize(self, request: GsvSynthesisRequest, output_path: Path) -> AudioResult:
+        self.calls += 1
         if self._failure is not None:
             raise self._failure
         if self._delay_seconds > 0:
