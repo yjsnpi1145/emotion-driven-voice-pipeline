@@ -1,5 +1,5 @@
 const state = {
-  chapters: [], run: null, progress: null, segments: [], selected: null, history: null, events: null,
+  chapters: [], profiles: [], run: null, progress: null, segments: [], selected: null, history: null, events: null,
 };
 const $ = (selector) => document.querySelector(selector);
 const vectorNames = ["愉悦", "愤怒", "悲伤", "恐惧", "厌恶", "忧郁", "惊讶", "平静"];
@@ -22,14 +22,61 @@ function setStatus(text, error = false) {
 }
 
 async function loadProfiles() {
-  const profiles = await request("/api/v1/model-profiles");
+  state.profiles = await request("/api/v1/model-profiles");
   const select = $("#model-profile");
-  select.replaceChildren(...profiles.filter((item) => item.status === "active").map((item) => {
+  const readyProfiles = state.profiles.filter((item) => item.status === "ready");
+  select.replaceChildren(...readyProfiles.map((item) => {
     const option = document.createElement("option");
     option.value = item.profile_id;
-    option.textContent = item.display_name;
+    option.textContent = item.active ? `${item.display_name}（当前）` : item.display_name;
+    option.selected = item.active;
     return option;
   }));
+  renderProfiles();
+}
+
+function renderProfiles() {
+  const list = $("#model-profile-list");
+  list.replaceChildren(...state.profiles.map((profile) => {
+    const card = document.createElement("article");
+    const title = document.createElement("strong");
+    title.textContent = `${profile.display_name}${profile.active ? "（当前）" : ""}`;
+    const detail = document.createElement("span");
+    detail.className = "status";
+    detail.textContent = `${profile.status}${profile.declared_family ? ` · ${profile.declared_family}` : ""}`;
+    card.append(title, detail);
+    if (profile.status === "ready" && !profile.active) {
+      const activate = document.createElement("button");
+      activate.type = "button";
+      activate.textContent = "设为当前模型";
+      activate.onclick = () => activateProfile(profile.profile_id);
+      card.append(activate);
+    }
+    return card;
+  }));
+}
+
+async function importModelProfile(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const body = Object.fromEntries(form);
+  if (!body.declared_family) delete body.declared_family;
+  try {
+    const profile = await request("/api/v1/model-profiles/import", {
+      method: "POST", body: JSON.stringify(body),
+    });
+    event.currentTarget.reset();
+    await loadProfiles();
+    setStatus(`模型档案“${profile.display_name}”已导入；请显式设为当前模型`);
+  } catch (error) { setStatus(String(error), true); }
+}
+
+async function activateProfile(profileId) {
+  try {
+    await request(`/api/v1/model-profiles/${profileId}/activate`, { method: "POST", body: "{}" });
+    await loadProfiles();
+    setStatus("当前 GPT-SoVITS 模型已切换；已入队任务不受影响");
+  } catch (error) { setStatus(String(error), true); }
 }
 
 async function loadChapters() {
@@ -254,5 +301,6 @@ $("#chapter-form").onsubmit = async (event) => {
   } catch (error) { setStatus(String(error), true); }
 };
 $("#compose-chapter").onclick = composeChapter;
+$("#model-profile-form").onsubmit = importModelProfile;
 $("#segment-search").oninput = renderRows;
 Promise.all([loadProfiles(), loadChapters()]).catch((error) => setStatus(String(error), true));

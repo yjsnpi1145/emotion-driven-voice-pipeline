@@ -14,6 +14,17 @@
     </header>
     <main class="workbench">
       <section class="chapter-panel" aria-label="章节任务">
+        <section class="model-panel" aria-label="GPT-SoVITS 模型档案">
+          <h2>GPT-SoVITS 模型</h2>
+          <form id="model-profile-form">
+            <label>档案名称 <input name="display_name" required /></label>
+            <label>GPT 权重（.ckpt） <input name="gpt_source_path" required /></label>
+            <label>SoVITS 权重（.pth） <input name="sovits_source_path" required /></label>
+            <label>模型家族（可选） <input name="declared_family" /></label>
+            <button type="submit">导入本地模型库</button>
+          </form>
+          <div id="model-profile-list" aria-live="polite"></div>
+        </section>
         <form id="chapter-form">
           <label>标题 <input name="title" required value="新章节" /></label>
           <label>原文 <textarea name="source_text" required rows="5"></textarea></label>

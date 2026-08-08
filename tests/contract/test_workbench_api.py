@@ -24,6 +24,8 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'id="segment-list"' in page.text
     assert 'id="segment-editor"' in page.text
     assert 'id="chapter-form"' in page.text
+    assert 'id="model-profile-form"' in page.text
+    assert 'id="model-profile-list"' in page.text
     assert script.status_code == 200
     assert "/api/v1/chapters" in script.text
     assert "/progress" in script.text
@@ -33,6 +35,9 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "/regenerate-both" in script.text
     assert "/history" in script.text
     assert "/compose" in script.text
+    assert "/api/v1/model-profiles/import" in script.text
+    assert "/model-profiles/${profileId}/activate" in script.text
+    assert 'item.status === "ready"' in script.text
     assert (
         'const vectorNames = ["愉悦", "愤怒", "悲伤", "恐惧", "厌恶", "忧郁", "惊讶", "平静"]'
         in script.text
