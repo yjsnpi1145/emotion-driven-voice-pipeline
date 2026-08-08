@@ -44,6 +44,7 @@ def build_router(plane: Any) -> APIRouter:
             else None,
         }
         storage_health = await _storage_health(plane)
+        job_counts = await _job_counts(plane)
         dispatcher = getattr(plane, "dispatcher", None)
         dispatcher_stats = dispatcher.stats() if dispatcher is not None else None
         return {
@@ -75,6 +76,7 @@ def build_router(plane: Any) -> APIRouter:
                     else 0
                 ),
             },
+            "job_counts": job_counts,
             "gpu_queue": {
                 "state": queue_stats.state,
                 "poison_reason": queue_stats.poison_reason,
@@ -251,6 +253,20 @@ async def _storage_health(plane: Any) -> dict[str, Any]:
         "missing_ready_versions": len(recovery.missing_versions),
         "corrupt_ready_versions": len(recovery.corrupt_versions),
         "last_recovery_run_id": str(recovery.recovery_run_id),
+    }
+
+
+async def _job_counts(plane: Any) -> dict[str, int]:
+    registry = getattr(plane, "registry", None)
+    counts_method = getattr(registry, "status_counts", None)
+    if counts_method is None:
+        return {"queued": 0, "running": 0, "interrupted": 0}
+    raw: object = await counts_method()
+    if not isinstance(raw, dict):  # pragma: no cover - durable store invariant
+        return {"queued": 0, "running": 0, "interrupted": 0}
+    return {
+        name: int(raw.get(name, 0))
+        for name in ("queued", "running", "interrupted")
     }
 
 

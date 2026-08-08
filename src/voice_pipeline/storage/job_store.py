@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.engine import CursorResult
 
 from voice_pipeline.core.errors import ErrorCode, PipelineError
@@ -133,6 +133,21 @@ class SqliteJobStore:
                 )
             ).mappings()
             return [_record(dict(row)) for row in rows]
+
+    async def status_counts(self) -> dict[str, int]:
+        """Return stable counts for lifecycle receipts without exposing the DB."""
+        counts = {"queued": 0, "running": 0, "interrupted": 0}
+        async with self._database.read_session() as session:
+            rows = (
+                await session.execute(
+                    select(generation_jobs.c.status, func.count())
+                    .where(generation_jobs.c.status.in_(tuple(counts)))
+                    .group_by(generation_jobs.c.status)
+                )
+            ).all()
+        for status, count in rows:
+            counts[str(status)] = int(count)
+        return counts
 
     async def mark_running(self, job_id: UUID) -> bool:
         return await self._transition_running(job_id, instance_id=None)

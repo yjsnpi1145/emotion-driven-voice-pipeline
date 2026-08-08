@@ -25,6 +25,7 @@ $ShutdownHttp = [ordered]@{
 $ObservedProcesses = @()
 $RunFileDeleted = $false
 $Status = 'stopped'
+$JobCounts = [ordered]@{ queued = 0; running = 0; interrupted = 0 }
 
 function Add-ObservedProcess {
   param([string]$Role, [int]$ProcessId, [double]$CreateTime, [int]$ParentPid, [string]$StopMethod, [bool]$VerifiedExited)
@@ -71,6 +72,7 @@ if (-not (Test-Path -LiteralPath $RunFile -PathType Leaf)) {
     elapsed_seconds = 0
     shutdown_http = $ShutdownHttp
     observed_processes = $ObservedProcesses
+    job_counts = $JobCounts
     run_file_deleted = $false
     status = 'stopped'
   }
@@ -84,6 +86,15 @@ $InstanceId = $Run.instance_id
 $ControlPid = [int]$Run.control.pid
 $ControlCreateTime = [double]$Run.control.create_time
 $BaseUrl = 'http://127.0.0.1:8765'
+
+try {
+  $HealthBeforeStop = Invoke-RestMethod -Uri "$BaseUrl/api/v1/health" -TimeoutSec 2
+  if ($HealthBeforeStop.job_counts) {
+    foreach ($Name in @('queued', 'running', 'interrupted')) {
+      $JobCounts[$Name] = [int]$HealthBeforeStop.job_counts.$Name
+    }
+  }
+} catch {}
 
 # 1. Graceful shutdown request (6s client timeout).
 if ($ControlPid -gt 0 -and (Test-PidAliveWithCreateTime $ControlPid $ControlCreateTime)) {
@@ -185,6 +196,7 @@ $Receipt = [ordered]@{
   elapsed_seconds = [math]::Round($Elapsed, 3)
   shutdown_http = $ShutdownHttp
   observed_processes = $ObservedProcesses
+  job_counts = $JobCounts
   run_file_deleted = $RunFileDeleted
   status = $Status
 }

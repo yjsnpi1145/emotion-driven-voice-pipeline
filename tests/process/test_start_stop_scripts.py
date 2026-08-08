@@ -21,6 +21,7 @@ _REQUIRED_RECEIPT_FIELDS = [
     "elapsed_seconds",
     "shutdown_http",
     "observed_processes",
+    "job_counts",
     "run_file_deleted",
     "status",
 ]
@@ -46,6 +47,9 @@ def validate_receipt(receipt: dict[str, Any]) -> list[str]:
         errors.append("elapsed_seconds out of 0..10")
     if not isinstance(receipt["observed_processes"], list):
         errors.append("observed_processes not a list")
+    expected_counts = {"queued", "running", "interrupted"}
+    if set((receipt.get("job_counts") or {}).keys()) != expected_counts:
+        errors.append("job_counts schema invalid")
     if receipt["status"] != "stopped":
         errors.append("status != stopped")
     if receipt["run_file_deleted"] is not True:
@@ -258,6 +262,7 @@ def test_receipt_validation_rejects_bad_samples(tmp_path: Path) -> None:
                 "verified_at_utc": "2026-08-07T00:00:01Z",
             }
         ],
+        "job_counts": {"queued": 0, "running": 0, "interrupted": 0},
         "run_file_deleted": True,
         "status": "stopped",
     }
