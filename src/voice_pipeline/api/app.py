@@ -21,10 +21,12 @@ from voice_pipeline.core.jobs import InMemoryJobRegistry
 from voice_pipeline.core.model_profile_service import ModelProfileService
 from voice_pipeline.core.pipeline import SynthesisService
 from voice_pipeline.runtime.audit import EngineAuditWriter
+from voice_pipeline.storage.artifact_store import ArtifactStore
 from voice_pipeline.storage.database import Database
 from voice_pipeline.storage.job_store import SqliteJobStore
 from voice_pipeline.storage.model_importer import ModelProfileImporter
 from voice_pipeline.storage.model_profile_store import SqliteModelProfileStore
+from voice_pipeline.storage.recovery import StorageRecovery
 
 
 class ControlPlane:
@@ -55,6 +57,7 @@ class ControlPlane:
         self.database: Database | None = None
         self.model_profiles: ModelProfileService | None = None
         self.dispatcher: DurableJobDispatcher | None = None
+        self.artifact_store: ArtifactStore | None = None
 
     def attach_durable_state(self, database: Database, model_profiles: ModelProfileService) -> None:
         self.database = database
@@ -165,6 +168,7 @@ def create_app(
             require_model_profile=settings.mode == "real",
         )
         plane.registry = SqliteJobStore(database, jobs_root=runtime_dir / "jobs")
+        plane.artifact_store = ArtifactStore(settings.storage.artifact_root)
         plane.dispatcher = DurableJobDispatcher(
             store=plane.registry,
             queue=queue,
@@ -173,6 +177,7 @@ def create_app(
             queue_timeout_seconds=settings.queue.queue_timeout_seconds,
         )
         try:
+            await StorageRecovery(database, plane.artifact_store).reconcile()
             await runtime.start()
             await queue.start()
             await plane.dispatcher.start()
