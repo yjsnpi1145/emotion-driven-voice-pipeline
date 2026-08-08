@@ -80,6 +80,9 @@ if ($NeedsSync) {
     '--extra-index-url','https://download.pytorch.org/whl/cu128',
     '--index-strategy','unsafe-best-match'
   )
+  Invoke-Checked 'uv' @(
+    'pip', 'install', '--python', $IndexPython, '--no-deps', '--editable', $IndexRepo
+  )
   uv build --wheel --out-dir $BootstrapWheelDir
   if ($LASTEXITCODE -ne 0) { throw 'wheel build failed' }
   $ProjectWheel = (Get-ChildItem (Join-Path $BootstrapWheelDir '*.whl') | Select-Object -First 1).FullName

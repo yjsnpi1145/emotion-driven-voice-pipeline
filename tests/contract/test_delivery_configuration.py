@@ -42,3 +42,9 @@ def test_index_setup_uses_the_lock_compilation_index_strategy() -> None:
     script = (ROOT / "scripts" / "setup-indextts.ps1").read_text(encoding="utf-8")
 
     assert "'--index-strategy','unsafe-best-match'" in script
+
+
+def test_index_setup_installs_the_pinned_upstream_package_into_its_worker_venv() -> None:
+    script = (ROOT / "scripts" / "setup-indextts.ps1").read_text(encoding="utf-8")
+
+    assert "'--no-deps', '--editable', $IndexRepo" in script
