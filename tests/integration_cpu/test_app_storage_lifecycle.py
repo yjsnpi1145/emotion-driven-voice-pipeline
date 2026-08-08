@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from voice_pipeline.api.app import create_app
+from voice_pipeline.storage.database import PACKAGED_HEAD
 
 
 @pytest.mark.asyncio
@@ -24,7 +25,7 @@ async def test_health_exposes_durable_storage_dispatcher_and_quality_state(fake_
     assert storage == {
         "status": "ready",
         "database_path": str(fake_settings.storage.database_path),
-        "alembic_revision": "0001_batch2_foundation",
+        "alembic_revision": PACKAGED_HEAD,
         "journal_mode": "wal",
         "quick_check": "ok",
         "artifact_root": str(fake_settings.storage.artifact_root),

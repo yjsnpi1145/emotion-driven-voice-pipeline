@@ -112,7 +112,7 @@ class ControlPlane:
         async def abort_active(dl: float) -> None:
             await self._abort_all_active(dl)
 
-        chapter_service = self.chapter_service
+        chapter_service = getattr(self, "chapter_service", None)
         if chapter_service is not None:
             await chapter_service.stop(deadline=deadline)
         await self.queue.stop(deadline=deadline, grace_seconds=0.5, abort_active=abort_active)
