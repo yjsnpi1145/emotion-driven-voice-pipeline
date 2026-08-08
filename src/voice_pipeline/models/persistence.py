@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeAlias
 from uuid import UUID
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, model_validator
+from pydantic import JsonValue as PydanticJsonValue
 
 from voice_pipeline.models.model_profiles import ModelProfileSnapshot
 from voice_pipeline.models.schemas import (
@@ -21,6 +22,7 @@ JobStatus = Literal["queued", "running", "succeeded", "failed", "cancelled", "in
 ArtifactType = Literal["reference", "gsv"]
 ArtifactState = Literal["ready", "deleting", "deleted", "missing", "corrupt"]
 ActivationOutcome = Literal["not_applicable", "activated", "history_only", "cancelled"]
+JsonValue: TypeAlias = PydanticJsonValue
 
 
 class OutputAudioSpec(StrictModel):
@@ -67,6 +69,21 @@ class PersistentJobRecord(StrictModel):
     created_at_utc: datetime
     started_at_utc: datetime | None = None
     finished_at_utc: datetime | None = None
+
+    @property
+    def created_at(self) -> datetime:
+        """Batch 1 compatible status field alias."""
+        return self.created_at_utc
+
+    @property
+    def started_at(self) -> datetime | None:
+        """Batch 1 compatible status field alias."""
+        return self.started_at_utc
+
+    @property
+    def finished_at(self) -> datetime | None:
+        """Batch 1 compatible status field alias."""
+        return self.finished_at_utc
 
 
 class JobSuccessCommit(StrictModel):

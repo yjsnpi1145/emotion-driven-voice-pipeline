@@ -20,6 +20,7 @@ from voice_pipeline.core.model_profile_service import ModelProfileService
 from voice_pipeline.core.pipeline import SynthesisService
 from voice_pipeline.runtime.audit import EngineAuditWriter
 from voice_pipeline.storage.database import Database
+from voice_pipeline.storage.job_store import SqliteJobStore
 from voice_pipeline.storage.model_importer import ModelProfileImporter
 from voice_pipeline.storage.model_profile_store import SqliteModelProfileStore
 
@@ -34,7 +35,7 @@ class ControlPlane:
         gsv: Any,
         runtime: Any,
         audit: EngineAuditWriter,
-        registry: InMemoryJobRegistry,
+        registry: Any,
         queue: SerialGpuQueue,
         service: SynthesisService,
     ) -> None:
@@ -75,6 +76,18 @@ class ControlPlane:
             await self._abort_all_active(dl)
 
         await self.queue.stop(deadline=deadline, grace_seconds=0.5, abort_active=abort_active)
+        registry = getattr(self, "registry", None)
+        fail_unfinished = getattr(registry, "fail_unfinished", None)
+        if fail_unfinished is not None:
+            await fail_unfinished(
+                error={
+                    "code": "ENGINE_UNAVAILABLE",
+                    "stage": "shutdown",
+                    "message": "control plane shut down before job completion",
+                    "retryable": False,
+                    "details": {},
+                }
+            )
         remaining = max(0.0, deadline - loop.time())
         try:
             await asyncio.wait_for(self.runtime.stop(deadline=deadline), timeout=remaining)
@@ -143,6 +156,7 @@ def create_app(
             database,
             ModelProfileService(importer=profile_importer, store=profile_store),
         )
+        plane.registry = SqliteJobStore(database, jobs_root=runtime_dir / "jobs")
         try:
             await runtime.start()
             await queue.start()
