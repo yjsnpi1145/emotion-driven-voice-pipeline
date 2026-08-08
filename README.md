@@ -164,3 +164,34 @@ uv run pytest tests/unit tests/contract tests/integration_cpu tests/process -m "
 ## 非目标
 
 批次 1 明确不包含：LLM API、长文本分块/整篇拼接、SQLite/缓存/版本历史、WebUI/SSE/多用户、VAD/ASR/文本对齐、自动改写参考文本、训练模型、修改 GPT-SoVITS 官方 `api_v2.py`。
+
+## 批次 3：整篇自动配音
+
+章节任务通过 OpenAI 兼容的 `/chat/completions` API 完成原文字符区间分块。服务端只接受
+LLM 的区间、情绪与中文参考文本；每段 `source_text`/`synthesis_text` 总是从原文
+`[source_start, source_end)` 切片取得，不会采用 LLM 改写正文。
+
+真实配置增加：
+
+```yaml
+llm:
+  mode: openai
+  base_url: https://api.openai.com/v1
+  model: gpt-4.1-mini
+  api_key_env: OPENAI_API_KEY
+  timeout_seconds: 60
+  max_retries: 2
+  max_reference_corrections: 2
+```
+
+调用前在控制面进程环境中设置变量（示例中没有也不应写入密钥）：
+
+```powershell
+$env:OPENAI_API_KEY = '<your-key>'
+voice-pipeline synthesize-chapter --server http://127.0.0.1:8765 --request chapter.json --output-dir runtime\chapter-out --json
+```
+
+`chapter.json` 至少包含 `request_id`、`title`、`source_text`、`target_language`、绝对
+`base_voice_path` 和已导入的 `model_profile_id`。命令通过 HTTP 等待章节运行，然后原子
+下载 `final.wav` 和 `timeline.json`；同名输出绝不覆盖。章节状态可从
+`GET /api/v1/chapters/{run_id}` 查询，成功后可下载 `/audio` 与 `/timeline`。

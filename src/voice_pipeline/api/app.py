@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from voice_pipeline.api.chapter_routes import build_chapter_router
 from voice_pipeline.api.dependencies import build_dependencies
 from voice_pipeline.api.foundation_routes import build_foundation_router
 from voice_pipeline.api.maintenance_routes import build_maintenance_router
@@ -335,4 +336,5 @@ def create_app(
     app.include_router(build_model_profile_router(plane))
     app.include_router(build_foundation_router(plane))
     app.include_router(build_maintenance_router(plane))
+    app.include_router(build_chapter_router(plane))
     return app

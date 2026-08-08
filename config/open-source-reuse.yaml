@@ -359,3 +359,37 @@ modules:
     lock_reference: null
     rejected_reasons:
       - No existing library supplies the required pair-level publication, SHA snapshot and no-fallback semantics.
+
+  - module_id: openai_compatible_director
+    introduced_in_batch: 3
+    need: OpenAI-compatible chat completions JSON director and bounded reference-text corrections
+    disposition: thin_wrapper
+    candidates:
+      - repository: https://github.com/encode/httpx
+        spdx_license: BSD-3-Clause
+        pin: ">=0.28,<1"
+      - repository: https://github.com/openai/openai-python
+        spdx_license: Apache-2.0
+        pin: ">=1"
+    selected: HTTPX + src/voice_pipeline/modules/llm/client.py
+    decision_reason: HTTPX 已被项目锁定并完整覆盖 /chat/completions、timeout、重试和 OpenAI 兼容 base_url；避免引入第二个 SDK 和凭据配置面。
+    wrapper_boundary: client.py 只做 JSON wire contract、有限重试和无密钥错误映射；director.py 只做项目特有的 source 区间/情绪向量校验。
+    lock_reference: pyproject.toml dependencies + uv.lock
+    rejected_reasons:
+      - openai-python 对本地 OpenAI 兼容服务不提供项目所需的 source-range schema 和凭据不落盘边界。
+
+  - module_id: chapter_audio_composer
+    introduced_in_batch: 3
+    need: 将明确选中的 GSV 版本、段后停顿和时间线拼接为 WAV
+    disposition: thin_wrapper
+    candidates:
+      - repository: https://github.com/bastibe/python-soundfile
+        spdx_license: BSD-3-Clause
+        pin: ">=0.13,<1"
+      - repository: https://github.com/numpy/numpy
+        spdx_license: BSD-3-Clause
+        pin: ">=2.1,<3"
+    selected: SoundFile + NumPy + src/voice_pipeline/modules/audio/composer.py
+    decision_reason: 复用维护活跃的解码、编码和数组运算；项目层仅定义 selected-version、pause 和原子 timeline 语义。
+    wrapper_boundary: composer.py 不实现音频 codec，只组织 ready artifact WAV、声道归一和静音数组后调用依赖库。
+    lock_reference: pyproject.toml dependencies + uv.lock

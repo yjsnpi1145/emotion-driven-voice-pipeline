@@ -12,6 +12,7 @@ import typer
 from pydantic import ValidationError
 
 from voice_pipeline.core.errors import ErrorCode, PipelineError
+from voice_pipeline.models.chapter import ChapterSynthesisRequest
 from voice_pipeline.models.schemas import (
     GsvJobRequest,
     ReferenceJobRequest,
@@ -144,6 +145,25 @@ def _poll_job(client: httpx.Client, job_id: str, timeout_seconds: float) -> dict
                 ErrorCode.QUEUE_TIMEOUT,
                 "cli",
                 "job did not finish within timeout",
+                retryable=True,
+            )
+        time.sleep(_POLL_INTERVAL_SECONDS)
+
+
+def _poll_chapter(client: httpx.Client, run_id: str, timeout_seconds: float) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        response = client.get(f"/api/v1/chapters/{run_id}")
+        if response.status_code != 200:
+            _handle_http_error(response, f"/api/v1/chapters/{run_id}")
+        status = cast("dict[str, Any]", response.json())
+        if status.get("status") in ("succeeded", "failed", "cancelled", "interrupted"):
+            return status
+        if time.monotonic() > deadline:
+            raise PipelineError(
+                ErrorCode.QUEUE_TIMEOUT,
+                "cli",
+                "chapter did not finish within timeout",
                 retryable=True,
             )
         time.sleep(_POLL_INTERVAL_SECONDS)
@@ -549,6 +569,71 @@ def synthesize_segment(
                 _emit_json(
                     {
                         "job_id": job_id,
+                        "request_id": str(req.request_id),
+                        "status": "succeeded",
+                        "output_dir": str(out_dir),
+                    }
+                )
+    except PipelineError as exc:
+        _emit_json({"error": exc.as_dict()})
+        raise typer.Exit(_exit_code_for(exc))
+    except httpx.HTTPError as exc:
+        _fatal(
+            ErrorCode.CONTROL_PLANE_UNAVAILABLE.value,
+            "cli",
+            f"control plane unreachable: {exc}",
+            exit_code=3,
+        )
+
+
+@app.command("synthesize-chapter")
+def synthesize_chapter(
+    server: str = typer.Option(..., "--server"),
+    request: Path = typer.Option(..., "--request"),
+    output_dir: Path = typer.Option(..., "--output-dir"),
+    json_output: bool = typer.Option(False, "--json"),
+    timeout_seconds: float = typer.Option(_DEFAULT_TIMEOUT_SECONDS, "--timeout-seconds"),
+) -> None:
+    req = _load_request(ChapterSynthesisRequest, request)
+    out_dir = output_dir.resolve()
+    try:
+        with _client(server, timeout_seconds) as client:
+            submitted = client.post("/api/v1/chapters", json=req.model_dump(mode="json"))
+            if submitted.status_code != 202:
+                _handle_http_error(submitted, "/api/v1/chapters")
+            run_id = str(submitted.json()["run_id"])
+            status = _poll_chapter(client, run_id, timeout_seconds)
+            if status.get("status") != "succeeded":
+                _fail_from_status(status)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            audio_reservation = reserve_output_path(out_dir / "final.wav")
+            try:
+                timeline_reservation = reserve_output_path(out_dir / "timeline.json")
+            except BaseException:
+                audio_reservation.rollback()
+                raise
+            try:
+                _download_to_reservation(
+                    client,
+                    f"/api/v1/chapters/{run_id}/audio",
+                    audio_reservation,
+                    probe_reference=False,
+                )
+                timeline_response = client.get(f"/api/v1/chapters/{run_id}/timeline")
+                if timeline_response.status_code != 200:
+                    _handle_http_error(timeline_response, f"/api/v1/chapters/{run_id}/timeline")
+                _publish_json(timeline_reservation, timeline_response.json())
+            except BaseException:
+                for reservation in (audio_reservation, timeline_reservation):
+                    try:
+                        reservation.rollback()
+                    except PipelineError:
+                        pass
+                raise
+            if json_output:
+                _emit_json(
+                    {
+                        "run_id": run_id,
                         "request_id": str(req.request_id),
                         "status": "succeeded",
                         "output_dir": str(out_dir),
