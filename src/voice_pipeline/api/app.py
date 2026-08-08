@@ -11,6 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from voice_pipeline.api.dependencies import build_dependencies
+from voice_pipeline.api.foundation_routes import build_foundation_router
 from voice_pipeline.api.model_profile_routes import build_model_profile_router
 from voice_pipeline.api.routes import build_router
 from voice_pipeline.core.config import AppSettings
@@ -27,6 +28,7 @@ from voice_pipeline.storage.job_store import SqliteJobStore
 from voice_pipeline.storage.model_importer import ModelProfileImporter
 from voice_pipeline.storage.model_profile_store import SqliteModelProfileStore
 from voice_pipeline.storage.recovery import StorageRecovery
+from voice_pipeline.storage.segment_store import SegmentStore
 
 
 class ControlPlane:
@@ -58,6 +60,7 @@ class ControlPlane:
         self.model_profiles: ModelProfileService | None = None
         self.dispatcher: DurableJobDispatcher | None = None
         self.artifact_store: ArtifactStore | None = None
+        self.segment_store: SegmentStore | None = None
 
     def attach_durable_state(self, database: Database, model_profiles: ModelProfileService) -> None:
         self.database = database
@@ -169,6 +172,7 @@ def create_app(
         )
         plane.registry = SqliteJobStore(database, jobs_root=runtime_dir / "jobs")
         plane.artifact_store = ArtifactStore(settings.storage.artifact_root)
+        plane.segment_store = SegmentStore(database)
         plane.dispatcher = DurableJobDispatcher(
             store=plane.registry,
             queue=queue,
@@ -228,4 +232,5 @@ def create_app(
     router = build_router(plane)
     app.include_router(router)
     app.include_router(build_model_profile_router(plane))
+    app.include_router(build_foundation_router(plane))
     return app

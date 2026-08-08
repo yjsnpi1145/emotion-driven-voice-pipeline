@@ -195,3 +195,54 @@ class DubbingTaskRecord(StrictModel):
     revision: int = Field(ge=0)
     created_at_utc: datetime
     updated_at_utc: datetime
+
+
+class CreateDubbingTaskRequest(StrictModel):
+    title: NonBlankText
+    source_text: NonBlankText
+    target_language: LanguageCode
+    output_spec: OutputAudioSpec
+
+
+class CreateSegmentRequest(StrictModel):
+    ordinal: int = Field(ge=0)
+    source_start: int = Field(ge=0)
+    source_end: int = Field(gt=0)
+    source_text: NonBlankText
+    synthesis_text: NonBlankText
+    llm_emotion_vector: EmotionVector
+    ref_text_cn: NonBlankText
+    speed_factor: float = Field(ge=0.5, le=2.0)
+    pause_after_ms: int = Field(ge=0, le=30_000)
+    seed: int
+
+    @model_validator(mode="after")
+    def source_range_must_be_forward(self) -> CreateSegmentRequest:
+        if self.source_end <= self.source_start:
+            raise ValueError("source_end must be greater than source_start")
+        return self
+
+
+class SegmentRecord(StrictModel):
+    segment_id: UUID
+    task_id: UUID
+    ordinal: int = Field(ge=0)
+    source_start: int = Field(ge=0)
+    source_end: int = Field(gt=0)
+    source_text: NonBlankText
+    synthesis_text: NonBlankText
+    target_language: LanguageCode
+    llm_emotion_vector: EmotionVector
+    current_emotion_vector: EmotionVector
+    ref_text_cn: NonBlankText
+    speed_factor: float = Field(ge=0.5, le=2.0)
+    pause_after_ms: int = Field(ge=0, le=30_000)
+    seed: int
+    ref_draft_revision: int = Field(ge=0)
+    gsv_draft_revision: int = Field(ge=0)
+    selection_revision: int = Field(ge=0)
+    active_ref_version_id: UUID | None = None
+    active_gsv_version_id: UUID | None = None
+    revision: int = Field(ge=0)
+    created_at_utc: datetime
+    updated_at_utc: datetime
