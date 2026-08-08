@@ -69,3 +69,12 @@ def test_gsv_setup_allows_its_owned_untracked_conda_environment_on_repeat_runs()
 
     assert "$Dirty = git -C $GsvRepo status --porcelain |" in script
     assert "Where-Object" in script
+
+
+def test_checkpoint_lock_script_uses_builtin_json_compatible_yaml_serialization() -> None:
+    script = (ROOT / "scripts" / "lock-engine-assets.ps1").read_text(encoding="utf-8")
+
+    assert "ConvertTo-Yaml" not in script
+    assert "ConvertFrom-Yaml" not in script
+    assert "ConvertTo-Json -Depth" in script
+    assert "ConvertFrom-Json" in script

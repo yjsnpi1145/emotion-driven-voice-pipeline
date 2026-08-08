@@ -71,7 +71,9 @@ if ($WriteInitialLock) {
     Write-Error 'checkpoints.lock.yaml already exists; refusing to overwrite'
     exit 1
   }
-  $Payload | ConvertTo-Yaml | Set-Content -LiteralPath $LockPath -Encoding UTF8
+  # JSON is a YAML 1.2 subset and both cmdlets are built into PowerShell 7;
+  # this keeps the lock script independent of a machine-local YAML module.
+  $Payload | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $LockPath -Encoding UTF8
   Write-Host "wrote $LockPath ($($Assets.Count) assets)"
   exit 0
 }
@@ -81,7 +83,7 @@ if (-not (Test-Path -LiteralPath $LockPath -PathType Leaf)) {
   Write-Error "missing checkpoint lock: $LockPath (run with -WriteInitialLock after assets are present)"
   exit 1
 }
-$Existing = Get-Content -LiteralPath $LockPath -Raw | ConvertFrom-Yaml
+$Existing = Get-Content -LiteralPath $LockPath -Raw | ConvertFrom-Json
 $Failures = @()
 foreach ($asset in $Assets) {
   $Match = $Existing.assets | Where-Object { $_.path -eq $asset.path }
