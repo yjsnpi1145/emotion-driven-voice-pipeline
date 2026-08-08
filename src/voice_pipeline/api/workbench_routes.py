@@ -11,7 +11,10 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 
 from voice_pipeline.api.chapter_routes import _public_run
+from voice_pipeline.core.errors import PipelineError
+from voice_pipeline.core.regeneration_service import SegmentRegenerationService
 from voice_pipeline.models.chapter import ChapterRunRecord, ChapterSegmentProgress
+from voice_pipeline.models.persistence import SegmentGsvJobRequest, SegmentReferenceJobRequest
 from voice_pipeline.storage.chapter_store import ChapterStore
 
 _WEBUI_ROOT = Path(__file__).parents[1] / "webui"
@@ -49,6 +52,24 @@ def build_workbench_router(plane: Any) -> APIRouter:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    @router.post("/api/v1/segments/{segment_id}/regenerate-reference", status_code=202)
+    async def regenerate_reference(
+        segment_id: UUID, request: SegmentReferenceJobRequest
+    ) -> dict[str, str]:
+        try:
+            context = await _regeneration(plane).submit_reference(segment_id, request)
+        except (KeyError, PipelineError) as exc:
+            raise _regeneration_error(exc) from exc
+        return _submitted(context)
+
+    @router.post("/api/v1/segments/{segment_id}/regenerate-gsv", status_code=202)
+    async def regenerate_gsv(segment_id: UUID, request: SegmentGsvJobRequest) -> dict[str, str]:
+        try:
+            context = await _regeneration(plane).submit_gsv(segment_id, request)
+        except (KeyError, PipelineError) as exc:
+            raise _regeneration_error(exc) from exc
+        return _submitted(context)
+
     return router
 
 
@@ -57,6 +78,13 @@ def _chapters(plane: Any) -> ChapterStore:
     if store is None:
         raise HTTPException(status_code=503, detail="chapter store is not ready")
     return cast(ChapterStore, store)
+
+
+def _regeneration(plane: Any) -> SegmentRegenerationService:
+    service = getattr(plane, "regeneration", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="regeneration service is not ready")
+    return cast(SegmentRegenerationService, service)
 
 
 async def _run(plane: Any, run_id: UUID) -> ChapterRunRecord:
@@ -99,6 +127,21 @@ async def _event_stream(plane: Any, run_id: UUID) -> AsyncIterator[str]:
 def _sse(event: str, payload: dict[str, Any]) -> str:
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return f"event: {event}\ndata: {data}\n\n"
+
+
+def _submitted(context: Any) -> dict[str, str]:
+    return {
+        "job_id": str(context.job_id),
+        "request_id": str(context.request_id),
+        "status": "queued",
+        "status_url": f"/api/v1/jobs/{context.job_id}",
+    }
+
+
+def _regeneration_error(exc: KeyError | PipelineError) -> HTTPException:
+    if isinstance(exc, KeyError):
+        return HTTPException(status_code=404, detail="segment not found")
+    return HTTPException(status_code=422, detail={"error": exc.as_dict()})
 
 
 def progress_rows(payload: dict[str, Any]) -> tuple[ChapterSegmentProgress, ...]:

@@ -25,6 +25,7 @@ from voice_pipeline.core.job_executor import JobExecutor
 from voice_pipeline.core.jobs import InMemoryJobRegistry
 from voice_pipeline.core.model_profile_service import ModelProfileService
 from voice_pipeline.core.pipeline import SynthesisService
+from voice_pipeline.core.regeneration_service import SegmentRegenerationService
 from voice_pipeline.core.segment_job_service import SegmentJobService
 from voice_pipeline.modules.llm.client import OpenAiDirectorClient
 from voice_pipeline.modules.llm.fake import FakeDirector
@@ -86,6 +87,7 @@ class ControlPlane:
         self.chapter_store: ChapterStore | None = None
         self.chapter_service: ChapterService | None = None
         self.llm_client: Any | None = None
+        self.regeneration: SegmentRegenerationService | None = None
 
     def attach_durable_state(self, database: Database, model_profiles: ModelProfileService) -> None:
         self.database = database
@@ -116,6 +118,9 @@ class ControlPlane:
         chapter_service = getattr(self, "chapter_service", None)
         if chapter_service is not None:
             await chapter_service.stop(deadline=deadline)
+        regeneration = getattr(self, "regeneration", None)
+        if regeneration is not None:
+            await regeneration.stop(deadline=deadline)
         await self.queue.stop(deadline=deadline, grace_seconds=0.5, abort_active=abort_active)
         registry = getattr(self, "registry", None)
         fail_unfinished = getattr(registry, "fail_unfinished", None)
@@ -268,6 +273,13 @@ def create_app(
             ),
             instance_id=audit.instance_id,
             queue_timeout_seconds=settings.queue.queue_timeout_seconds,
+        )
+        plane.regeneration = SegmentRegenerationService(
+            jobs=plane.registry,
+            segments=plane.segment_store,
+            versions=plane.version_store,
+            segment_jobs=plane.segment_jobs,
+            notify_jobs=lambda: _notify_dispatcher(plane),
         )
         try:
             plane.last_recovery_report = await StorageRecovery(
