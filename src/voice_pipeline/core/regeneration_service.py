@@ -53,12 +53,13 @@ class SegmentRegenerationService:
         self,
         segment_id: UUID,
         *,
+        request_id: UUID,
         base_voice_path: Path,
         model_profile_id: UUID | None,
     ) -> ExecutionContext:
         reference = await self.submit_reference(
             segment_id,
-            SegmentReferenceJobRequest(request_id=uuid4(), base_voice_path=base_voice_path),
+            SegmentReferenceJobRequest(request_id=request_id, base_voice_path=base_voice_path),
         )
         task = asyncio.create_task(
             self._finish_both(segment_id, reference.job_id, model_profile_id),

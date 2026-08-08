@@ -139,6 +139,12 @@ class SegmentGsvJobRequest(StrictModel):
     model_profile_id: UUID | None = None
 
 
+class SegmentBothRegenerationRequest(StrictModel):
+    request_id: UUID
+    base_voice_path: Path
+    model_profile_id: UUID | None = None
+
+
 class ActivateVersionRequest(StrictModel):
     expected_selection_revision: int = Field(ge=0)
 

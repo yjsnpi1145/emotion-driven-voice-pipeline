@@ -14,7 +14,11 @@ from voice_pipeline.api.chapter_routes import _public_run
 from voice_pipeline.core.errors import PipelineError
 from voice_pipeline.core.regeneration_service import SegmentRegenerationService
 from voice_pipeline.models.chapter import ChapterRunRecord, ChapterSegmentProgress
-from voice_pipeline.models.persistence import SegmentGsvJobRequest, SegmentReferenceJobRequest
+from voice_pipeline.models.persistence import (
+    SegmentBothRegenerationRequest,
+    SegmentGsvJobRequest,
+    SegmentReferenceJobRequest,
+)
 from voice_pipeline.storage.chapter_store import ChapterStore
 
 _WEBUI_ROOT = Path(__file__).parents[1] / "webui"
@@ -66,6 +70,21 @@ def build_workbench_router(plane: Any) -> APIRouter:
     async def regenerate_gsv(segment_id: UUID, request: SegmentGsvJobRequest) -> dict[str, str]:
         try:
             context = await _regeneration(plane).submit_gsv(segment_id, request)
+        except (KeyError, PipelineError) as exc:
+            raise _regeneration_error(exc) from exc
+        return _submitted(context)
+
+    @router.post("/api/v1/segments/{segment_id}/regenerate-both", status_code=202)
+    async def regenerate_both(
+        segment_id: UUID, request: SegmentBothRegenerationRequest
+    ) -> dict[str, str]:
+        try:
+            context = await _regeneration(plane).submit_both(
+                segment_id,
+                request_id=request.request_id,
+                base_voice_path=request.base_voice_path,
+                model_profile_id=request.model_profile_id,
+            )
         except (KeyError, PipelineError) as exc:
             raise _regeneration_error(exc) from exc
         return _submitted(context)

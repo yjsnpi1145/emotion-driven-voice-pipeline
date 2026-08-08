@@ -106,3 +106,25 @@ async def test_explicit_regeneration_keeps_or_replaces_only_the_selected_artifac
                 )
                 == jobs_before_reference
             )
+
+            both = await client.post(
+                f"/api/v1/segments/{segment_id}/regenerate-both",
+                json={
+                    "request_id": str(uuid4()),
+                    "base_voice_path": str(base_voice.resolve()),
+                    "model_profile_id": profile_id,
+                },
+            )
+            assert both.status_code == 202
+            assert (await _wait(client, both.json()["status_url"]))["status"] == "succeeded"
+            for _ in range(400):
+                current = await client.get(f"/api/v1/segments/{segment_id}")
+                assert current.status_code == 200
+                if (
+                    current.json()["active_gsv_version_id"]
+                    != after_reference["active_gsv_version_id"]
+                ):
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                raise AssertionError("both regeneration did not activate a new GSV version")
