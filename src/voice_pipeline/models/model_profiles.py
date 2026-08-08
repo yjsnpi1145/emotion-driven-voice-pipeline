@@ -66,6 +66,20 @@ class ModelProfileSnapshot(StrictModel):
     sovits_sha256: Sha256
 
 
+class ResolvedModelProfile(ModelProfileSnapshot):
+    """Internal profile carrying library-resolved paths for one worker invocation."""
+
+    gpt_path: Path
+    sovits_path: Path
+
+    @field_validator("gpt_path", "sovits_path")
+    @classmethod
+    def resolved_weight_paths_must_be_absolute(cls, value: Path) -> Path:
+        if not value.is_absolute():
+            raise ValueError("resolved model weight paths must be absolute")
+        return value
+
+
 class ModelProfileView(ModelProfileSnapshot):
     status: ModelProfileStatus
     created_at_utc: datetime

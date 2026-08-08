@@ -9,6 +9,7 @@ import soundfile as sf
 
 from voice_pipeline.core.errors import PipelineError
 from voice_pipeline.core.inference_tracker import fake_fingerprint
+from voice_pipeline.models.model_profiles import ResolvedModelProfile
 from voice_pipeline.models.schemas import (
     AudioResult,
     EngineFingerprint,
@@ -29,9 +30,13 @@ class FakeGptSoVitsClient:
     ) -> None:
         self._delay_seconds = delay_seconds
         self._failure = failure
+        self.loaded_profiles: list[ResolvedModelProfile] = []
 
     def fingerprint(self) -> EngineFingerprint:
         return fake_fingerprint("gpt_sovits")
+
+    async def load_profile(self, profile: ResolvedModelProfile) -> None:
+        self.loaded_profiles.append(profile)
 
     async def synthesize(self, request: GsvSynthesisRequest, output_path: Path) -> AudioResult:
         if self._failure is not None:

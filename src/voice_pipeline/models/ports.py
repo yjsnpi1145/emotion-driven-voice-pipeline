@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
+from voice_pipeline.models.model_profiles import ResolvedModelProfile
 from voice_pipeline.models.schemas import (
     AudioResult,
     EngineFingerprint,
@@ -24,6 +25,8 @@ class IndexTTSClient(Protocol):
 
 
 class GptSoVitsClient(Protocol):
+    async def load_profile(self, profile: ResolvedModelProfile) -> None: ...
+
     async def synthesize(self, request: GsvSynthesisRequest, output_path: Path) -> AudioResult: ...
 
     def fingerprint(self) -> EngineFingerprint: ...

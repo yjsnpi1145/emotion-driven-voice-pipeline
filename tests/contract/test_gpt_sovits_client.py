@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -20,6 +21,7 @@ from tests.unit.conftest import (
 )
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.core.pipeline import SynthesisService
+from voice_pipeline.models.model_profiles import ResolvedModelProfile
 from voice_pipeline.modules.gpt_sovits.client import GptSoVitsHttpClient
 
 EXPECTED_PAYLOAD = {
@@ -46,6 +48,43 @@ EXPECTED_PAYLOAD = {
 
 def _request_body(request: httpx.Request) -> dict[str, object]:
     return json.loads(request.content.decode("utf-8"))
+
+
+@pytest.mark.asyncio
+async def test_load_profile_calls_official_weight_endpoints_before_tts(
+    gsv_request, tmp_path
+) -> None:
+    events: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        events.append(request.url.path)
+        if request.url.path in ("/set_gpt_weights", "/set_sovits_weights"):
+            return httpx.Response(200, json={"message": "success"})
+        if request.url.path == "/tts":
+            return httpx.Response(200, content=valid_wav_bytes(seconds=1.5))
+        return httpx.Response(404)
+
+    client = GptSoVitsHttpClient(
+        base_url="http://gsv.test",
+        timeout_seconds=5,
+        expected_fingerprint=EXPECTED_GSV_FINGERPRINT,
+        transport=httpx.MockTransport(handler),
+    )
+    profile = ResolvedModelProfile(
+        profile_id=uuid4(),
+        display_name="voice-v1",
+        gpt_relative_path="profiles/a/GPT/model.ckpt",
+        sovits_relative_path="profiles/a/SoVITS/model.pth",
+        gpt_sha256="a" * 64,
+        sovits_sha256="b" * 64,
+        gpt_path=(tmp_path / "model.ckpt").resolve(),
+        sovits_path=(tmp_path / "model.pth").resolve(),
+    )
+
+    await client.load_profile(profile)
+    await client.synthesize(gsv_request, tmp_path / "target.wav")
+
+    assert events == ["/set_gpt_weights", "/set_sovits_weights", "/tts"]
 
 
 @pytest.mark.asyncio

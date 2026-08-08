@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from voice_pipeline.core.errors import ErrorCode, PipelineError
+from voice_pipeline.models.model_profiles import ResolvedModelProfile
 from voice_pipeline.models.schemas import (
     AudioResult,
     EngineFingerprint,
@@ -62,6 +63,51 @@ class GptSoVitsHttpClient:
 
     def fingerprint(self) -> EngineFingerprint:
         return self._expected_fingerprint
+
+    async def load_profile(self, profile: ResolvedModelProfile) -> None:
+        await self._set_weight("/set_gpt_weights", profile.gpt_path, kind="GPT")
+        await self._set_weight("/set_sovits_weights", profile.sovits_path, kind="SoVITS")
+
+    async def _set_weight(self, endpoint: str, weights_path: Path, *, kind: str) -> None:
+        try:
+            response = await self._client.get(endpoint, params={"weights_path": str(weights_path)})
+            if response.status_code >= 400:
+                raise PipelineError(
+                    ErrorCode.MODEL_SWITCH_FAILED,
+                    "gsv",
+                    f"GPT-SoVITS rejected {kind} weight switch",
+                    retryable=True,
+                    requires_engine_abort=True,
+                    details={"http_status": response.status_code, "kind": kind},
+                )
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise PipelineError(
+                    ErrorCode.MODEL_SWITCH_FAILED,
+                    "gsv",
+                    f"GPT-SoVITS returned invalid {kind} switch response",
+                    retryable=True,
+                    requires_engine_abort=True,
+                ) from exc
+            if not isinstance(payload, dict) or payload.get("message") != "success":
+                raise PipelineError(
+                    ErrorCode.MODEL_SWITCH_FAILED,
+                    "gsv",
+                    f"GPT-SoVITS did not confirm {kind} weight switch",
+                    retryable=True,
+                    requires_engine_abort=True,
+                )
+        except PipelineError:
+            raise
+        except (httpx.TimeoutException, httpx.RequestError) as exc:
+            raise PipelineError(
+                ErrorCode.MODEL_SWITCH_FAILED,
+                "gsv",
+                f"GPT-SoVITS {kind} weight switch outcome is uncertain",
+                retryable=True,
+                requires_engine_abort=True,
+            ) from exc
 
     async def synthesize(self, request: GsvSynthesisRequest, output_path: Path) -> AudioResult:
         reservation = reserve_output_path(output_path)
