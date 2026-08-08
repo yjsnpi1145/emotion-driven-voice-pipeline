@@ -441,3 +441,22 @@ modules:
     rejected_reasons:
       - Native browser APIs provide the required fixed-list, form and audio-control behavior.
       - React/Vue would add a frontend package manager without improving the control-plane contract.
+
+  - module_id: segment_regeneration_orchestration
+    introduced_in_batch: 5
+    need: Sequence user-requested reference and GSV jobs while preserving durable job snapshots and late-result CAS behavior
+    disposition: custom
+    candidates:
+      - repository: https://github.com/celery/celery
+        spdx_license: BSD-3-Clause
+        pin: 5.5.3
+      - repository: https://github.com/rq/rq
+        spdx_license: BSD-3-Clause
+        pin: 2.6.0
+    selected: src/voice_pipeline/core/regeneration_service.py over existing SQLite DurableJobDispatcher
+    decision_reason: The project is local single-process/single-GPU and already has a durable SQLite FIFO dispatcher; Celery/RQ would require Redis and duplicate job ownership semantics.
+    wrapper_boundary: regeneration_service.py only chains existing persisted reference/GSV jobs and never invokes model adapters directly.
+    lock_reference: src/voice_pipeline/core/dispatcher.py + src/voice_pipeline/storage/job_store.py
+    rejected_reasons:
+      - Redis/Celery/distributed queues are permanent non-goals for this local tool.
+      - Existing job snapshots, artifact versions and selection CAS must remain one SQLite consistency boundary.
