@@ -35,6 +35,17 @@ def test_control_setup_does_not_seed_packages_excluded_from_runtime_lock() -> No
     assert "'--seed'" not in script
 
 
+def test_control_runtime_lock_covers_every_runtime_dependency() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    lock = (ROOT / "config" / "env-locks" / "control-runtime-requirements.lock.txt").read_text(
+        encoding="utf-8"
+    )
+
+    for requirement in project["project"]["dependencies"]:
+        name = requirement.split("[", 1)[0].split(">", 1)[0].split("<", 1)[0].strip()
+        assert f"{name.lower()}==" in lock.lower()
+
+
 def test_engine_setup_allows_ignored_local_model_assets_on_repeat_runs() -> None:
     script = (ROOT / "scripts" / "setup-indextts.ps1").read_text(encoding="utf-8")
 
