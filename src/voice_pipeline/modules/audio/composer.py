@@ -26,7 +26,7 @@ class ComposeInput(StrictModel):
     gsv_content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     blob_path: Path
     pause_after_ms: int = Field(ge=0, le=30_000)
-    state: Literal["ready", "missing", "corrupt", "deleted"] = "ready"
+    state: Literal["ready", "deleting", "missing", "corrupt", "deleted"] = "ready"
 
 
 class ComposedChapterAudio(StrictModel):

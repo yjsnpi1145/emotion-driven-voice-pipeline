@@ -15,6 +15,7 @@ from voice_pipeline.api.foundation_routes import build_foundation_router
 from voice_pipeline.api.maintenance_routes import build_maintenance_router
 from voice_pipeline.api.model_profile_routes import build_model_profile_router
 from voice_pipeline.api.routes import build_router
+from voice_pipeline.core.chapter_service import ChapterService
 from voice_pipeline.core.config import AppSettings
 from voice_pipeline.core.dispatcher import DurableJobDispatcher
 from voice_pipeline.core.gpu_queue import SerialGpuQueue
@@ -23,12 +24,15 @@ from voice_pipeline.core.jobs import InMemoryJobRegistry
 from voice_pipeline.core.model_profile_service import ModelProfileService
 from voice_pipeline.core.pipeline import SynthesisService
 from voice_pipeline.core.segment_job_service import SegmentJobService
+from voice_pipeline.modules.llm.client import OpenAiDirectorClient
+from voice_pipeline.modules.llm.fake import FakeDirector
 from voice_pipeline.modules.quality.fake import DeterministicQualityAnalyzer
 from voice_pipeline.modules.quality.faster_whisper import FasterWhisperQualityAnalyzer
 from voice_pipeline.modules.quality.ports import QualityAnalyzer
 from voice_pipeline.runtime.audit import EngineAuditWriter
 from voice_pipeline.storage.artifact_store import ArtifactStore
 from voice_pipeline.storage.cache_store import CacheStore
+from voice_pipeline.storage.chapter_store import ChapterStore
 from voice_pipeline.storage.database import Database
 from voice_pipeline.storage.job_store import SqliteJobStore
 from voice_pipeline.storage.model_importer import ModelProfileImporter
@@ -77,6 +81,9 @@ class ControlPlane:
         self.cache_store: CacheStore | None = None
         self.quality_analyzer: QualityAnalyzer | None = None
         self.last_recovery_report: Any | None = None
+        self.chapter_store: ChapterStore | None = None
+        self.chapter_service: ChapterService | None = None
+        self.llm_client: Any | None = None
 
     def attach_durable_state(self, database: Database, model_profiles: ModelProfileService) -> None:
         self.database = database
@@ -104,6 +111,9 @@ class ControlPlane:
         async def abort_active(dl: float) -> None:
             await self._abort_all_active(dl)
 
+        chapter_service = self.chapter_service
+        if chapter_service is not None:
+            await chapter_service.stop(deadline=deadline)
         await self.queue.stop(deadline=deadline, grace_seconds=0.5, abort_active=abort_active)
         registry = getattr(self, "registry", None)
         fail_unfinished = getattr(registry, "fail_unfinished", None)
@@ -148,6 +158,12 @@ class ControlPlane:
                 await task
             except Exception:
                 pass
+
+
+async def _notify_dispatcher(plane: ControlPlane) -> None:
+    if plane.dispatcher is None:
+        raise RuntimeError("durable dispatcher is not configured")
+    await plane.dispatcher.notify()
 
 
 def create_app(
@@ -209,6 +225,25 @@ def create_app(
             model_profile_resolver=model_profile_service.resolve_selected_profile,
             require_model_profile=settings.mode == "real",
         )
+        plane.chapter_store = ChapterStore(database, plane.segment_store)
+        plane.llm_client = (
+            FakeDirector() if settings.llm.mode == "fake" else OpenAiDirectorClient(settings.llm)
+        )
+        plane.chapter_service = ChapterService(
+            chapters=plane.chapter_store,
+            jobs=plane.registry,
+            segment_jobs=plane.segment_jobs,
+            versions=plane.version_store,
+            artifacts=plane.artifact_store,
+            model_profile_resolver=model_profile_service.resolve_selected_profile,
+            gsv_fingerprint=gsv.fingerprint,
+            director=plane.llm_client,
+            synthesis=service,
+            queue=queue,
+            jobs_root=runtime_dir / "jobs",
+            max_reference_corrections=settings.llm.max_reference_corrections,
+            notify_jobs=lambda: _notify_dispatcher(plane),
+        )
         plane.retention_planner = RetentionPlanner(
             database, history_limit=settings.storage.history_limit
         )
@@ -237,6 +272,7 @@ def create_app(
                 database, plane.artifact_store
             ).reconcile()
             await plane.retention_executor.resume_deletions()
+            await plane.chapter_service.recover()
             if settings.mode == "real":
                 plane.configure_quality(
                     FasterWhisperQualityAnalyzer(
@@ -251,6 +287,8 @@ def create_app(
             yield
         finally:
             await plane.shutdown()
+            if plane.llm_client is not None and hasattr(plane.llm_client, "aclose"):
+                await plane.llm_client.aclose()
             await database.close()
 
     app = FastAPI(
