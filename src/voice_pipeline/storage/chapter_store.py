@@ -267,6 +267,32 @@ class ChapterStore:
                 raise KeyError(f"chapter run is not running: {run_id}")
         return await self.get(run_id)
 
+    async def publish_recomposition(
+        self,
+        run_id: UUID,
+        *,
+        final_audio: AudioResult,
+        final_relative_path: str,
+        timeline: ChapterTimeline,
+    ) -> ChapterRunRecord:
+        """Replace a completed chapter's explicitly selected final composition."""
+        async with self._database.write_session() as session:
+            result = await session.execute(
+                update(chapter_runs)
+                .where(chapter_runs.c.run_id == str(run_id))
+                .where(chapter_runs.c.status == "succeeded")
+                .values(
+                    final_audio_json=final_audio.model_dump_json(),
+                    final_relative_path=final_relative_path,
+                    timeline_json=timeline.model_dump_json(),
+                    error_json=None,
+                    finished_at_utc=_now(),
+                )
+            )
+            if cast(CursorResult[Any], result).rowcount != 1:
+                raise KeyError(f"chapter run is not completed: {run_id}")
+        return await self.get(run_id)
+
     async def _transition(
         self,
         run_id: UUID,

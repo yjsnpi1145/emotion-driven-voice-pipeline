@@ -125,6 +125,18 @@ class ChapterService:
     async def recover(self) -> tuple[UUID, ...]:
         return await self._chapters.mark_interrupted_running()
 
+    async def recompose(self, run_id: UUID) -> ChapterRunRecord:
+        """Explicitly replace a completed run's final audio from current GSV pointers."""
+        run = await self._chapters.get(run_id)
+        if run.status != "succeeded":
+            raise PipelineError(
+                ErrorCode.VERSION_NOT_READY,
+                "chapter",
+                "only a completed chapter can be explicitly recomposed",
+                retryable=False,
+            )
+        return await self._compose(run_id, replace_completed=True)
+
     async def stop(self, *, deadline: float) -> None:
         tasks = tuple(self._active.values())
         for task in tasks:
@@ -213,7 +225,7 @@ class ChapterService:
                 )
             await asyncio.sleep(0.01)
 
-    async def _compose(self, run_id: UUID) -> None:
+    async def _compose(self, run_id: UUID, *, replace_completed: bool = False) -> ChapterRunRecord:
         run = await self._chapters.get(run_id)
         inputs: list[ComposeInput] = []
         for segment in await self._chapters.list_segments(run_id):
@@ -238,6 +250,8 @@ class ChapterService:
                 )
             )
         chapter_dir = self._artifacts.root / "chapters" / str(run_id)
+        if replace_completed:
+            chapter_dir = chapter_dir / "recompositions" / str(uuid4())
         request_snapshot = run.snapshot.get("request")
         if not isinstance(request_snapshot, dict):
             raise PipelineError(
@@ -256,7 +270,14 @@ class ChapterService:
             timeline_path=chapter_dir / "timeline.json",
         )
         relative_path = composed.audio.path.relative_to(self._artifacts.root).as_posix()
-        await self._chapters.mark_succeeded(
+        if replace_completed:
+            return await self._chapters.publish_recomposition(
+                run_id,
+                final_audio=composed.audio,
+                final_relative_path=relative_path,
+                timeline=composed.timeline,
+            )
+        return await self._chapters.mark_succeeded(
             run_id,
             final_audio=composed.audio,
             final_relative_path=relative_path,

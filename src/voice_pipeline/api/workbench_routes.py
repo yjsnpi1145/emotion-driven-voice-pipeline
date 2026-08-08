@@ -11,15 +11,20 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 
 from voice_pipeline.api.chapter_routes import _public_run
-from voice_pipeline.core.errors import PipelineError
+from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.core.regeneration_service import SegmentRegenerationService
 from voice_pipeline.models.chapter import ChapterRunRecord, ChapterSegmentProgress
 from voice_pipeline.models.persistence import (
+    ArtifactVersionView,
+    RestoreVersionInputsRequest,
     SegmentBothRegenerationRequest,
     SegmentGsvJobRequest,
+    SegmentInputsPatch,
     SegmentReferenceJobRequest,
 )
 from voice_pipeline.storage.chapter_store import ChapterStore
+from voice_pipeline.storage.segment_store import SegmentStore
+from voice_pipeline.storage.version_store import VersionStore
 
 _WEBUI_ROOT = Path(__file__).parents[1] / "webui"
 _WEBUI_FILES = {"index.html", "app.js", "styles.css"}
@@ -89,6 +94,63 @@ def build_workbench_router(plane: Any) -> APIRouter:
             raise _regeneration_error(exc) from exc
         return _submitted(context)
 
+    @router.get("/api/v1/segments/{segment_id}/history")
+    async def segment_history(segment_id: UUID) -> dict[str, Any]:
+        try:
+            segment = await _segments(plane).get_segment(segment_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="segment not found") from exc
+        versions = await _versions(plane).list_versions(segment_id)
+        return {
+            "segment_id": str(segment_id),
+            "selection_revision": segment.selection_revision,
+            "state": await _segment_state(segment, _versions(plane)),
+            "reference": [
+                _public_version(item, active_id=segment.active_ref_version_id)
+                for item in versions
+                if item.artifact_type == "reference"
+            ],
+            "gsv": [
+                _public_version(item, active_id=segment.active_gsv_version_id)
+                for item in versions
+                if item.artifact_type == "gsv"
+            ],
+        }
+
+    @router.post("/api/v1/segments/{segment_id}/versions/{version_id}/restore-inputs")
+    async def restore_version_inputs(
+        segment_id: UUID, version_id: UUID, request: RestoreVersionInputsRequest
+    ) -> dict[str, Any]:
+        try:
+            version = await _versions(plane).get_version(version_id)
+            if version.segment_id != segment_id:
+                raise PipelineError(
+                    ErrorCode.VERSION_CONFLICT,
+                    "versions",
+                    "version belongs to a different segment",
+                    retryable=False,
+                )
+            patch = _restore_patch(version, request)
+            record = await _segments(plane).patch_inputs(segment_id, patch)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="segment or version not found") from exc
+        except PipelineError as exc:
+            raise HTTPException(status_code=409, detail={"error": exc.as_dict()}) from exc
+        return record.model_dump(mode="json")
+
+    @router.post("/api/v1/chapters/{run_id}/compose")
+    async def recompose_chapter(run_id: UUID) -> dict[str, Any]:
+        service = getattr(plane, "chapter_service", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="chapter service is not ready")
+        try:
+            run = await service.recompose(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="chapter run not found") from exc
+        except PipelineError as exc:
+            raise HTTPException(status_code=409, detail={"error": exc.as_dict()}) from exc
+        return _public_run(cast(ChapterRunRecord, run))
+
     return router
 
 
@@ -104,6 +166,20 @@ def _regeneration(plane: Any) -> SegmentRegenerationService:
     if service is None:
         raise HTTPException(status_code=503, detail="regeneration service is not ready")
     return cast(SegmentRegenerationService, service)
+
+
+def _segments(plane: Any) -> SegmentStore:
+    store = getattr(plane, "segment_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="segment store is not ready")
+    return cast(SegmentStore, store)
+
+
+def _versions(plane: Any) -> VersionStore:
+    store = getattr(plane, "version_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="version store is not ready")
+    return cast(VersionStore, store)
 
 
 async def _run(plane: Any, run_id: UUID) -> ChapterRunRecord:
@@ -161,6 +237,100 @@ def _regeneration_error(exc: KeyError | PipelineError) -> HTTPException:
     if isinstance(exc, KeyError):
         return HTTPException(status_code=404, detail="segment not found")
     return HTTPException(status_code=422, detail={"error": exc.as_dict()})
+
+
+async def _segment_state(segment: Any, versions: VersionStore) -> dict[str, str]:
+    reference = await _active_version(versions, segment.active_ref_version_id)
+    gsv = await _active_version(versions, segment.active_gsv_version_id)
+    reference_status = "missing"
+    if reference is not None:
+        matches = (
+            reference.input_snapshot.get("ref_text_cn") == segment.ref_text_cn
+            and reference.input_snapshot.get("emotion_vector")
+            == list(segment.current_emotion_vector)
+            and reference.input_snapshot.get("seed") == segment.seed
+        )
+        reference_status = "ready" if matches else "draft_pending"
+    gsv_status = "missing"
+    if gsv is not None:
+        matches = (
+            gsv.ref_version_id == segment.active_ref_version_id
+            and gsv.input_snapshot.get("text") == segment.synthesis_text
+            and gsv.input_snapshot.get("speed_factor") == segment.speed_factor
+            and gsv.input_snapshot.get("seed") == segment.seed
+        )
+        gsv_status = "ready" if matches else "stale"
+    return {"reference": reference_status, "gsv": gsv_status}
+
+
+async def _active_version(
+    versions: VersionStore, version_id: UUID | None
+) -> ArtifactVersionView | None:
+    if version_id is None:
+        return None
+    try:
+        return await versions.get_version(version_id)
+    except KeyError:
+        return None
+
+
+def _public_version(version: ArtifactVersionView, *, active_id: UUID | None) -> dict[str, Any]:
+    return {
+        "version_id": str(version.version_id),
+        "artifact_type": version.artifact_type,
+        "source_job_id": str(version.source_job_id),
+        "ref_version_id": str(version.ref_version_id) if version.ref_version_id else None,
+        "blob_sha256": version.blob_sha256,
+        "input_snapshot": _without_paths(version.input_snapshot),
+        "quality_result": version.quality_result,
+        "state": version.state,
+        "created_at": version.created_at_utc.isoformat() if version.created_at_utc else None,
+        "active": version.version_id == active_id,
+        "audio_url": f"/api/v1/versions/{version.version_id}/audio",
+    }
+
+
+def _without_paths(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _without_paths(item)
+            for key, item in value.items()
+            if "path" not in str(key).casefold()
+        }
+    if isinstance(value, list):
+        return [_without_paths(item) for item in value]
+    return value
+
+
+def _restore_patch(
+    version: ArtifactVersionView, request: RestoreVersionInputsRequest
+) -> SegmentInputsPatch:
+    snapshot = version.input_snapshot
+    values: dict[str, Any] = {
+        "expected_ref_draft_revision": request.expected_ref_draft_revision,
+        "expected_gsv_draft_revision": request.expected_gsv_draft_revision,
+    }
+    if version.artifact_type == "reference":
+        values.update(
+            ref_text_cn=snapshot["ref_text_cn"],
+            current_emotion_vector=snapshot["emotion_vector"],
+            seed=snapshot["seed"],
+        )
+    else:
+        values.update(
+            synthesis_text=snapshot["text"],
+            speed_factor=snapshot["speed_factor"],
+            seed=snapshot["seed"],
+        )
+    try:
+        return SegmentInputsPatch.model_validate(values)
+    except (KeyError, ValueError) as exc:
+        raise PipelineError(
+            ErrorCode.DATABASE_INTEGRITY_FAILED,
+            "versions",
+            "version snapshot cannot restore segment inputs",
+            retryable=False,
+        ) from exc
 
 
 def progress_rows(payload: dict[str, Any]) -> tuple[ChapterSegmentProgress, ...]:

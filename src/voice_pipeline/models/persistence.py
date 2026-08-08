@@ -149,6 +149,11 @@ class ActivateVersionRequest(StrictModel):
     expected_selection_revision: int = Field(ge=0)
 
 
+class RestoreVersionInputsRequest(StrictModel):
+    expected_ref_draft_revision: int = Field(ge=0)
+    expected_gsv_draft_revision: int = Field(ge=0)
+
+
 class SegmentInputsPatch(StrictModel):
     expected_ref_draft_revision: int = Field(ge=0)
     expected_gsv_draft_revision: int = Field(ge=0)
