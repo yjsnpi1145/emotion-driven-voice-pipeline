@@ -2,7 +2,7 @@ const state = {
   chapters: [], run: null, progress: null, segments: [], selected: null, history: null, events: null,
 };
 const $ = (selector) => document.querySelector(selector);
-const vectorNames = ["愉悦", "愤怒", "悲伤", "恐惧", "厌恶", "惊讶", "平静", "期待"];
+const vectorNames = ["愉悦", "愤怒", "悲伤", "恐惧", "厌恶", "忧郁", "惊讶", "平静"];
 const regenerationPaths = {
   reference: "/regenerate-reference",
   gsv: "/regenerate-gsv",

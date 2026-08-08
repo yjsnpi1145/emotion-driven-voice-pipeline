@@ -33,6 +33,10 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "/regenerate-both" in script.text
     assert "/history" in script.text
     assert "/compose" in script.text
+    assert (
+        'const vectorNames = ["愉悦", "愤怒", "悲伤", "恐惧", "厌恶", "忧郁", "惊讶", "平静"]'
+        in script.text
+    )
     assert "19871" not in script.text
     assert "api_key" not in script.text
     assert "cdn" not in page.text.casefold()
