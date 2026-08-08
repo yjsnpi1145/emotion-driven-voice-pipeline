@@ -28,6 +28,11 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "/api/v1/chapters" in script.text
     assert "/progress" in script.text
     assert "/events" in script.text
+    assert "/regenerate-reference" in script.text
+    assert "/regenerate-gsv" in script.text
+    assert "/regenerate-both" in script.text
+    assert "/history" in script.text
+    assert "/compose" in script.text
     assert "19871" not in script.text
     assert "api_key" not in script.text
     assert "cdn" not in page.text.casefold()

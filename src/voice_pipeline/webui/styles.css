@@ -19,5 +19,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .error { color: #fca5a5; }
 .vector-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: .5rem; }
 .audio-grid { display: grid; gap: .5rem; }
+.command-grid, .history-list { display: grid; gap: .5rem; margin-top: 1rem; }
+.history-item { display: grid; gap: .35rem; border: 1px solid #374151; border-radius: .35rem; padding: .5rem; }
+.badge-stale { color: #fbbf24; }
 audio { width: 100%; }
 @media (max-width: 900px) { .workbench { grid-template-columns: 1fr; } .workbench > section { min-height: 20rem; } }
