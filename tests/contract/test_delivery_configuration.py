@@ -93,3 +93,11 @@ def test_checkpoint_lock_covers_project_local_gsv_nltk_assets() -> None:
     script = (ROOT / "scripts" / "lock-engine-assets.ps1").read_text(encoding="utf-8")
 
     assert "$GsvNltkData" in script
+
+
+def test_real_worker_identity_uses_the_worker_interpreter_not_control_python() -> None:
+    source = (ROOT / "src" / "voice_pipeline" / "runtime" / "process.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "python_executable=python" in source

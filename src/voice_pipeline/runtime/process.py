@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -128,9 +127,11 @@ class RealWorkerProcessManager:
         if engine == "indextts":
             args, cwd = self._index_args()
             env = None
+            python = self._settings.engines.indextts.python_executable
         else:
             args, cwd = self._gsv_args()
             env = self._gsv_environment()
+            python = self._settings.engines.gpt_sovits.python_executable
         log_path = self._logs_root / f"{engine}.stdout.log"
         err_path = self._logs_root / f"{engine}.stderr.log"
         proc = ManagedProcess(
@@ -153,7 +154,7 @@ class RealWorkerProcessManager:
             worker=engine,
             pid=proc.pid or 0,
             create_time=proc.create_time or 0.0,
-            python_executable=Path(sys.executable),
+            python_executable=python,
             fingerprint=self._fingerprints[engine],
         )
         self._identity[engine] = identity
