@@ -32,6 +32,7 @@ from voice_pipeline.storage.orm import (
     generation_jobs,
     job_artifacts,
     segments,
+    storage_meta,
 )
 
 
@@ -146,6 +147,7 @@ class VersionStore:
                     stage_index=0,
                 )
             )
+            await _bump_protected_graph_revision(session)
         return await self.get_version(version_id)
 
     async def list_versions(
@@ -262,6 +264,7 @@ class VersionStore:
                     "segment selection revision has changed",
                     retryable=False,
                 )
+            await _bump_protected_graph_revision(session)
         async with self._database.read_session() as session:
             row = (
                 (
@@ -493,6 +496,7 @@ class VersionCommitService:
                     "job no longer accepts a version commit",
                     retryable=False,
                 )
+            await _bump_protected_graph_revision(session)
         version = await VersionStore(self._database).get_version(version_id)
         return VersionCommitResult(
             version=version,
@@ -580,3 +584,11 @@ def _sha(value: str) -> str:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+async def _bump_protected_graph_revision(session: Any) -> None:
+    await session.execute(
+        update(storage_meta)
+        .where(storage_meta.c.singleton_id == 1)
+        .values(protected_graph_revision=storage_meta.c.protected_graph_revision + 1)
+    )

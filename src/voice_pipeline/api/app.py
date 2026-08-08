@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 
 from voice_pipeline.api.dependencies import build_dependencies
 from voice_pipeline.api.foundation_routes import build_foundation_router
+from voice_pipeline.api.maintenance_routes import build_maintenance_router
 from voice_pipeline.api.model_profile_routes import build_model_profile_router
 from voice_pipeline.api.routes import build_router
 from voice_pipeline.core.config import AppSettings
@@ -34,6 +35,7 @@ from voice_pipeline.storage.model_importer import ModelProfileImporter
 from voice_pipeline.storage.model_profile_store import SqliteModelProfileStore
 from voice_pipeline.storage.quality_cache import QualityCacheStore
 from voice_pipeline.storage.recovery import StorageRecovery
+from voice_pipeline.storage.retention import RetentionExecutor, RetentionPlanner
 from voice_pipeline.storage.segment_store import SegmentStore
 from voice_pipeline.storage.version_store import VersionCommitService, VersionStore
 
@@ -70,6 +72,8 @@ class ControlPlane:
         self.segment_store: SegmentStore | None = None
         self.version_store: VersionStore | None = None
         self.segment_jobs: SegmentJobService | None = None
+        self.retention_planner: RetentionPlanner | None = None
+        self.retention_executor: RetentionExecutor | None = None
         self.quality_analyzer: QualityAnalyzer | None = None
 
     def attach_durable_state(self, database: Database, model_profiles: ModelProfileService) -> None:
@@ -202,6 +206,10 @@ def create_app(
             index=index,
             gsv=gsv,
         )
+        plane.retention_planner = RetentionPlanner(
+            database, history_limit=settings.storage.history_limit
+        )
+        plane.retention_executor = RetentionExecutor(database, plane.artifact_store)
         plane.dispatcher = DurableJobDispatcher(
             store=plane.registry,
             queue=queue,
@@ -276,4 +284,5 @@ def create_app(
     app.include_router(router)
     app.include_router(build_model_profile_router(plane))
     app.include_router(build_foundation_router(plane))
+    app.include_router(build_maintenance_router(plane))
     return app
