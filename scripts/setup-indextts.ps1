@@ -77,7 +77,8 @@ if (-not (Test-Path -LiteralPath $IndexPython -PathType Leaf)) {
 if ($NeedsSync) {
   Invoke-Checked 'uv' @(
     'pip', 'sync', '--python', $IndexPython, '--require-hashes', $IndexLock,
-    '--extra-index-url','https://download.pytorch.org/whl/cu128'
+    '--extra-index-url','https://download.pytorch.org/whl/cu128',
+    '--index-strategy','unsafe-best-match'
   )
   uv build --wheel --out-dir $BootstrapWheelDir
   if ($LASTEXITCODE -ne 0) { throw 'wheel build failed' }

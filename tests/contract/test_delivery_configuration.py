@@ -36,3 +36,9 @@ def test_index_setup_repairs_an_existing_incomplete_venv() -> None:
 
     assert "$NeedsSync" in script
     assert "if ($NeedsSync)" in script
+
+
+def test_index_setup_uses_the_lock_compilation_index_strategy() -> None:
+    script = (ROOT / "scripts" / "setup-indextts.ps1").read_text(encoding="utf-8")
+
+    assert "'--index-strategy','unsafe-best-match'" in script
