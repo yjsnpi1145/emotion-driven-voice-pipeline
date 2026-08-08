@@ -3,7 +3,24 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+from voice_pipeline.models.delivery import Batch1AcceptanceReceipt
+
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_batch1_handoff_allows_explicit_user_golden_waiver() -> None:
+    receipt = Batch1AcceptanceReceipt.model_validate(
+        {
+            "schema_version": 1,
+            "commit_sha": "a" * 40,
+            "engineering_disposition": "PASS",
+            "golden_listening": "waived_by_user",
+            "waiver_reason": "user explicitly requested to skip golden acceptance",
+        }
+    )
+
+    assert receipt.engineering_disposition == "PASS"
+    assert receipt.golden_listening == "waived_by_user"
 
 
 def test_pytest_collection_is_limited_to_project_test_tree() -> None:

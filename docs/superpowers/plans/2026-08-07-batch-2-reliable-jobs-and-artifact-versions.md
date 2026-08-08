@@ -739,7 +739,9 @@ Task 0 prerequisite gate
 {
   "schema_version": 1,
   "commit_sha": "40 lowercase hexadecimal characters",
-  "disposition": "PASS",
+  "engineering_disposition": "PASS",
+  "golden_listening": "PASS | waived_by_user",
+  "waiver_reason": "required when golden_listening is waived_by_user",
   "gates": {
     "A": "PASS",
     "B": "PASS",
@@ -772,8 +774,14 @@ if (-not (Test-Path -LiteralPath $AcceptanceReceipt -PathType Leaf)) {
 
 $Dev = Get-Content -LiteralPath $DeveloperReport -Raw | ConvertFrom-Json
 $Acceptance = Get-Content -LiteralPath $AcceptanceReceipt -Raw | ConvertFrom-Json
-if ($Acceptance.schema_version -ne 1 -or $Acceptance.disposition -ne 'PASS') {
-  throw 'NOT READY: batch1 disposition is not PASS'
+if ($Acceptance.schema_version -ne 1 -or $Acceptance.engineering_disposition -ne 'PASS') {
+  throw 'NOT READY: batch1 engineering disposition is not PASS'
+}
+if ($Acceptance.golden_listening -notin @('PASS', 'waived_by_user')) {
+  throw 'NOT READY: batch1 golden listening status is invalid'
+}
+if ($Acceptance.golden_listening -eq 'waived_by_user' -and [string]::IsNullOrWhiteSpace($Acceptance.waiver_reason)) {
+  throw 'NOT READY: batch1 golden waiver reason is absent'
 }
 if ($Dev.commit_sha -ne $Acceptance.commit_sha) {
   throw 'NOT READY: developer and acceptance SHA differ'
@@ -786,7 +794,7 @@ git -C D:\TTSsystem cat-file -e "$($Acceptance.commit_sha)^{commit}"
 if ($LASTEXITCODE -ne 0) { throw 'batch1 accepted commit is absent from repository' }
 ```
 
-Expected: 输出为空、退出码 0。任何缺失或非 PASS 都停止，不把它写成批次 2 的 BLOCKED。
+Expected: 输出为空、退出码 0。工程门缺失或非 PASS 都停止；人工黄金试听可仅以用户明确豁免的 `waived_by_user` 状态放行，且不得改写为 PASS。
 
 - [ ] **Step 2: 创建独立 worktree**
 
