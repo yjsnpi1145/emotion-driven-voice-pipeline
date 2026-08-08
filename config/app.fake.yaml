@@ -1,6 +1,6 @@
 schema_version: 1
-mode: real
-engine_lifecycle: exclusive_process
+mode: fake
+engine_lifecycle: resident
 server:
   host: 127.0.0.1
   port: 8765
@@ -10,20 +10,6 @@ checkpoint_lock_path: checkpoints.lock.yaml
 queue:
   max_concurrency: 1
   queue_timeout_seconds: 60
-quality:
-  mode: faster_whisper
-  model_path: ../runtime/models/faster-whisper-small
-  model_lock_path: quality-model.lock.yaml
-  policy:
-    schema_version: 1
-    min_total_seconds: 3.0
-    max_total_seconds: 9.0
-    min_speech_seconds: 1.5
-    min_speech_ratio: 0.35
-    min_similarity: 0.60
-    short_text_max_normalized_length: 3
-    short_text_min_similarity: 0.75
-    normalizer_version: 1
 storage:
   database_path: state/pipeline.sqlite3
   artifact_root: artifacts
@@ -33,6 +19,8 @@ storage:
   history_limit: 5
   cache_max_entries_per_kind: 500
   cache_max_age_days: 90
+quality:
+  mode: fake
 model_library:
   models_root: ../models/gpt-sovits
   allowed_import_roots:

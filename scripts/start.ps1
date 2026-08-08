@@ -12,7 +12,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$RepoRoot = 'D:\TTSsystem'
+$RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 Set-Location $RepoRoot
 
 $RunFile = Join-Path $RepoRoot 'runtime\run\processes.json'
@@ -20,7 +20,14 @@ $LogDir = Join-Path $RepoRoot 'runtime\logs'
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 $ConfigAbs = (Resolve-Path -LiteralPath $Config).Path
-if (-not $PythonExecutable) { $PythonExecutable = Join-Path $RepoRoot '.venv-control\Scripts\python.exe' }
+if (-not $PythonExecutable) {
+  $ControlVenv = Join-Path $RepoRoot '.venv-control\Scripts\python.exe'
+  $PythonExecutable = if (Test-Path -LiteralPath $ControlVenv -PathType Leaf) {
+    $ControlVenv
+  } else {
+    Join-Path $RepoRoot '.venv\Scripts\python.exe'
+  }
+}
 if (-not (Test-Path -LiteralPath $PythonExecutable -PathType Leaf)) {
   Write-Error "control python missing: $PythonExecutable"
   exit 1
@@ -85,7 +92,10 @@ $deadline = (Get-Date).AddSeconds(120)
 do {
   try {
     $Health = Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 5
-    if ($Health.status -in @('ready', 'degraded')) { break }
+    if ($Health.status -eq 'ready' -and
+        $Health.storage.status -eq 'ready' -and
+        $Health.dispatcher.state -eq 'running' -and
+        $Health.quality.status -eq 'ready') { break }
   } catch {
     Start-Sleep -Milliseconds 500
   }
@@ -155,6 +165,8 @@ if ($Json) {
     control_create_time = $controlEpoch
     instance_id = $instanceId
     audit_log = $auditLog
+    database_path = $Health.storage.database_path
+    alembic_revision = $Health.storage.alembic_revision
     run_file = $RunFile
   } | ConvertTo-Json | Write-Output
 } else {

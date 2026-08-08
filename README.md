@@ -1,4 +1,4 @@
-# Emotion Driven Cross-Language TTS Pipeline — Batch 1
+# Emotion Driven Cross-Language TTS Pipeline — Batches 1–2
 
 批次 1 交付一个可重复安装、可自动测试的单段配音闭环：固定中文参考文本与合法 8 维情绪向量经 IndexTTS2 生成参考音频，再由 GPT-SoVITS 生成日语或英语目标语音。
 
@@ -28,7 +28,8 @@ CLI ──HTTP──> FastAPI 控制面 (127.0.0.1:8765, workers=1)
 - 控制面只通过 HTTP adapter 调用引擎，不导入任何模型包；
 - CLI 只调用控制面，不能绕过队列直连引擎；
 - 全部 GPU 工作经过 `asyncio.Queue` + 恰好一个 consumer；
-- 本批次仅内存任务存储，控制面重启后任务消失。
+- 批次 2 将任务、分块、版本、缓存与保留策略写入本地 SQLite；控制面重启会将中断的
+  运行任务标记为 `interrupted`，排队任务保留等待重新调度。
 
 ### 引擎 pin
 
@@ -44,7 +45,7 @@ CLI ──HTTP──> FastAPI 控制面 (127.0.0.1:8765, workers=1)
 ```powershell
 Set-Location 'D:\TTSsystem'
 uv sync --extra dev --python 3.11
-uv run voice-pipeline serve --config config/app.example.yaml
+uv run voice-pipeline serve --config config/app.fake.yaml
 # 另一终端：
 uv run voice-pipeline synthesize-segment --server http://127.0.0.1:8765 --request request.json --output-dir runtime\out --json
 ```
@@ -57,6 +58,7 @@ uv run voice-pipeline synthesize-segment --server http://127.0.0.1:8765 --reques
 pwsh -NoProfile -File scripts/setup-control.ps1
 pwsh -NoProfile -File scripts/setup-indextts.ps1
 pwsh -NoProfile -File scripts/setup-gpt-sovits.ps1
+pwsh -NoProfile -File scripts/setup-quality.ps1 -Root (Get-Location).Path
 pwsh -NoProfile -File scripts/start.ps1 -Config D:\TTSsystem\config\acceptance.gpu.local.yaml -Json
 uv run voice-pipeline doctor --server http://127.0.0.1:8765 --json
 pwsh -NoProfile -File scripts/stop.ps1 -RunFile D:\TTSsystem\runtime\run\processes.json -ReceiptPath runtime\run\stop-receipt.json -Json
@@ -93,6 +95,21 @@ runtime_dir/jobs/<job_id>/
 - CLI `--output` / `--output-dir` 是最终交付位置；参考 CLI 额外生成
   `<output>.reference-manifest.json` portable 清单；
 - 同名任务请求 `request_id` 必须不同，否则按 `OUTPUT_CONFLICT` 拒绝。
+
+## 批次 2：本地状态与版本
+
+- SQLite 位于 `runtime/state/pipeline.sqlite3`，其 `-wal` 和 `-shm` 文件由 SQLite
+  管理，不能手动删除；
+- 音频 blob 位于 `runtime/artifacts/blobs/sha256/`，版本清单位于
+  `runtime/artifacts/manifests/versions/`，两者均不可编辑；
+- 每个分块的 reference/GSV 版本不可变；`active_ref_version_id` 与
+  `active_gsv_version_id` 只会指向 `ready` 版本；
+- `GET /api/v1/health` 同时报告 `storage`、`dispatcher` 与 `quality` 状态；
+- 本地 GSV 模型配置通过 `/api/v1/model-profiles` 导入和激活。分块 GSV 任务提交时
+  冻结已选 profile 的 ID、文件哈希和引擎指纹；之后切换当前 profile 不会影响该任务；
+- 参考音频要先通过时长、VAD 与 ASR 文本对齐门禁，才会成为可激活版本。
+
+管理与恢复操作见 `docs/batch-2-storage-runbook.md`。
 
 ## 错误码
 
