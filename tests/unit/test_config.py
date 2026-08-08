@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from voice_pipeline.core.config import load_settings
+from voice_pipeline.core.config import ModelLibrarySettings, load_settings
 
 
 def test_load_settings_resolves_paths_from_config_directory(tmp_path: Path) -> None:
@@ -100,3 +100,11 @@ engines:
     )
 
     assert load_settings(config).mode == "external_test"
+
+
+def test_model_library_rejects_a_root_that_overlaps_runtime(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="models_root"):
+        ModelLibrarySettings(
+            models_root=tmp_path / "runtime",
+            allowed_import_roots=[tmp_path / "imports"],
+        ).validate_against_runtime(tmp_path / "runtime")

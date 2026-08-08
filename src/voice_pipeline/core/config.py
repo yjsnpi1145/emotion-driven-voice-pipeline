@@ -40,6 +40,17 @@ class EnginesSettings(BaseModel):
     gpt_sovits: EngineSettings
 
 
+class ModelLibrarySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    models_root: Path = Path("../models/gpt-sovits")
+    allowed_import_roots: list[Path] = Field(default_factory=list)
+
+    def validate_against_runtime(self, runtime_dir: Path) -> ModelLibrarySettings:
+        if self.models_root == runtime_dir or _is_within(self.models_root, runtime_dir):
+            raise ValueError("models_root must not overlap runtime_dir")
+        return self
+
+
 class AppSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal[1]
@@ -51,10 +62,19 @@ class AppSettings(BaseModel):
     checkpoint_lock_path: Path
     queue: QueueSettings
     engines: EnginesSettings
+    model_library: ModelLibrarySettings = Field(default_factory=ModelLibrarySettings)
 
 
 def _resolve_path(base: Path, value: Path) -> Path:
     return value.resolve() if value.is_absolute() else (base / value).resolve()
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def load_settings(config_path: Path) -> AppSettings:
@@ -65,6 +85,11 @@ def load_settings(config_path: Path) -> AppSettings:
     settings.runtime_dir = _resolve_path(base, settings.runtime_dir)
     settings.engine_lock_path = _resolve_path(base, settings.engine_lock_path)
     settings.checkpoint_lock_path = _resolve_path(base, settings.checkpoint_lock_path)
+    settings.model_library.models_root = _resolve_path(base, settings.model_library.models_root)
+    settings.model_library.allowed_import_roots = [
+        _resolve_path(base, root) for root in settings.model_library.allowed_import_roots
+    ]
+    settings.model_library.validate_against_runtime(settings.runtime_dir)
     for engine in (settings.engines.indextts, settings.engines.gpt_sovits):
         engine.python_executable = _resolve_path(base, engine.python_executable)
         engine.repo_dir = _resolve_path(base, engine.repo_dir)

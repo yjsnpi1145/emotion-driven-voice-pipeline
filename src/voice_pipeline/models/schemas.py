@@ -120,6 +120,7 @@ class GsvSynthesisRequest(StrictModel):
     prompt_lang: Literal["zh"] = "zh"
     speed_factor: float = Field(default=1.0, ge=0.5, le=2.0)
     seed: int = -1
+    model_profile_id: UUID | None = None
 
 
 class SegmentSynthesisRequest(StrictModel):
@@ -131,6 +132,7 @@ class SegmentSynthesisRequest(StrictModel):
     target_language: LanguageCode
     seed: int = 1234
     speed_factor: float = Field(default=1.0, ge=0.5, le=2.0)
+    model_profile_id: UUID | None = None
 
 
 class ReferenceJobRequest(StrictModel):
@@ -148,6 +150,7 @@ class GsvJobRequest(StrictModel):
     target_language: LanguageCode
     speed_factor: float = Field(default=1.0, ge=0.5, le=2.0)
     seed: int = 1234
+    model_profile_id: UUID | None = None
 
 
 class ReferenceSynthesisResult(StrictModel):
