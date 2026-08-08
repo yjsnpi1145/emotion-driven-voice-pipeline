@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -25,12 +26,14 @@ class ManagedProcess:
         cwd: Path,
         stdout_log: Path,
         stderr_log: Path,
+        env: dict[str, str] | None = None,
     ) -> None:
         self._role = role
         self._args = list(args)
         self._cwd = cwd
         self._stdout_log = stdout_log
         self._stderr_log = stderr_log
+        self._env = env
         self._process: subprocess.Popen[Any] | None = None
         self._create_time: float | None = None
 
@@ -44,6 +47,7 @@ class ManagedProcess:
             stdin=subprocess.DEVNULL,
             stdout=stdout_fh,
             stderr=stderr_fh,
+            env=self._env,
             shell=False,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
@@ -123,8 +127,10 @@ class RealWorkerProcessManager:
     async def start_engine(self, engine: WorkerName) -> None:
         if engine == "indextts":
             args, cwd = self._index_args()
+            env = None
         else:
             args, cwd = self._gsv_args()
+            env = self._gsv_environment()
         log_path = self._logs_root / f"{engine}.stdout.log"
         err_path = self._logs_root / f"{engine}.stderr.log"
         proc = ManagedProcess(
@@ -133,6 +139,7 @@ class RealWorkerProcessManager:
             cwd=cwd,
             stdout_log=log_path,
             stderr_log=err_path,
+            env=env,
         )
         proc.start()
         self._managed[engine] = proc
@@ -298,3 +305,9 @@ class RealWorkerProcessManager:
             str(repo_dir / "GPT_SoVITS" / "configs" / "tts_infer.yaml"),
         ]
         return args, repo_dir
+
+    def _gsv_environment(self) -> dict[str, str]:
+        env = dict(os.environ)
+        nltk_data = self._settings.engines.gpt_sovits.repo_dir / "runtime" / "nltk_data"
+        env["NLTK_DATA"] = str(nltk_data.resolve())
+        return env

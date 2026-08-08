@@ -78,3 +78,18 @@ def test_checkpoint_lock_script_uses_builtin_json_compatible_yaml_serialization(
     assert "ConvertFrom-Yaml" not in script
     assert "ConvertTo-Json -Depth" in script
     assert "ConvertFrom-Json" in script
+
+
+def test_real_gsv_worker_receives_project_local_nltk_data_path() -> None:
+    source = (ROOT / "src" / "voice_pipeline" / "runtime" / "process.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"NLTK_DATA"' in source
+    assert '"runtime" / "nltk_data"' in source
+
+
+def test_checkpoint_lock_covers_project_local_gsv_nltk_assets() -> None:
+    script = (ROOT / "scripts" / "lock-engine-assets.ps1").read_text(encoding="utf-8")
+
+    assert "$GsvNltkData" in script

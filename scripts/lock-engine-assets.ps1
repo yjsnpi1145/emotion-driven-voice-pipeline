@@ -46,8 +46,12 @@ if (Test-Path -LiteralPath (Join-Path $IndexCheckpoints 'config.yaml')) {
 # GSV assets actually used by tts_infer.yaml + v2 weights.
 $GsvRepo = Join-Path $RepoRoot 'external\GPT-SoVITS'
 $GsvModels = Join-Path $GsvRepo 'GPT_SoVITS\pretrained_models'
+$GsvNltkData = Join-Path $GsvRepo 'runtime\nltk_data'
 if (Test-Path -LiteralPath $GsvModels) {
   Add-Assets -Root $GsvModels -Engine 'gpt_sovits' -Assets $Assets
+}
+if (Test-Path -LiteralPath $GsvNltkData) {
+  Add-Assets -Root $GsvNltkData -Engine 'gpt_sovits' -Assets $Assets
 }
 
 if ($Assets.Count -eq 0) {
