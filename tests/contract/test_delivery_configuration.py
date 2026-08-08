@@ -48,3 +48,11 @@ def test_index_setup_installs_the_pinned_upstream_package_into_its_worker_venv()
     script = (ROOT / "scripts" / "setup-indextts.ps1").read_text(encoding="utf-8")
 
     assert "'--no-deps', '--editable', $IndexRepo" in script
+
+
+def test_gsv_setup_reconciles_existing_conda_env_with_the_cuda_lock() -> None:
+    script = (ROOT / "scripts" / "setup-gpt-sovits.ps1").read_text(encoding="utf-8")
+
+    assert "$NeedsPipSync" in script
+    assert "'--extra-index-url','https://download.pytorch.org/whl/cu128'" in script
+    assert "'--index-strategy','unsafe-best-match'" in script

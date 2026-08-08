@@ -79,18 +79,24 @@ if ($WriteInitialEnvLocks) {
   }
 }
 
-# 3. Conda environment + pip sync.
+# 3. Conda environment + pip sync.  An interrupted earlier setup can leave
+# the conda interpreter present without the lock contents, so always reconcile it.
+if (-not (Test-Path -LiteralPath $CondaExplicit -PathType Leaf)) {
+  throw "missing tracked gsv conda lock: $CondaExplicit"
+}
+if (-not (Test-Path -LiteralPath $PipLock -PathType Leaf)) {
+  throw "missing tracked gsv pip lock: $PipLock"
+}
+$NeedsPipSync = $true
 if (-not (Test-Path -LiteralPath $GsvPython -PathType Leaf)) {
-  if (-not (Test-Path -LiteralPath $CondaExplicit -PathType Leaf)) {
-    throw "missing tracked gsv conda lock: $CondaExplicit"
-  }
   & $CondaExe create -y --prefix (Join-Path $GsvRepo '.conda') --file $CondaExplicit
   if ($LASTEXITCODE -ne 0) { throw 'conda create failed' }
-  if (-not (Test-Path -LiteralPath $PipLock -PathType Leaf)) {
-    throw "missing tracked gsv pip lock: $PipLock"
-  }
+}
+if ($NeedsPipSync) {
   Invoke-Checked 'uv' @(
-    'pip', 'sync', '--python', $GsvPython, '--require-hashes', $PipLock
+    'pip', 'sync', '--python', $GsvPython, '--require-hashes', $PipLock,
+    '--extra-index-url','https://download.pytorch.org/whl/cu128',
+    '--index-strategy','unsafe-best-match'
   )
 }
 
