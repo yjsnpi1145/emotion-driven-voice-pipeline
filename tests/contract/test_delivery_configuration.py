@@ -16,3 +16,10 @@ def test_control_setup_does_not_seed_packages_excluded_from_runtime_lock() -> No
     script = (ROOT / "scripts" / "setup-control.ps1").read_text(encoding="utf-8")
 
     assert "'--seed'" not in script
+
+
+def test_engine_setup_allows_ignored_local_model_assets_on_repeat_runs() -> None:
+    script = (ROOT / "scripts" / "setup-indextts.ps1").read_text(encoding="utf-8")
+
+    assert "checkpoints" in script
+    assert "status --porcelain" in script

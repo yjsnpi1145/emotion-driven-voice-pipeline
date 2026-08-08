@@ -39,7 +39,8 @@ $Head = (git -C $IndexRepo rev-parse HEAD).Trim()
 if ($Head -ne $PinnedCommit) {
   Invoke-Checked 'git' @('-C', $IndexRepo, '-c','http.proxy=','-c','https.proxy=','checkout', $PinnedCommit)
 }
-$Dirty = git -C $IndexRepo status --porcelain
+$Dirty = git -C $IndexRepo status --porcelain |
+  Where-Object { $_ -notmatch '^\?\? checkpoints([/\\]|$)' }
 if ($Dirty) { throw "index repo is dirty`n$Dirty" }
 
 # 2. Initial env locks (explicit flag only).
