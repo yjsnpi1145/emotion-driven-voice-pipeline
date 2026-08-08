@@ -29,3 +29,10 @@ def test_index_setup_uses_the_cuda_index_required_by_its_locked_torch_wheel() ->
     script = (ROOT / "scripts" / "setup-indextts.ps1").read_text(encoding="utf-8")
 
     assert "'--extra-index-url','https://download.pytorch.org/whl/cu128'" in script
+
+
+def test_index_setup_repairs_an_existing_incomplete_venv() -> None:
+    script = (ROOT / "scripts" / "setup-indextts.ps1").read_text(encoding="utf-8")
+
+    assert "$NeedsSync" in script
+    assert "if ($NeedsSync)" in script

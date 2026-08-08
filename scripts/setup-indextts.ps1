@@ -65,12 +65,16 @@ if ($WriteInitialEnvLocks) {
   }
 }
 
-# 3. Worker venv + locked deps.
+# 3. Worker venv + locked deps.  An interrupted earlier setup can leave
+# a 3.11 interpreter without the lock contents, so always reconcile it.
+if (-not (Test-Path -LiteralPath $IndexLock -PathType Leaf)) {
+  throw "missing tracked index lock: $IndexLock"
+}
+$NeedsSync = $true
 if (-not (Test-Path -LiteralPath $IndexPython -PathType Leaf)) {
-  if (-not (Test-Path -LiteralPath $IndexLock -PathType Leaf)) {
-    throw "missing tracked index lock: $IndexLock"
-  }
   Invoke-Checked 'uv' @('venv', (Join-Path $IndexRepo '.venv'), '--python', '3.11', '--seed')
+}
+if ($NeedsSync) {
   Invoke-Checked 'uv' @(
     'pip', 'sync', '--python', $IndexPython, '--require-hashes', $IndexLock,
     '--extra-index-url','https://download.pytorch.org/whl/cu128'
