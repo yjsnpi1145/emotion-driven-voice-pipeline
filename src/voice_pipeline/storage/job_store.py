@@ -16,6 +16,7 @@ from voice_pipeline.models.persistence import (
     JobStatus,
     JsonValue,
     PersistentJobRecord,
+    RecoverySummary,
     SegmentJobSnapshot,
 )
 from voice_pipeline.models.schemas import ExecutionContext
@@ -189,6 +190,169 @@ class SqliteJobStore:
             )
         return int(cast(CursorResult[Any], result).rowcount)
 
+    async def cancel(self, job_id: UUID) -> PersistentJobRecord:
+        """Linearize a cancellation request against the durable job state.
+
+        A queued job becomes terminal immediately.  A running job only receives
+        the durable cancellation marker here; its dispatcher owns engine abort
+        and commits ``cancelled`` after active inference reaches zero.
+        """
+        now = _utc_now()
+        async with self._database.write_session() as session:
+            queued = await session.execute(
+                update(generation_jobs)
+                .where(generation_jobs.c.job_id == str(job_id))
+                .where(generation_jobs.c.status == "queued")
+                .where(generation_jobs.c.cancel_requested_at_utc.is_(None))
+                .values(
+                    status="cancelled",
+                    stage="cancelled",
+                    cancel_requested_at_utc=now,
+                    finished_at_utc=now,
+                    error_json=self.canonical_json(_cancel_error("queued")),
+                )
+            )
+            if cast(CursorResult[Any], queued).rowcount == 0:
+                running = await session.execute(
+                    update(generation_jobs)
+                    .where(generation_jobs.c.job_id == str(job_id))
+                    .where(generation_jobs.c.status == "running")
+                    .where(generation_jobs.c.cancel_requested_at_utc.is_(None))
+                    .values(cancel_requested_at_utc=now)
+                )
+                if cast(CursorResult[Any], running).rowcount == 0:
+                    row = (
+                        (
+                            await session.execute(
+                                select(generation_jobs).where(
+                                    generation_jobs.c.job_id == str(job_id)
+                                )
+                            )
+                        )
+                        .mappings()
+                        .one_or_none()
+                    )
+                    if row is None:
+                        raise KeyError(f"unknown job: {job_id}")
+                    record = _record(dict(row))
+                    if record.status == "cancelled":
+                        return record
+                    raise PipelineError(
+                        ErrorCode.JOB_STATE_CONFLICT,
+                        "jobs",
+                        f"job is already {record.status}",
+                        retryable=False,
+                        details={"status": record.status},
+                    )
+        return await self.get(job_id)
+
+    async def clone_for_retry(self, job_id: UUID) -> ExecutionContext:
+        """Create a new queued execution from an immutable terminal snapshot."""
+        async with self._database.write_session() as session:
+            row = (
+                (
+                    await session.execute(
+                        select(generation_jobs).where(generation_jobs.c.job_id == str(job_id))
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise KeyError(f"unknown job: {job_id}")
+            original = dict(row)
+            status = str(original["status"])
+            if status not in ("failed", "cancelled", "interrupted"):
+                raise PipelineError(
+                    ErrorCode.JOB_NOT_RETRYABLE,
+                    "jobs",
+                    f"job in {status} state cannot be retried",
+                    retryable=False,
+                    details={"status": status},
+                )
+            new_job_id = uuid4()
+            await session.execute(
+                insert(generation_jobs).values(
+                    job_id=str(new_job_id),
+                    request_id=original["request_id"],
+                    kind=original["kind"],
+                    status="queued",
+                    stage="queued",
+                    task_id=original["task_id"],
+                    segment_id=original["segment_id"],
+                    retry_of_job_id=str(job_id),
+                    attempt=int(str(original["attempt"])) + 1,
+                    request_snapshot_json=original["request_snapshot_json"],
+                    request_snapshot_sha256=original["request_snapshot_sha256"],
+                    model_fingerprint_json=original["model_fingerprint_json"],
+                    model_profile_snapshot_json=original["model_profile_snapshot_json"],
+                    output_spec_json=original["output_spec_json"],
+                    segment_snapshot_json=original["segment_snapshot_json"],
+                    cancel_requested_at_utc=None,
+                    runner_instance_id=None,
+                    result_json=None,
+                    error_json=None,
+                    activation_outcome="not_applicable",
+                    created_at_utc=_utc_now(),
+                    started_at_utc=None,
+                    finished_at_utc=None,
+                )
+            )
+        return ExecutionContext(
+            job_id=new_job_id,
+            request_id=UUID(str(original["request_id"])),
+            job_dir=self._jobs_root / str(new_job_id),
+        )
+
+    async def recover_interrupted(self) -> RecoverySummary:
+        """Mark only an abandoned previous-instance run as interrupted."""
+        recovery_error = self.canonical_json(
+            {
+                "code": ErrorCode.ENGINE_UNAVAILABLE.value,
+                "stage": "recovery",
+                "message": "control process restarted while this job was running",
+                "retryable": True,
+                "details": {"reason": "process_restart"},
+            }
+        )
+        async with self._database.write_session() as session:
+            running_rows = (
+                (
+                    await session.execute(
+                        select(generation_jobs.c.job_id)
+                        .where(generation_jobs.c.status == "running")
+                        .order_by(generation_jobs.c.created_at_utc, generation_jobs.c.job_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            await session.execute(
+                update(generation_jobs)
+                .where(generation_jobs.c.status == "running")
+                .values(
+                    status="interrupted",
+                    stage="interrupted",
+                    error_json=recovery_error,
+                    finished_at_utc=_utc_now(),
+                )
+            )
+            queued_rows = (
+                (
+                    await session.execute(
+                        select(generation_jobs.c.job_id)
+                        .where(generation_jobs.c.status == "queued")
+                        .order_by(generation_jobs.c.created_at_utc, generation_jobs.c.job_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return RecoverySummary(
+            interrupted_job_ids=tuple(UUID(str(value)) for value in running_rows),
+            queued_job_ids=tuple(UUID(str(value)) for value in queued_rows),
+        )
+
     async def _mark_terminal(
         self,
         job_id: UUID,
@@ -201,11 +365,15 @@ class SqliteJobStore:
         if status not in ("succeeded", "failed", "cancelled"):
             raise ValueError(f"invalid terminal status: {status}")
         async with self._database.write_session() as session:
-            update_result = await session.execute(
+            statement = (
                 update(generation_jobs)
                 .where(generation_jobs.c.job_id == str(job_id))
                 .where(generation_jobs.c.status.in_(allowed_previous_statuses))
-                .values(
+            )
+            if status == "succeeded":
+                statement = statement.where(generation_jobs.c.cancel_requested_at_utc.is_(None))
+            update_result = await session.execute(
+                statement.values(
                     status=status,
                     stage=status,
                     result_json=(self.canonical_json(result) if result is not None else None),
@@ -262,3 +430,13 @@ def _parse_time_required(value: object) -> datetime:
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _cancel_error(state: str) -> dict[str, JsonValue]:
+    return {
+        "code": "JOB_CANCELLED",
+        "stage": "jobs",
+        "message": f"job was cancelled while {state}",
+        "retryable": False,
+        "details": {"state": state},
+    }

@@ -12,13 +12,11 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from voice_pipeline.core.errors import ErrorCode, PipelineError
+from voice_pipeline.models.persistence import RetryJobRequest
 from voice_pipeline.models.schemas import (
     GsvJobRequest,
-    GsvSynthesisResult,
     ReferenceJobRequest,
-    ReferenceSynthesisResult,
     SegmentSynthesisRequest,
-    SegmentSynthesisResult,
 )
 
 
@@ -91,11 +89,56 @@ def build_router(plane: Any) -> APIRouter:
             "created_at": record.created_at.isoformat(),
             "started_at": record.started_at.isoformat() if record.started_at else None,
             "finished_at": (record.finished_at.isoformat() if record.finished_at else None),
+            "retry_of_job_id": (
+                str(record.retry_of_job_id) if record.retry_of_job_id is not None else None
+            ),
+            "attempt": record.attempt,
+            "cancel_requested_at": (
+                record.cancel_requested_at_utc.isoformat()
+                if record.cancel_requested_at_utc is not None
+                else None
+            ),
             "request_snapshot": record.request_snapshot,
             "result": record.result,
             "audio_urls": audio_urls,
             "manifest_urls": manifest_urls,
             "error": record.error,
+        }
+
+    @router.post("/api/v1/jobs/{job_id}/cancel")
+    async def cancel_job(job_id: UUID) -> JSONResponse:
+        dispatcher = _require_dispatcher(plane)
+        try:
+            record = await dispatcher.cancel(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        except PipelineError as exc:
+            raise HTTPException(status_code=409, detail={"error": exc.as_dict()}) from exc
+        return JSONResponse(
+            status_code=200 if record.status == "cancelled" else 202,
+            content={
+                "job_id": str(record.job_id),
+                "status": record.status,
+                "cancellation_requested": record.cancel_requested_at_utc is not None,
+            },
+        )
+
+    @router.post("/api/v1/jobs/{job_id}/retry", status_code=202)
+    async def retry_job(job_id: UUID, request: RetryJobRequest) -> dict[str, Any]:
+        del request  # schema fixes the only supported retry mode for this batch.
+        dispatcher = _require_dispatcher(plane)
+        try:
+            context = await plane.registry.clone_for_retry(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        except PipelineError as exc:
+            raise HTTPException(status_code=409, detail={"error": exc.as_dict()}) from exc
+        await dispatcher.notify()
+        return {
+            "job_id": str(context.job_id),
+            "request_id": str(context.request_id),
+            "status": "queued",
+            "status_url": f"/api/v1/jobs/{context.job_id}",
         }
 
     # ------------------------------------------------------------------ #
@@ -173,40 +216,13 @@ async def _submit(plane: Any, request: Any, kind: str) -> dict[str, Any]:
                 }
             },
         )
-    method = {
-        "reference": plane.service.generate_reference,
-        "gsv": plane.service.generate_gsv,
-        "segment": plane.service.synthesize_segment,
-    }[kind]
     context = await plane.registry.create(
         request_id=request.request_id,
         kind=kind,
         request_snapshot=request.model_dump(mode="json"),
     )
 
-    async def worker_factory() -> Any:
-        await plane.registry.mark_running(context.job_id)
-        return await method(context, request)
-
-    async def scheduler() -> None:
-        try:
-            result = await plane.queue.run(worker_factory)
-            await plane.registry.mark_succeeded(context.job_id, result=_result_dict(result))
-        except PipelineError as exc:
-            await plane.registry.mark_failed(context.job_id, error=exc.as_dict())
-        except Exception as exc:  # pragma: no cover - defensive scheduler fence
-            await plane.registry.mark_failed(
-                context.job_id,
-                error={
-                    "code": "INTERNAL_ERROR",
-                    "stage": "scheduler",
-                    "message": str(exc),
-                    "retryable": False,
-                    "details": {},
-                },
-            )
-
-    asyncio.create_task(scheduler())
+    await _require_dispatcher(plane).notify()
     return {
         "job_id": str(context.job_id),
         "request_id": str(context.request_id),
@@ -215,35 +231,22 @@ async def _submit(plane: Any, request: Any, kind: str) -> dict[str, Any]:
     }
 
 
-def _result_dict(result: Any) -> dict[str, Any]:
-    if isinstance(result, ReferenceSynthesisResult):
-        return {
-            "job_id": str(result.job_id),
-            "request_id": str(result.request_id),
-            "kind": "reference",
-            "reference": result.reference.model_dump(mode="json"),
-            "manifest_path": str(result.manifest_path),
-        }
-    if isinstance(result, GsvSynthesisResult):
-        return {
-            "job_id": str(result.job_id),
-            "request_id": str(result.request_id),
-            "kind": "gsv",
-            "target": result.target.model_dump(mode="json"),
-            "manifest_path": str(result.manifest_path),
-            "reference_content_sha256": result.reference_content_sha256,
-        }
-    if isinstance(result, SegmentSynthesisResult):
-        return {
-            "job_id": str(result.job_id),
-            "request_id": str(result.request_id),
-            "kind": "segment",
-            "reference": result.reference.model_dump(mode="json"),
-            "target": result.target.model_dump(mode="json"),
-            "reference_manifest_path": str(result.reference_manifest_path),
-            "run_manifest_path": str(result.run_manifest_path),
-        }
-    raise TypeError(f"unknown result type: {type(result)}")
+def _require_dispatcher(plane: Any) -> Any:
+    dispatcher = getattr(plane, "dispatcher", None)
+    if dispatcher is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": {
+                    "code": ErrorCode.ENGINE_UNAVAILABLE.value,
+                    "stage": "dispatcher",
+                    "message": "durable job dispatcher is not ready",
+                    "retryable": True,
+                    "details": {},
+                }
+            },
+        )
+    return dispatcher
 
 
 async def _require_job(plane: Any, job_id: UUID) -> Any:

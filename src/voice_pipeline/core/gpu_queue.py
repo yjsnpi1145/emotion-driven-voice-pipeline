@@ -18,6 +18,7 @@ class QueueItem(Generic[T]):
     started: asyncio.Future[None]
     enqueued_at: float
     cancelled: bool = field(default=False)
+    execution_task: asyncio.Future[T] | None = field(default=None)
 
 
 class SerialGpuQueue:
@@ -39,7 +40,12 @@ class SerialGpuQueue:
             self._state = "accepting"
             self._consumer = asyncio.create_task(self._consume(), name="single-gpu-consumer")
 
-    async def run(self, factory: Callable[[], Awaitable[T]]) -> T:
+    async def run(
+        self,
+        factory: Callable[[], Awaitable[T]],
+        *,
+        queue_timeout_seconds: float | None = None,
+    ) -> T:
         if self._consumer is None or self._state == "stopped":
             raise RuntimeError("GPU queue is not started")
         if self._state != "accepting":
@@ -50,6 +56,16 @@ class SerialGpuQueue:
                 retryable=False,
             )
         loop = asyncio.get_running_loop()
+        timeout_seconds = (
+            self._queue_timeout_seconds if queue_timeout_seconds is None else queue_timeout_seconds
+        )
+        if timeout_seconds <= 0:
+            raise PipelineError(
+                ErrorCode.QUEUE_TIMEOUT,
+                "queue",
+                "job expired before GPU execution",
+                retryable=True,
+            )
         future: asyncio.Future[T] = loop.create_future()
         started: asyncio.Future[None] = loop.create_future()
         item = QueueItem(
@@ -62,7 +78,7 @@ class SerialGpuQueue:
         try:
             await asyncio.wait_for(
                 asyncio.shield(started),
-                timeout=self._queue_timeout_seconds,
+                timeout=timeout_seconds,
             )
         except TimeoutError as exc:
             if not started.done():
@@ -79,6 +95,16 @@ class SerialGpuQueue:
             return await future
         except asyncio.CancelledError:
             item.cancelled = True
+            execution = item.execution_task
+            if execution is not None and not execution.done():
+                execution.cancel()
+                try:
+                    # A terminal ``cancelled`` state is valid only after the
+                    # service's cancellation path has completed its engine
+                    # abort/lease cleanup.
+                    await asyncio.shield(execution)
+                except asyncio.CancelledError:
+                    pass
             raise
 
     async def _consume(self) -> None:
@@ -98,10 +124,15 @@ class SerialGpuQueue:
                     self._idle_event.clear()
                 entered = True
                 self._max_active_observed = max(self._max_active_observed, self._active_count)
-                result = await item.factory()
+                item.execution_task = asyncio.ensure_future(item.factory())
+                result = await item.execution_task
                 if not item.future.cancelled():
                     item.future.set_result(result)
             except asyncio.CancelledError:
+                if item.cancelled:
+                    # The queue caller cancelled this individual item; its
+                    # factory has already been cancelled and awaited by run().
+                    continue
                 if not item.future.cancelled():
                     item.future.set_exception(
                         PipelineError(
@@ -118,6 +149,7 @@ class SerialGpuQueue:
                 if not item.future.cancelled():
                     item.future.set_exception(exc)
             finally:
+                item.execution_task = None
                 if entered:
                     self._active_count -= 1
                     if self._active_count == 0:

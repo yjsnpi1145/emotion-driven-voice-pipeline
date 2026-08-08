@@ -14,7 +14,9 @@ from voice_pipeline.api.dependencies import build_dependencies
 from voice_pipeline.api.model_profile_routes import build_model_profile_router
 from voice_pipeline.api.routes import build_router
 from voice_pipeline.core.config import AppSettings
+from voice_pipeline.core.dispatcher import DurableJobDispatcher
 from voice_pipeline.core.gpu_queue import SerialGpuQueue
+from voice_pipeline.core.job_executor import JobExecutor
 from voice_pipeline.core.jobs import InMemoryJobRegistry
 from voice_pipeline.core.model_profile_service import ModelProfileService
 from voice_pipeline.core.pipeline import SynthesisService
@@ -52,6 +54,7 @@ class ControlPlane:
         self._shutdown_started = False
         self.database: Database | None = None
         self.model_profiles: ModelProfileService | None = None
+        self.dispatcher: DurableJobDispatcher | None = None
 
     def attach_durable_state(self, database: Database, model_profiles: ModelProfileService) -> None:
         self.database = database
@@ -88,6 +91,9 @@ class ControlPlane:
                     "details": {},
                 }
             )
+        dispatcher = getattr(self, "dispatcher", None)
+        if dispatcher is not None:
+            await dispatcher.stop(deadline=deadline)
         remaining = max(0.0, deadline - loop.time())
         try:
             await asyncio.wait_for(self.runtime.stop(deadline=deadline), timeout=remaining)
@@ -159,9 +165,17 @@ def create_app(
             require_model_profile=settings.mode == "real",
         )
         plane.registry = SqliteJobStore(database, jobs_root=runtime_dir / "jobs")
+        plane.dispatcher = DurableJobDispatcher(
+            store=plane.registry,
+            queue=queue,
+            executor=JobExecutor(service, jobs_root=runtime_dir / "jobs"),
+            instance_id=audit.instance_id,
+            queue_timeout_seconds=settings.queue.queue_timeout_seconds,
+        )
         try:
             await runtime.start()
             await queue.start()
+            await plane.dispatcher.start()
             yield
         finally:
             await plane.shutdown()
