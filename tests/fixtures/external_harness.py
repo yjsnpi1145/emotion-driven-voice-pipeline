@@ -132,6 +132,7 @@ def build_external_config(
     runtime_dir: Path,
     index_server: FakeServerProcess,
     gsv_server: FakeServerProcess,
+    server_port: int = 18765,
     queue_timeout_seconds: float = 5.0,
     request_timeout_seconds: float = 10.0,
 ) -> Path:
@@ -141,7 +142,7 @@ def build_external_config(
 schema_version: 1
 mode: external_test
 engine_lifecycle: resident
-server: {{host: 127.0.0.1, port: 18765}}
+server: {{host: 127.0.0.1, port: {server_port}}}
 runtime_dir: {str(runtime_dir).replace(chr(92), "/")}
 engine_lock_path: engines.lock.yaml
 checkpoint_lock_path: checkpoints.lock.yaml

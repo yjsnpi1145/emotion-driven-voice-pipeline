@@ -4,6 +4,7 @@ import http.server
 import threading
 from uuid import uuid4
 
+import httpx
 import pytest
 
 from voice_pipeline.api.dependencies import fingerprint_from_challenge
@@ -146,3 +147,13 @@ async def test_unknown_engine_raises(external_settings, external_servers) -> Non
         runtime.engine_identity("bogus")
     with pytest.raises(ValueError, match="unknown engine"):
         await runtime.begin_inference("bogus", job_id=uuid4())
+
+
+@pytest.mark.asyncio
+async def test_external_fake_engine_reports_activity_status(external_servers) -> None:
+    """The black-box fixture exposes activity without importing product runtime state."""
+    async with httpx.AsyncClient(base_url=external_servers[0].base_url, timeout=5) as client:
+        response = await client.get("/__control/status")
+
+    assert response.status_code == 200
+    assert response.json() == {"active_inference": 0, "max_active_observed": 0}

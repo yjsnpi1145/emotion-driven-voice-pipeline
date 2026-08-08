@@ -25,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 _ACTIVE = 0
+_MAX_ACTIVE = 0
 _ACTIVE_LOCK = threading.Lock()
 _CANCEL = threading.Event()
 _AUDIT_LOCK = threading.Lock()
@@ -101,6 +102,8 @@ class FakeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"status": "alive"})
             return
         if self.path == "/health/ready":
+            with _ACTIVE_LOCK:
+                active = _ACTIVE
             payload = {
                 "state": "ready",
                 "pid": os.getpid(),
@@ -110,9 +113,18 @@ class FakeHandler(BaseHTTPRequestHandler):
                 "source_revision": _FINGERPRINT.get("source_revision", ""),
                 "fingerprint": _FINGERPRINT,
                 "preflight_ok": True,
-                "active_inference": 0,
+                "active_inference": active,
             }
             self._send_json(200, payload)
+            return
+        if self.path == "/__control/status":
+            with _ACTIVE_LOCK:
+                active = _ACTIVE
+                maximum = _MAX_ACTIVE
+            self._send_json(
+                200,
+                {"active_inference": active, "max_active_observed": maximum},
+            )
             return
         self._send_json(404, {"error": "not found"})
 
@@ -162,9 +174,10 @@ class FakeHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": "not found"})
 
     def _handle_index(self, payload: dict) -> None:
-        global _ACTIVE
+        global _ACTIVE, _MAX_ACTIVE
         with _ACTIVE_LOCK:
             _ACTIVE += 1
+            _MAX_ACTIVE = max(_MAX_ACTIVE, _ACTIVE)
         enter = time.monotonic()
         request_id = payload.get("request_id", "")
         output_path = payload.get("output_path")
@@ -220,9 +233,10 @@ class FakeHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(exc)})
 
     def _handle_gsv(self, payload: dict) -> None:
-        global _ACTIVE
+        global _ACTIVE, _MAX_ACTIVE
         with _ACTIVE_LOCK:
             _ACTIVE += 1
+            _MAX_ACTIVE = max(_MAX_ACTIVE, _ACTIVE)
         enter = time.monotonic()
         request_id = payload.get("text", "")
         try:
