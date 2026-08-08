@@ -15,6 +15,7 @@ from voice_pipeline.models.model_profiles import (
     ModelProfileSnapshot,
     ModelProfileStatus,
     ModelProfileView,
+    ResolvedModelProfile,
 )
 from voice_pipeline.modules.audio.wav_probe import sha256_file
 from voice_pipeline.storage.database import Database
@@ -100,8 +101,27 @@ class SqliteModelProfileStore:
                 "model_profile",
                 "no active GPT-SoVITS model profile is configured",
                 retryable=False,
+                details={"reason": "no_active_profile"},
             )
         return await self.get_ready_snapshot(UUID(str(profile_id)))
+
+    async def resolve_selected_profile(self, profile_id: UUID | None) -> ResolvedModelProfile:
+        """Resolve a verified explicit profile or the current active profile.
+
+        Paths stay private to the control process.  The snapshot exposed in jobs
+        and manifests remains portable and contains only library-relative paths
+        plus content hashes.
+        """
+        snapshot = (
+            await self.get_ready_snapshot(profile_id)
+            if profile_id is not None
+            else await self.resolve_active_snapshot()
+        )
+        return ResolvedModelProfile(
+            **snapshot.model_dump(),
+            gpt_path=_resolve_library_path(self._models_root, snapshot.gpt_relative_path),
+            sovits_path=_resolve_library_path(self._models_root, snapshot.sovits_relative_path),
+        )
 
     async def list(self) -> list[ModelProfileView]:
         async with self._database.read_session() as session:

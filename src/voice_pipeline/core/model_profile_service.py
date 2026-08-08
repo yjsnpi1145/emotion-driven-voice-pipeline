@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from voice_pipeline.models.model_profiles import ImportModelProfileRequest, ModelProfileView
+from voice_pipeline.models.model_profiles import (
+    ImportModelProfileRequest,
+    ModelProfileView,
+    ResolvedModelProfile,
+)
 from voice_pipeline.storage.model_importer import ModelProfileImporter
 from voice_pipeline.storage.model_profile_store import SqliteModelProfileStore
 
@@ -25,3 +29,6 @@ class ModelProfileService:
 
     async def activate_profile(self, profile_id: UUID) -> ModelProfileView:
         return await self._store.activate(profile_id)
+
+    async def resolve_selected_profile(self, profile_id: UUID | None) -> ResolvedModelProfile:
+        return await self._store.resolve_selected_profile(profile_id)

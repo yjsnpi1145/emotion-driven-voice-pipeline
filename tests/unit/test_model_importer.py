@@ -61,6 +61,34 @@ async def test_import_copies_pair_and_source_mutation_is_irrelevant(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_active_profile_resolves_to_verified_absolute_weight_paths(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    gpt = sources / "voice.ckpt"
+    sovits = sources / "voice.pth"
+    gpt.write_bytes(b"gpt-v1")
+    sovits.write_bytes(b"sovits-v1")
+    database, service, store, root = await _service(tmp_path)
+    try:
+        view = await service.import_profile(
+            ImportModelProfileRequest(
+                display_name="voice-v1",
+                gpt_source_path=gpt.resolve(),
+                sovits_source_path=sovits.resolve(),
+            )
+        )
+        await service.activate_profile(view.profile_id)
+
+        resolved = await store.resolve_selected_profile(None)
+
+        assert resolved.profile_id == view.profile_id
+        assert resolved.gpt_path == (root / resolved.gpt_relative_path).resolve()
+        assert resolved.sovits_path == (root / resolved.sovits_relative_path).resolve()
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
 async def test_failed_copy_has_no_database_row_or_visible_profile(tmp_path: Path) -> None:
     sources = tmp_path / "sources"
     sources.mkdir()

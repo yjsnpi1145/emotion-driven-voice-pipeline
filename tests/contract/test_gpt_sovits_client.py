@@ -88,6 +88,51 @@ async def test_load_profile_calls_official_weight_endpoints_before_tts(
 
 
 @pytest.mark.asyncio
+async def test_profile_switch_failure_aborts_and_never_calls_tts(tmp_path) -> None:
+    events: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        events.append(request.url.path)
+        if request.url.path == "/set_gpt_weights":
+            return httpx.Response(200, json={"message": "success"})
+        if request.url.path == "/set_sovits_weights":
+            return httpx.Response(500, json={"detail": "bad checkpoint"})
+        if request.url.path == "/tts":
+            return httpx.Response(200, content=valid_wav_bytes(seconds=1.5))
+        return httpx.Response(404)
+
+    profile = ResolvedModelProfile(
+        profile_id=uuid4(),
+        display_name="voice-v1",
+        gpt_relative_path="profiles/a/GPT/model.ckpt",
+        sovits_relative_path="profiles/a/SoVITS/model.pth",
+        gpt_sha256="a" * 64,
+        sovits_sha256="b" * 64,
+        gpt_path=(tmp_path / "model.ckpt").resolve(),
+        sovits_path=(tmp_path / "model.pth").resolve(),
+    )
+    client = GptSoVitsHttpClient(
+        base_url="http://gsv.test",
+        timeout_seconds=5,
+        expected_fingerprint=EXPECTED_GSV_FINGERPRINT,
+        transport=httpx.MockTransport(handler),
+    )
+    service, request, context, calls = _make_service(client, tmp_path)
+
+    async def resolve_profile(_profile_id):
+        return profile
+
+    service.configure_model_profile_resolver(resolve_profile, require_model_profile=True)
+    request = request.model_copy(update={"model_profile_id": profile.profile_id})
+    with pytest.raises(PipelineError) as exc_info:
+        await service.synthesize_segment(context, request)
+
+    assert exc_info.value.code == ErrorCode.MODEL_SWITCH_FAILED
+    assert events == ["/set_gpt_weights", "/set_sovits_weights"]
+    assert _aborted(calls)
+
+
+@pytest.mark.asyncio
 async def test_gsv_payload_uses_bound_reference_text(gsv_request, tmp_path) -> None:
     seen: dict[str, object] = {}
 

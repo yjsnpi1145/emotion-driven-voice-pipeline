@@ -19,6 +19,7 @@ from voice_pipeline.core.inference_tracker import (
     TrackerLease,
     fake_fingerprint,
 )
+from voice_pipeline.models.model_profiles import ResolvedModelProfile
 from voice_pipeline.models.schemas import (
     EngineFingerprint,
     EngineIdentity,
@@ -209,6 +210,47 @@ class SynthesisService:
         self._gsv = gsv
         self._runtime = runtime
         self._audit = audit
+        self._model_profile_resolver: (
+            Callable[[UUID | None], Awaitable[ResolvedModelProfile]] | None
+        ) = None
+        self._require_model_profile = False
+
+    def configure_model_profile_resolver(
+        self,
+        resolver: Callable[[UUID | None], Awaitable[ResolvedModelProfile]],
+        *,
+        require_model_profile: bool,
+    ) -> None:
+        self._model_profile_resolver = resolver
+        self._require_model_profile = require_model_profile
+
+    async def _resolve_model_profile(self, profile_id: UUID | None) -> ResolvedModelProfile | None:
+        if self._model_profile_resolver is None:
+            return None
+        try:
+            return await self._model_profile_resolver(profile_id)
+        except PipelineError as exc:
+            if (
+                not self._require_model_profile
+                and profile_id is None
+                and exc.code == ErrorCode.MODEL_PROFILE_UNAVAILABLE
+                and exc.details.get("reason") == "no_active_profile"
+            ):
+                return None
+            raise
+
+    async def _load_and_synthesize_gsv(
+        self,
+        model_profile: ResolvedModelProfile | None,
+        request: GsvSynthesisRequest,
+        output_path: Path,
+    ) -> Any:
+        # Weight loading and TTS share one runtime lease.  A failed/uncertain
+        # switch therefore triggers the same abort-and-poison rules as a failed
+        # synthesis rather than allowing a following job onto an unknown model.
+        if model_profile is not None:
+            await self._gsv.load_profile(model_profile)
+        return await self._gsv.synthesize(request, output_path)
 
     # ------------------------------------------------------------------ #
     # validation
@@ -437,8 +479,10 @@ class SynthesisService:
             text_lang=request.target_language,
             speed_factor=request.speed_factor,
             seed=request.seed,
+            model_profile_id=request.model_profile_id,
         )
         await self._runtime.ensure_engine("gpt_sovits")
+        model_profile = await self._resolve_model_profile(request.model_profile_id)
         identity = self._runtime.engine_identity("gpt_sovits")
         self._write_audit(
             job_id=context.job_id,
@@ -452,7 +496,7 @@ class SynthesisService:
         )
         target_audio = await self._invoke_engine(
             "gpt_sovits",
-            lambda: self._gsv.synthesize(gsv_request, target_path),
+            lambda: self._load_and_synthesize_gsv(model_profile, gsv_request, target_path),
             job_id=context.job_id,
         )
         target_audio = probe_wav(target_audio.path, require_reference_window=False)
@@ -562,8 +606,10 @@ class SynthesisService:
             text_lang=request.target_language,
             speed_factor=request.speed_factor,
             seed=request.seed,
+            model_profile_id=request.model_profile_id,
         )
         await self._runtime.ensure_engine("gpt_sovits")
+        model_profile = await self._resolve_model_profile(request.model_profile_id)
         gsv_identity = self._runtime.engine_identity("gpt_sovits")
         self._write_audit(
             job_id=context.job_id,
@@ -577,7 +623,7 @@ class SynthesisService:
         )
         target_audio = await self._invoke_engine(
             "gpt_sovits",
-            lambda: self._gsv.synthesize(gsv_request, target_path),
+            lambda: self._load_and_synthesize_gsv(model_profile, gsv_request, target_path),
             job_id=context.job_id,
         )
         target_audio = probe_wav(target_audio.path, require_reference_window=False)

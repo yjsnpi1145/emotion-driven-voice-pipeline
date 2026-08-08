@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -7,7 +9,9 @@ from voice_pipeline.api.app import create_app
 
 
 @pytest.mark.asyncio
-async def test_import_list_and_activate_a_local_model_profile(fake_settings, tmp_path) -> None:
+async def test_import_list_activate_and_use_a_local_model_profile(
+    fake_settings, request_json, tmp_path
+) -> None:
     sources = tmp_path / "source-models"
     sources.mkdir()
     gpt = sources / "voice.ckpt"
@@ -36,6 +40,15 @@ async def test_import_list_and_activate_a_local_model_profile(fake_settings, tmp
             assert activated.status_code == 200
             assert activated.json()["active"] is True
             listed = await client.get("/api/v1/model-profiles")
+            submitted = await client.post("/api/v1/jobs/segment", json=request_json)
+            job_id = submitted.json()["job_id"]
+            for _ in range(100):
+                status = (await client.get(f"/api/v1/jobs/{job_id}")).json()
+                if status["status"] in {"succeeded", "failed"}:
+                    break
+                await asyncio.sleep(0.01)
 
     assert listed.status_code == 200
     assert [item["profile_id"] for item in listed.json()] == [profile_id]
+    assert status["status"] == "succeeded"
+    assert [str(item.profile_id) for item in app.state.plane.gsv.loaded_profiles] == [profile_id]

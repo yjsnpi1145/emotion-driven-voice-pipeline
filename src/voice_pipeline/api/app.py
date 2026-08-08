@@ -152,9 +152,11 @@ def create_app(
             models_root=settings.model_library.models_root,
             allowed_import_roots=settings.model_library.allowed_import_roots,
         )
-        plane.attach_durable_state(
-            database,
-            ModelProfileService(importer=profile_importer, store=profile_store),
+        model_profile_service = ModelProfileService(importer=profile_importer, store=profile_store)
+        plane.attach_durable_state(database, model_profile_service)
+        plane.service.configure_model_profile_resolver(
+            model_profile_service.resolve_selected_profile,
+            require_model_profile=settings.mode == "real",
         )
         plane.registry = SqliteJobStore(database, jobs_root=runtime_dir / "jobs")
         try:
