@@ -5,15 +5,23 @@ import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 
 from voice_pipeline.models.schemas import StrictModel
 from voice_pipeline.modules.audio.wav_probe import sha256_file
 from voice_pipeline.storage.artifact_store import ArtifactStore
 from voice_pipeline.storage.database import Database
-from voice_pipeline.storage.orm import artifact_blobs, artifact_version_state, artifact_versions
+from voice_pipeline.storage.orm import (
+    artifact_blobs,
+    artifact_version_state,
+    artifact_versions,
+    segments,
+    storage_meta,
+)
 
 
 class RecoveryReport(StrictModel):
@@ -180,4 +188,37 @@ class StorageRecovery:
                             checked_at_utc=now,
                         )
                     )
+                    ref_pointer = await session.execute(
+                        update(segments)
+                        .where(segments.c.active_ref_version_id == str(version_id))
+                        .values(
+                            active_ref_version_id=None,
+                            selection_revision=segments.c.selection_revision + 1,
+                            revision=segments.c.revision + 1,
+                            updated_at_utc=now,
+                        )
+                    )
+                    gsv_pointer = await session.execute(
+                        update(segments)
+                        .where(segments.c.active_gsv_version_id == str(version_id))
+                        .values(
+                            active_gsv_version_id=None,
+                            selection_revision=segments.c.selection_revision + 1,
+                            revision=segments.c.revision + 1,
+                            updated_at_utc=now,
+                        )
+                    )
+                    if (
+                        cast(CursorResult[Any], ref_pointer).rowcount
+                        or cast(CursorResult[Any], gsv_pointer).rowcount
+                    ):
+                        await session.execute(
+                            update(storage_meta)
+                            .where(storage_meta.c.singleton_id == 1)
+                            .values(
+                                protected_graph_revision=(
+                                    storage_meta.c.protected_graph_revision + 1
+                                )
+                            )
+                        )
         return missing, corrupt

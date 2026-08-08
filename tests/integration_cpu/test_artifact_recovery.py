@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 import pytest
 from sqlalchemy import insert, select
 
@@ -135,3 +136,47 @@ async def test_recovery_removes_staging_quarantines_orphans_and_marks_missing_ve
         assert state == "missing"
     finally:
         await database.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery_clears_current_pointer_when_its_blob_is_missing(
+    fake_settings, tmp_path: Path
+) -> None:
+    """Recovery never leaves a current pointer aimed at a non-ready version."""
+    from tests.integration_cpu.conftest import write_tone
+    from tests.integration_cpu.test_segment_bound_jobs import _create_segment, _wait
+    from voice_pipeline.api.app import create_app
+
+    base_voice = tmp_path / "voice.wav"
+    write_tone(base_voice, seconds=5.0)
+    first = create_app(fake_settings)
+    async with first.router.lifespan_context(first):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=first), base_url="http://test"
+        ) as client:
+            segment_id = await _create_segment(client)
+            submitted = await client.post(
+                f"/api/v1/segments/{segment_id}/jobs/reference",
+                json={
+                    "request_id": "6a7f8b25-c247-4495-8f34-09f741dbed7a",
+                    "base_voice_path": str(base_voice.resolve()),
+                },
+            )
+            assert (await _wait(client, submitted.json()["job_id"]))["status"] == "succeeded"
+            segment = (await client.get(f"/api/v1/segments/{segment_id}")).json()
+            version = (
+                await client.get(f"/api/v1/versions/{segment['active_ref_version_id']}")
+            ).json()
+            blob = first.state.plane.artifact_store.root / version["blob_relative_path"]
+            blob.unlink()
+
+    second = create_app(fake_settings)
+    async with second.router.lifespan_context(second):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=second), base_url="http://test"
+        ) as client:
+            repaired = await client.get(f"/api/v1/segments/{segment_id}")
+            health = await client.get("/api/v1/health")
+
+    assert repaired.json()["active_ref_version_id"] is None
+    assert health.json()["storage"]["missing_ready_versions"] == 1
