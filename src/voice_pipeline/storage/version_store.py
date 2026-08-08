@@ -17,13 +17,14 @@ from voice_pipeline.models.persistence import (
     ArtifactType,
     ArtifactVersionRecord,
     ArtifactVersionView,
+    GsvModelSnapshot,
     JsonValue,
     PersistentJobRecord,
     VersionCommitResult,
 )
 from voice_pipeline.models.schemas import ReferenceBinding
 from voice_pipeline.modules.quality.models import QualityReport
-from voice_pipeline.storage.artifact_store import PublishedBlob
+from voice_pipeline.storage.artifact_store import ArtifactStore, PublishedBlob
 from voice_pipeline.storage.database import Database
 from voice_pipeline.storage.orm import (
     artifact_blobs,
@@ -52,6 +53,7 @@ class VersionStore:
         input_snapshot: dict[str, JsonValue],
         model_fingerprint: dict[str, JsonValue],
         quality_result: dict[str, JsonValue],
+        model_profile_snapshot: GsvModelSnapshot | None = None,
         ref_version_id: UUID | None = None,
         ref_content_sha256: str | None = None,
     ) -> ArtifactVersionView:
@@ -124,7 +126,11 @@ class VersionStore:
                     input_snapshot_sha256=_sha(input_json),
                     model_fingerprint_json=fingerprint_json,
                     model_fingerprint_sha256=_sha(fingerprint_json),
-                    model_profile_snapshot_json=None,
+                    model_profile_snapshot_json=(
+                        model_profile_snapshot.model_dump_json()
+                        if model_profile_snapshot is not None
+                        else None
+                    ),
                     quality_profile_version="0" * 64,
                     quality_result_json=quality_json,
                     complete_cache_key=None,
@@ -286,8 +292,9 @@ class VersionStore:
 class VersionCommitService:
     """Commits a segment-bound execution, its version and its terminal job atomically."""
 
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, artifact_store: ArtifactStore) -> None:
         self._database = database
+        self._artifact_store = artifact_store
 
     async def commit_reference(
         self,
@@ -375,6 +382,34 @@ class VersionCommitService:
         input_json = _canonical_json(input_snapshot)
         fingerprint_json = _canonical_json(model_fingerprint)
         quality_json = _canonical_json(quality.model_dump(mode="json"))
+        manifest_relative_path = Path(f"manifests/versions/{version_id}.json")
+        self._artifact_store.publish_version_manifest(
+            manifest_relative_path,
+            {
+                "schema_version": 1,
+                "version_id": str(version_id),
+                "segment_id": str(snapshot.segment_id),
+                "artifact_type": artifact_type,
+                "source_job_id": str(job.job_id),
+                "blob": {
+                    "content_sha256": blob.content_sha256,
+                    "relative_path": blob.relative_path.as_posix(),
+                    "byte_size": blob.byte_size,
+                },
+                "reference_version_id": (
+                    str(reference_version_id) if reference_version_id is not None else None
+                ),
+                "input_snapshot": input_snapshot,
+                "model_fingerprint": model_fingerprint,
+                "model_profile_snapshot": (
+                    job.model_profile_snapshot.model_dump(mode="json")
+                    if job.model_profile_snapshot is not None
+                    else None
+                ),
+                "quality_result": quality.model_dump(mode="json"),
+                "created_at_utc": now,
+            },
+        )
         async with self._database.write_session() as session:
             exists = (
                 await session.execute(
@@ -433,7 +468,11 @@ class VersionCommitService:
                     input_snapshot_sha256=_sha(input_json),
                     model_fingerprint_json=fingerprint_json,
                     model_fingerprint_sha256=_sha(fingerprint_json),
-                    model_profile_snapshot_json=None,
+                    model_profile_snapshot_json=(
+                        job.model_profile_snapshot.model_dump_json()
+                        if job.model_profile_snapshot is not None
+                        else None
+                    ),
                     quality_profile_version=quality.policy_fingerprint,
                     quality_result_json=quality_json,
                     complete_cache_key=None,
@@ -558,6 +597,11 @@ def _view(row: dict[str, Any]) -> ArtifactVersionView:
         input_snapshot=cast(dict[str, JsonValue], json.loads(str(row["input_snapshot_json"]))),
         model_fingerprint=cast(
             dict[str, JsonValue], json.loads(str(row["model_fingerprint_json"]))
+        ),
+        model_profile_snapshot=(
+            GsvModelSnapshot.model_validate_json(str(row["model_profile_snapshot_json"]))
+            if row["model_profile_snapshot_json"] is not None
+            else None
         ),
         quality_result=cast(dict[str, JsonValue], json.loads(str(row["quality_result_json"]))),
         state=cast(ArtifactState, str(row["state"])),

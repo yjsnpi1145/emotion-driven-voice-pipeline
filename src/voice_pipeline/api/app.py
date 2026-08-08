@@ -75,6 +75,7 @@ class ControlPlane:
         self.retention_planner: RetentionPlanner | None = None
         self.retention_executor: RetentionExecutor | None = None
         self.quality_analyzer: QualityAnalyzer | None = None
+        self.last_recovery_report: Any | None = None
 
     def attach_durable_state(self, database: Database, model_profiles: ModelProfileService) -> None:
         self.database = database
@@ -205,6 +206,8 @@ def create_app(
             artifacts=plane.artifact_store,
             index=index,
             gsv=gsv,
+            model_profile_resolver=model_profile_service.resolve_selected_profile,
+            require_model_profile=settings.mode == "real",
         )
         plane.retention_planner = RetentionPlanner(
             database, history_limit=settings.storage.history_limit
@@ -218,13 +221,15 @@ def create_app(
                 jobs_root=runtime_dir / "jobs",
                 artifacts=plane.artifact_store,
                 versions=plane.version_store,
-                commits=VersionCommitService(database),
+                commits=VersionCommitService(database, plane.artifact_store),
             ),
             instance_id=audit.instance_id,
             queue_timeout_seconds=settings.queue.queue_timeout_seconds,
         )
         try:
-            await StorageRecovery(database, plane.artifact_store).reconcile()
+            plane.last_recovery_report = await StorageRecovery(
+                database, plane.artifact_store
+            ).reconcile()
             if settings.mode == "real":
                 plane.configure_quality(
                     FasterWhisperQualityAnalyzer(

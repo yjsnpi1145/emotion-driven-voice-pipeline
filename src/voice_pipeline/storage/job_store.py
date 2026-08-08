@@ -12,9 +12,11 @@ from sqlalchemy.engine import CursorResult
 
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.models.persistence import (
+    GsvModelSnapshot,
     JobKind,
     JobStatus,
     JsonValue,
+    OutputAudioSpec,
     PersistentJobRecord,
     RecoverySummary,
     SegmentJobSnapshot,
@@ -51,6 +53,8 @@ class SqliteJobStore:
         request_snapshot: dict[str, JsonValue],
         segment_snapshot: SegmentJobSnapshot | None = None,
         model_fingerprint: dict[str, JsonValue] | None = None,
+        model_profile_snapshot: GsvModelSnapshot | None = None,
+        output_spec: OutputAudioSpec | None = None,
         retry_of_job_id: UUID | None = None,
         attempt: int = 1,
     ) -> ExecutionContext:
@@ -78,8 +82,14 @@ class SqliteJobStore:
                         snapshot_json.encode("utf-8")
                     ).hexdigest(),
                     model_fingerprint_json=self.canonical_json(model_fingerprint or {}),
-                    model_profile_snapshot_json=None,
-                    output_spec_json=None,
+                    model_profile_snapshot_json=(
+                        model_profile_snapshot.model_dump_json()
+                        if model_profile_snapshot is not None
+                        else None
+                    ),
+                    output_spec_json=(
+                        output_spec.model_dump_json() if output_spec is not None else None
+                    ),
                     segment_snapshot_json=(
                         segment_snapshot.model_dump_json() if segment_snapshot is not None else None
                     ),
@@ -396,6 +406,16 @@ def _record(row: dict[str, Any]) -> PersistentJobRecord:
         request_snapshot_sha256=str(row["request_snapshot_sha256"]),
         model_fingerprint=cast(
             dict[str, JsonValue], json.loads(str(row["model_fingerprint_json"]))
+        ),
+        model_profile_snapshot=(
+            GsvModelSnapshot.model_validate_json(str(row["model_profile_snapshot_json"]))
+            if row["model_profile_snapshot_json"] is not None
+            else None
+        ),
+        output_spec=(
+            OutputAudioSpec.model_validate_json(str(row["output_spec_json"]))
+            if row["output_spec_json"] is not None
+            else None
         ),
         task_snapshot=(
             SegmentJobSnapshot.model_validate_json(str(row["segment_snapshot_json"]))

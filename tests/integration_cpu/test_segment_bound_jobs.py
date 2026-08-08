@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -140,3 +141,80 @@ async def test_late_segment_reference_is_preserved_as_history_without_replacing_
     assert completed["activation_outcome"] == "history_only"
     assert segment.json()["active_ref_version_id"] is None
     assert len(versions.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_segment_gsv_job_freezes_the_active_model_profile_at_submission(
+    fake_settings, tmp_path
+) -> None:
+    """Changing the UI-selected profile later cannot alter an already queued segment job."""
+    source = tmp_path / "source-models"
+    source.mkdir()
+    gpt = source / "voice.ckpt"
+    sovits = source / "voice.pth"
+    gpt_next = source / "voice-next.ckpt"
+    sovits_next = source / "voice-next.pth"
+    gpt.write_bytes(b"gpt-v1")
+    sovits.write_bytes(b"sovits-v1")
+    gpt_next.write_bytes(b"gpt-v2")
+    sovits_next.write_bytes(b"sovits-v2")
+    fake_settings.model_library.models_root = tmp_path / "model-library"
+    fake_settings.model_library.allowed_import_roots = [source]
+    base_voice = tmp_path / "voice.wav"
+    write_tone(base_voice, seconds=5.0)
+    app = create_app(fake_settings)
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            imported = await client.post(
+                "/api/v1/model-profiles/import",
+                json={
+                    "display_name": "frozen-voice",
+                    "gpt_source_path": str(gpt.resolve()),
+                    "sovits_source_path": str(sovits.resolve()),
+                },
+            )
+            profile_id = imported.json()["profile_id"]
+            imported_next = await client.post(
+                "/api/v1/model-profiles/import",
+                json={
+                    "display_name": "later-voice",
+                    "gpt_source_path": str(gpt_next.resolve()),
+                    "sovits_source_path": str(sovits_next.resolve()),
+                },
+            )
+            next_profile_id = imported_next.json()["profile_id"]
+            activated = await client.post(f"/api/v1/model-profiles/{profile_id}/activate")
+            assert activated.status_code == 200
+            segment_id = await _create_segment(client)
+            ref = await client.post(
+                f"/api/v1/segments/{segment_id}/jobs/reference",
+                json={
+                    "request_id": "4a7f8b25-c247-4495-8f34-09f741dbed7a",
+                    "base_voice_path": str(base_voice.resolve()),
+                },
+            )
+            assert (await _wait(client, ref.json()["job_id"]))["status"] == "succeeded"
+            submitted = await client.post(
+                f"/api/v1/segments/{segment_id}/jobs/gsv",
+                json={"request_id": "5a7f8b25-c247-4495-8f34-09f741dbed7a"},
+            )
+            assert submitted.status_code == 202
+            queued = await client.get(f"/api/v1/jobs/{submitted.json()['job_id']}")
+            switched = await client.post(f"/api/v1/model-profiles/{next_profile_id}/activate")
+            assert switched.status_code == 200
+            completed = await _wait(client, submitted.json()["job_id"])
+            versions = await client.get(f"/api/v1/segments/{segment_id}/versions")
+
+    assert queued.json()["request_snapshot"]["model_profile_id"] == profile_id
+    assert queued.json()["model_profile_snapshot"]["profile"]["profile_id"] == profile_id
+    assert completed["status"] == "succeeded"
+    gsv_version = next(item for item in versions.json() if item["artifact_type"] == "gsv")
+    assert gsv_version["model_profile_snapshot"]["profile"]["profile_id"] == profile_id
+    assert [str(item.profile_id) for item in app.state.plane.gsv.loaded_profiles] == [profile_id]
+    manifest_path = app.state.plane.artifact_store.root / gsv_version["manifest_relative_path"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["version_id"] == gsv_version["version_id"]
+    assert manifest["model_profile_snapshot"]["profile"]["profile_id"] == profile_id

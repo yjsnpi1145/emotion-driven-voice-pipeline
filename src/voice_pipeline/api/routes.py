@@ -43,6 +43,9 @@ def build_router(plane: Any) -> APIRouter:
             if quality is not None
             else None,
         }
+        storage_health = await _storage_health(plane)
+        dispatcher = getattr(plane, "dispatcher", None)
+        dispatcher_stats = dispatcher.stats() if dispatcher is not None else None
         return {
             "status": _overall_status(runtime_health, plane.settings.engine_lifecycle, queue_stats),
             "mode": plane.settings.mode,
@@ -55,6 +58,23 @@ def build_router(plane: Any) -> APIRouter:
             },
             "workers": workers,
             "quality": quality_health,
+            "storage": storage_health,
+            "dispatcher": {
+                "state": dispatcher_stats.state if dispatcher_stats is not None else "stopped",
+                "queued_count": (
+                    dispatcher_stats.queued_count if dispatcher_stats is not None else 0
+                ),
+                "active_job_id": (
+                    str(dispatcher_stats.active_job_id)
+                    if dispatcher_stats is not None and dispatcher_stats.active_job_id is not None
+                    else None
+                ),
+                "recovered_interrupted_count": (
+                    dispatcher_stats.recovered_interrupted_count
+                    if dispatcher_stats is not None
+                    else 0
+                ),
+            },
             "gpu_queue": {
                 "state": queue_stats.state,
                 "poison_reason": queue_stats.poison_reason,
@@ -109,6 +129,16 @@ def build_router(plane: Any) -> APIRouter:
                 else None
             ),
             "request_snapshot": record.request_snapshot,
+            "model_profile_snapshot": (
+                record.model_profile_snapshot.model_dump(mode="json")
+                if record.model_profile_snapshot is not None
+                else None
+            ),
+            "output_spec": (
+                record.output_spec.model_dump(mode="json")
+                if record.output_spec is not None
+                else None
+            ),
             "result": record.result,
             "audio_urls": audio_urls,
             "manifest_urls": manifest_urls,
@@ -193,6 +223,35 @@ def build_router(plane: Any) -> APIRouter:
 # ---------------------------------------------------------------------- #
 # helpers
 # ---------------------------------------------------------------------- #
+
+
+async def _storage_health(plane: Any) -> dict[str, Any]:
+    database = getattr(plane, "database", None)
+    store = getattr(plane, "artifact_store", None)
+    recovery = getattr(plane, "last_recovery_report", None)
+    if database is None or store is None or recovery is None:
+        return {
+            "status": "unavailable",
+            "database_path": None,
+            "alembic_revision": None,
+            "journal_mode": None,
+            "quick_check": None,
+            "artifact_root": None,
+            "missing_ready_versions": 0,
+            "corrupt_ready_versions": 0,
+            "last_recovery_run_id": None,
+        }
+    return {
+        "status": "ready",
+        "database_path": str(plane.settings.storage.database_path),
+        "alembic_revision": await database.alembic_revision(),
+        "journal_mode": (await database.scalar_text("PRAGMA journal_mode")).casefold(),
+        "quick_check": await database.quick_check_text(),
+        "artifact_root": str(store.root),
+        "missing_ready_versions": len(recovery.missing_versions),
+        "corrupt_ready_versions": len(recovery.corrupt_versions),
+        "last_recovery_run_id": str(recovery.recovery_run_id),
+    }
 
 
 def _overall_status(runtime_health: Any, lifecycle: str, queue_stats: Any) -> str:

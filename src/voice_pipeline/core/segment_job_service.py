@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID
 
 from voice_pipeline.core.errors import ErrorCode, PipelineError
+from voice_pipeline.models.model_profiles import ModelProfileSnapshot, ResolvedModelProfile
 from voice_pipeline.models.persistence import (
+    GsvModelSnapshot,
     SegmentGsvJobRequest,
     SegmentJobSnapshot,
     SegmentReferenceJobRequest,
@@ -34,6 +37,10 @@ class SegmentJobService:
         artifacts: ArtifactStore,
         index: Any,
         gsv: Any,
+        model_profile_resolver: (
+            Callable[[UUID | None], Awaitable[ResolvedModelProfile]] | None
+        ) = None,
+        require_model_profile: bool = False,
     ) -> None:
         self._jobs = jobs
         self._segments = segments
@@ -41,11 +48,14 @@ class SegmentJobService:
         self._artifacts = artifacts
         self._index = index
         self._gsv = gsv
+        self._model_profile_resolver = model_profile_resolver
+        self._require_model_profile = require_model_profile
 
     async def submit_reference(
         self, segment_id: UUID, request: SegmentReferenceJobRequest
     ) -> ExecutionContext:
         segment = await self._segments.get_segment(segment_id)
+        task = await self._segments.get_task(segment.task_id)
         snapshot = _snapshot(segment, activate_on_success=request.activate_on_success)
         frozen = ReferenceJobRequest(
             request_id=request.request_id,
@@ -60,10 +70,12 @@ class SegmentJobService:
             request_snapshot=frozen.model_dump(mode="json"),
             segment_snapshot=snapshot,
             model_fingerprint=self._index.fingerprint().model_dump(mode="json"),
+            output_spec=task.output_spec,
         )
 
     async def submit_gsv(self, segment_id: UUID, request: SegmentGsvJobRequest) -> ExecutionContext:
         segment = await self._segments.get_segment(segment_id)
+        task = await self._segments.get_task(segment.task_id)
         if segment.active_ref_version_id is None:
             raise PipelineError(
                 ErrorCode.VERSION_CONFLICT,
@@ -81,6 +93,9 @@ class SegmentJobService:
             )
         binding = self._binding_from_version(reference_version)
         snapshot = _snapshot(segment, activate_on_success=request.activate_on_success)
+        selected_profile_id, profile_snapshot = await self._freeze_model_profile(
+            request.model_profile_id
+        )
         frozen = GsvSynthesisRequest(
             request_id=request.request_id,
             reference=binding,
@@ -88,7 +103,7 @@ class SegmentJobService:
             text_lang=segment.target_language,
             speed_factor=segment.speed_factor,
             seed=segment.seed,
-            model_profile_id=request.model_profile_id,
+            model_profile_id=selected_profile_id,
         )
         return await self._jobs.create(
             request_id=request.request_id,
@@ -96,6 +111,37 @@ class SegmentJobService:
             request_snapshot=frozen.model_dump(mode="json"),
             segment_snapshot=snapshot,
             model_fingerprint=self._gsv.fingerprint().model_dump(mode="json"),
+            model_profile_snapshot=profile_snapshot,
+            output_spec=task.output_spec,
+        )
+
+    async def _freeze_model_profile(
+        self, profile_id: UUID | None
+    ) -> tuple[UUID | None, GsvModelSnapshot | None]:
+        if self._model_profile_resolver is None:
+            return profile_id, None
+        try:
+            resolved = await self._model_profile_resolver(profile_id)
+        except PipelineError as exc:
+            if (
+                not self._require_model_profile
+                and profile_id is None
+                and exc.code == ErrorCode.MODEL_PROFILE_UNAVAILABLE
+                and exc.details.get("reason") == "no_active_profile"
+            ):
+                return None, None
+            raise
+        profile = ModelProfileSnapshot(
+            profile_id=resolved.profile_id,
+            display_name=resolved.display_name,
+            gpt_relative_path=resolved.gpt_relative_path,
+            sovits_relative_path=resolved.sovits_relative_path,
+            gpt_sha256=resolved.gpt_sha256,
+            sovits_sha256=resolved.sovits_sha256,
+        )
+        return (
+            profile.profile_id,
+            GsvModelSnapshot(profile=profile, engine_fingerprint=self._gsv.fingerprint()),
         )
 
     def _binding_from_version(self, version: object) -> ReferenceBinding:
