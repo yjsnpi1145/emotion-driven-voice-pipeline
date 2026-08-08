@@ -29,6 +29,7 @@ from voice_pipeline.storage.model_importer import ModelProfileImporter
 from voice_pipeline.storage.model_profile_store import SqliteModelProfileStore
 from voice_pipeline.storage.recovery import StorageRecovery
 from voice_pipeline.storage.segment_store import SegmentStore
+from voice_pipeline.storage.version_store import VersionStore
 
 
 class ControlPlane:
@@ -61,6 +62,7 @@ class ControlPlane:
         self.dispatcher: DurableJobDispatcher | None = None
         self.artifact_store: ArtifactStore | None = None
         self.segment_store: SegmentStore | None = None
+        self.version_store: VersionStore | None = None
 
     def attach_durable_state(self, database: Database, model_profiles: ModelProfileService) -> None:
         self.database = database
@@ -173,6 +175,7 @@ def create_app(
         plane.registry = SqliteJobStore(database, jobs_root=runtime_dir / "jobs")
         plane.artifact_store = ArtifactStore(settings.storage.artifact_root)
         plane.segment_store = SegmentStore(database)
+        plane.version_store = VersionStore(database)
         plane.dispatcher = DurableJobDispatcher(
             store=plane.registry,
             queue=queue,

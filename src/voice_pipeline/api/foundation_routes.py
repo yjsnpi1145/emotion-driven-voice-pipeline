@@ -4,13 +4,16 @@ from typing import Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.models.persistence import (
+    ActivateVersionRequest,
     CreateDubbingTaskRequest,
     CreateSegmentRequest,
     SegmentInputsPatch,
 )
+from voice_pipeline.modules.audio.wav_probe import sha256_file
 
 
 def build_foundation_router(plane: Any) -> APIRouter:
@@ -78,6 +81,58 @@ def build_foundation_router(plane: Any) -> APIRouter:
         except PipelineError as exc:
             raise _error_response(exc, invalid_status=422) from exc
 
+    @router.get("/api/v1/segments/{segment_id}/versions")
+    async def list_versions(segment_id: UUID) -> list[dict[str, Any]]:
+        return cast(
+            list[dict[str, Any]],
+            [
+                record.model_dump(mode="json")
+                for record in await _versions(plane).list_versions(segment_id)
+            ],
+        )
+
+    @router.post("/api/v1/segments/{segment_id}/versions/{version_id}/activate")
+    async def activate_version(
+        segment_id: UUID, version_id: UUID, request: ActivateVersionRequest
+    ) -> dict[str, str | None]:
+        try:
+            reference_id, gsv_id = await _versions(plane).activate(segment_id, version_id, request)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="segment or version not found") from exc
+        except PipelineError as exc:
+            raise _error_response(exc, invalid_status=422) from exc
+        return {
+            "active_ref_version_id": str(reference_id) if reference_id else None,
+            "active_gsv_version_id": str(gsv_id) if gsv_id else None,
+        }
+
+    @router.get("/api/v1/versions/{version_id}")
+    async def get_version(version_id: UUID) -> dict[str, Any]:
+        try:
+            return cast(
+                dict[str, Any],
+                (await _versions(plane).get_version(version_id)).model_dump(mode="json"),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="version not found") from exc
+
+    @router.get("/api/v1/versions/{version_id}/audio")
+    async def get_version_audio(version_id: UUID) -> FileResponse:
+        try:
+            version = await _versions(plane).get_version(version_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="version not found") from exc
+        if version.state != "ready":
+            raise HTTPException(status_code=409, detail="version audio is not ready")
+        path = (plane.artifact_store.root / version.blob_relative_path).resolve()
+        try:
+            path.relative_to((plane.artifact_store.root / "blobs").resolve())
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail="version blob path is invalid") from exc
+        if not path.is_file() or path.is_symlink() or sha256_file(path) != version.blob_sha256:
+            raise HTTPException(status_code=409, detail="version blob is missing or corrupt")
+        return FileResponse(path, media_type="audio/wav")
+
     return router
 
 
@@ -85,6 +140,13 @@ def _store(plane: Any) -> Any:
     store = getattr(plane, "segment_store", None)
     if store is None:
         raise HTTPException(status_code=503, detail="segment store is not ready")
+    return store
+
+
+def _versions(plane: Any) -> Any:
+    store = getattr(plane, "version_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="version store is not ready")
     return store
 
 

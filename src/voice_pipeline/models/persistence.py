@@ -186,6 +186,12 @@ class ArtifactVersionRecord(StrictModel):
         return self
 
 
+class ArtifactVersionView(ArtifactVersionRecord):
+    blob_relative_path: Path
+    state: ArtifactState
+    diagnostic: dict[str, JsonValue]
+
+
 class DubbingTaskRecord(StrictModel):
     task_id: UUID
     title: NonBlankText
