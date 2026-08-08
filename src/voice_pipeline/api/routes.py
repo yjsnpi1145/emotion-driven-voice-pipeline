@@ -102,6 +102,7 @@ def build_router(plane: Any) -> APIRouter:
                 str(record.retry_of_job_id) if record.retry_of_job_id is not None else None
             ),
             "attempt": record.attempt,
+            "activation_outcome": record.activation_outcome,
             "cancel_requested_at": (
                 record.cancel_requested_at_utc.isoformat()
                 if record.cancel_requested_at_utc is not None

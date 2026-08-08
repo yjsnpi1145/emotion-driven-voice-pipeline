@@ -92,6 +92,13 @@ class JobSuccessCommit(StrictModel):
     artifact_version_ids: tuple[UUID, ...] = ()
     reference_cache_hit: bool = False
     gsv_cache_hit: bool = False
+    terminal_committed: bool = False
+
+
+class VersionCommitResult(StrictModel):
+    version: ArtifactVersionRecord
+    activation_outcome: ActivationOutcome
+    terminal_status: Literal["succeeded", "cancelled"]
 
 
 class CancelDecision(StrictModel):

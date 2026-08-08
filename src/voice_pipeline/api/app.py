@@ -21,6 +21,7 @@ from voice_pipeline.core.job_executor import JobExecutor
 from voice_pipeline.core.jobs import InMemoryJobRegistry
 from voice_pipeline.core.model_profile_service import ModelProfileService
 from voice_pipeline.core.pipeline import SynthesisService
+from voice_pipeline.core.segment_job_service import SegmentJobService
 from voice_pipeline.modules.quality.fake import DeterministicQualityAnalyzer
 from voice_pipeline.modules.quality.faster_whisper import FasterWhisperQualityAnalyzer
 from voice_pipeline.modules.quality.ports import QualityAnalyzer
@@ -34,7 +35,7 @@ from voice_pipeline.storage.model_profile_store import SqliteModelProfileStore
 from voice_pipeline.storage.quality_cache import QualityCacheStore
 from voice_pipeline.storage.recovery import StorageRecovery
 from voice_pipeline.storage.segment_store import SegmentStore
-from voice_pipeline.storage.version_store import VersionStore
+from voice_pipeline.storage.version_store import VersionCommitService, VersionStore
 
 
 class ControlPlane:
@@ -68,6 +69,7 @@ class ControlPlane:
         self.artifact_store: ArtifactStore | None = None
         self.segment_store: SegmentStore | None = None
         self.version_store: VersionStore | None = None
+        self.segment_jobs: SegmentJobService | None = None
         self.quality_analyzer: QualityAnalyzer | None = None
 
     def attach_durable_state(self, database: Database, model_profiles: ModelProfileService) -> None:
@@ -192,10 +194,24 @@ def create_app(
         plane.service.configure_quality_cache(QualityCacheStore(database))
         plane.segment_store = SegmentStore(database)
         plane.version_store = VersionStore(database)
+        plane.segment_jobs = SegmentJobService(
+            jobs=plane.registry,
+            segments=plane.segment_store,
+            versions=plane.version_store,
+            artifacts=plane.artifact_store,
+            index=index,
+            gsv=gsv,
+        )
         plane.dispatcher = DurableJobDispatcher(
             store=plane.registry,
             queue=queue,
-            executor=JobExecutor(service, jobs_root=runtime_dir / "jobs"),
+            executor=JobExecutor(
+                service,
+                jobs_root=runtime_dir / "jobs",
+                artifacts=plane.artifact_store,
+                versions=plane.version_store,
+                commits=VersionCommitService(database),
+            ),
             instance_id=audit.instance_id,
             queue_timeout_seconds=settings.queue.queue_timeout_seconds,
         )

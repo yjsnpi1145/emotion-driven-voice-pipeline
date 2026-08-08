@@ -11,7 +11,9 @@ from voice_pipeline.models.persistence import (
     ActivateVersionRequest,
     CreateDubbingTaskRequest,
     CreateSegmentRequest,
+    SegmentGsvJobRequest,
     SegmentInputsPatch,
+    SegmentReferenceJobRequest,
 )
 from voice_pipeline.modules.audio.wav_probe import sha256_file
 
@@ -81,6 +83,32 @@ def build_foundation_router(plane: Any) -> APIRouter:
         except PipelineError as exc:
             raise _error_response(exc, invalid_status=422) from exc
 
+    @router.post("/api/v1/segments/{segment_id}/jobs/reference", status_code=202)
+    async def submit_segment_reference(
+        segment_id: UUID, request: SegmentReferenceJobRequest
+    ) -> dict[str, str]:
+        try:
+            context = await _segment_jobs(plane).submit_reference(segment_id, request)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="segment not found") from exc
+        except PipelineError as exc:
+            raise _error_response(exc, invalid_status=422) from exc
+        await _dispatcher(plane).notify()
+        return _submitted(context.job_id, context.request_id)
+
+    @router.post("/api/v1/segments/{segment_id}/jobs/gsv", status_code=202)
+    async def submit_segment_gsv(segment_id: UUID, request: SegmentGsvJobRequest) -> dict[str, str]:
+        try:
+            context = await _segment_jobs(plane).submit_gsv(segment_id, request)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404, detail="segment or reference version not found"
+            ) from exc
+        except PipelineError as exc:
+            raise _error_response(exc, invalid_status=422) from exc
+        await _dispatcher(plane).notify()
+        return _submitted(context.job_id, context.request_id)
+
     @router.get("/api/v1/segments/{segment_id}/versions")
     async def list_versions(segment_id: UUID) -> list[dict[str, Any]]:
         return cast(
@@ -148,6 +176,29 @@ def _versions(plane: Any) -> Any:
     if store is None:
         raise HTTPException(status_code=503, detail="version store is not ready")
     return store
+
+
+def _segment_jobs(plane: Any) -> Any:
+    service = getattr(plane, "segment_jobs", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="segment job service is not ready")
+    return service
+
+
+def _dispatcher(plane: Any) -> Any:
+    dispatcher = getattr(plane, "dispatcher", None)
+    if dispatcher is None:
+        raise HTTPException(status_code=503, detail="durable dispatcher is not ready")
+    return dispatcher
+
+
+def _submitted(job_id: UUID, request_id: UUID) -> dict[str, str]:
+    return {
+        "job_id": str(job_id),
+        "request_id": str(request_id),
+        "status": "queued",
+        "status_url": f"/api/v1/jobs/{job_id}",
+    }
 
 
 def _error_response(exc: PipelineError, *, invalid_status: int) -> HTTPException:

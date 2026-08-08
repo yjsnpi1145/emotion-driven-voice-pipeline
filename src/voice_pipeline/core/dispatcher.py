@@ -126,7 +126,7 @@ class DurableJobDispatcher:
                 self._queue_timeout_seconds
                 - (datetime.now(UTC) - record.created_at_utc).total_seconds()
             )
-            result = await self._queue.run(
+            committed_result = await self._queue.run(
                 lambda: self._executor.execute(record),
                 queue_timeout_seconds=remaining_queue_wait,
             )
@@ -141,7 +141,11 @@ class DurableJobDispatcher:
         except Exception:
             await self._store.mark_failed(record.job_id, error=_internal_error())
         else:
-            committed = await self._store.mark_succeeded(record.job_id, result=result)
+            if committed_result.terminal_committed:
+                return
+            committed = await self._store.mark_succeeded(
+                record.job_id, result=committed_result.result
+            )
             if not committed:
                 current = await self._store.get(record.job_id)
                 if current.cancel_requested_at_utc is not None:

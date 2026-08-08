@@ -50,6 +50,7 @@ class SqliteJobStore:
         kind: JobKind,
         request_snapshot: dict[str, JsonValue],
         segment_snapshot: SegmentJobSnapshot | None = None,
+        model_fingerprint: dict[str, JsonValue] | None = None,
         retry_of_job_id: UUID | None = None,
         attempt: int = 1,
     ) -> ExecutionContext:
@@ -76,7 +77,7 @@ class SqliteJobStore:
                     request_snapshot_sha256=hashlib.sha256(
                         snapshot_json.encode("utf-8")
                     ).hexdigest(),
-                    model_fingerprint_json="{}",
+                    model_fingerprint_json=self.canonical_json(model_fingerprint or {}),
                     model_profile_snapshot_json=None,
                     output_spec_json=None,
                     segment_snapshot_json=(
@@ -395,6 +396,11 @@ def _record(row: dict[str, Any]) -> PersistentJobRecord:
         request_snapshot_sha256=str(row["request_snapshot_sha256"]),
         model_fingerprint=cast(
             dict[str, JsonValue], json.loads(str(row["model_fingerprint_json"]))
+        ),
+        task_snapshot=(
+            SegmentJobSnapshot.model_validate_json(str(row["segment_snapshot_json"]))
+            if row["segment_snapshot_json"] is not None
+            else None
         ),
         retry_of_job_id=(UUID(str(row["retry_of_job_id"])) if row["retry_of_job_id"] else None),
         attempt=int(str(row["attempt"])),
