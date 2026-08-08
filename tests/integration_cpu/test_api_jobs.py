@@ -29,9 +29,7 @@ async def test_segment_job_completes_through_single_queue(fake_settings, request
             assert status["status"] == "succeeded"
             assert (await client.get(f"/api/v1/jobs/{job_id}/audio/reference")).status_code == 200
             assert (await client.get(f"/api/v1/jobs/{job_id}/audio/target")).status_code == 200
-            reference_manifest = await client.get(
-                f"/api/v1/jobs/{job_id}/manifest/reference"
-            )
+            reference_manifest = await client.get(f"/api/v1/jobs/{job_id}/manifest/reference")
             assert reference_manifest.status_code == 200
             assert reference_manifest.json()["quality_result"]["passed"] is True
             assert (await client.get(f"/api/v1/jobs/{job_id}/manifest/run")).status_code == 200

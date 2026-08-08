@@ -60,9 +60,7 @@ async def test_retention_keeps_current_and_latest_five_non_current_versions(
             )
             ready_versions = await client.get(f"/api/v1/segments/{segment_id}/versions")
             deleted_version_id = applied.json()["deleted_version_ids"][0]
-            deleted_version = (
-                await client.get(f"/api/v1/versions/{deleted_version_id}")
-            ).json()
+            deleted_version = (await client.get(f"/api/v1/versions/{deleted_version_id}")).json()
 
     assert plan.status_code == 201
     payload = plan.json()
@@ -196,8 +194,7 @@ async def test_retention_apply_invalidates_expired_cache_entries(
             assert (await _wait(client, generated.json()["job_id"]))["status"] == "succeeded"
             async with app.state.plane.database.write_session() as session:
                 await session.execute(
-                    update(cache_entries)
-                    .values(
+                    update(cache_entries).values(
                         last_hit_at_utc=(datetime.now(UTC) - timedelta(days=91)).isoformat()
                     )
                 )

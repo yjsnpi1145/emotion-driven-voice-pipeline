@@ -26,9 +26,7 @@ def _wait_ready(base_url: str, process: subprocess.Popen[bytes], log_path: Path)
     while time.monotonic() < deadline:
         if process.poll() is not None:
             stderr = (
-                log_path.read_text(encoding="utf-8", errors="replace")
-                if log_path.is_file()
-                else ""
+                log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
             )
             raise AssertionError(f"control process exited before readiness:\n{stderr[-2000:]}")
         try:
@@ -119,9 +117,10 @@ def test_hard_killed_control_marks_running_job_interrupted_and_allows_frozen_ret
         assert submitted.status_code == 202, submitted.text
         job_id = submitted.json()["job_id"]
         _wait_job(base_url, job_id, expected="running")
-        assert httpx.get(f"{index.base_url}/__control/status", timeout=2).json()[
-            "active_inference"
-        ] == 1
+        assert (
+            httpx.get(f"{index.base_url}/__control/status", timeout=2).json()["active_inference"]
+            == 1
+        )
 
         psutil.Process(first.pid).kill()
         first.wait(timeout=10)
@@ -146,9 +145,10 @@ def test_hard_killed_control_marks_running_job_interrupted_and_allows_frozen_ret
         )
         assert retried.status_code == 202, retried.text
         _wait_job(base_url, retried.json()["job_id"], expected="succeeded")
-        assert httpx.get(f"{index.base_url}/__control/status", timeout=2).json()[
-            "max_active_observed"
-        ] == 1
+        assert (
+            httpx.get(f"{index.base_url}/__control/status", timeout=2).json()["max_active_observed"]
+            == 1
+        )
     finally:
         for process in (second, first):
             if process is not None and process.poll() is None:

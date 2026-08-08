@@ -265,10 +265,7 @@ async def _job_counts(plane: Any) -> dict[str, int]:
     raw: object = await counts_method()
     if not isinstance(raw, dict):  # pragma: no cover - durable store invariant
         return {"queued": 0, "running": 0, "interrupted": 0}
-    return {
-        name: int(raw.get(name, 0))
-        for name in ("queued", "running", "interrupted")
-    }
+    return {name: int(raw.get(name, 0)) for name in ("queued", "running", "interrupted")}
 
 
 def _overall_status(runtime_health: Any, lifecycle: str, queue_stats: Any) -> str:

@@ -71,26 +71,31 @@ class ModelProfileSnapshot(StrictModel):
     sovits_sha256: Sha256
     engine_fingerprint: EngineFingerprint
 
+
 class ImportModelProfileRequest(StrictModel):
     display_name: NonBlankText
     gpt_source_path: Path
     sovits_source_path: Path
     declared_family: str | None = None
 
+
 class ModelProfileView(ModelProfileSnapshot):
     status: Literal["ready", "missing", "corrupt", "archived"]
     created_at_utc: datetime
     active: bool
+
 
 # models/schemas.py
 class GsvSynthesisRequest(StrictModel):
     # preserve every existing field
     model_profile_id: UUID | None = None
 
+
 # models/ports.py
 class GptSoVitsClient(Protocol):
     async def load_profile(self, profile: ModelProfileSnapshot) -> None: ...
     async def synthesize(self, request: GsvSynthesisRequest, output_path: Path) -> AudioResult: ...
+
 
 # storage/model_profile_store.py
 class ModelProfileStore(Protocol):
@@ -111,11 +116,15 @@ A snapshot holds no caller-supplied absolute source path. The importer maps its 
 
 ```python
 def test_batch1_handoff_allows_explicit_user_golden_waiver() -> None:
-    receipt = Batch1AcceptanceReceipt.model_validate({
-        "schema_version": 1, "commit_sha": "a" * 40,
-        "engineering_disposition": "PASS", "golden_listening": "waived_by_user",
-        "waiver_reason": "user explicitly requested to skip golden acceptance",
-    })
+    receipt = Batch1AcceptanceReceipt.model_validate(
+        {
+            "schema_version": 1,
+            "commit_sha": "a" * 40,
+            "engineering_disposition": "PASS",
+            "golden_listening": "waived_by_user",
+            "waiver_reason": "user explicitly requested to skip golden acceptance",
+        }
+    )
     assert receipt.golden_listening == "waived_by_user"
 ```
 
@@ -133,7 +142,11 @@ def test_batch1_handoff_allows_explicit_user_golden_waiver() -> None:
 ```python
 def test_import_requires_ckpt_and_pth(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match=".ckpt"):
-        ImportModelProfileRequest(display_name="voice-v1", gpt_source_path=tmp_path / "g.bin", sovits_source_path=tmp_path / "s.pth")
+        ImportModelProfileRequest(
+            display_name="voice-v1",
+            gpt_source_path=tmp_path / "g.bin",
+            sovits_source_path=tmp_path / "s.pth",
+        )
 
 
 def test_gsv_input_optionally_selects_profile() -> None:
@@ -154,12 +167,19 @@ def test_gsv_input_optionally_selects_profile() -> None:
 
 ```python
 async def test_import_copies_pair_and_source_mutation_is_irrelevant(tmp_path: Path) -> None:
-    gpt = tmp_path / "in.ckpt"; gpt.write_bytes(b"gpt-v1")
-    sovits = tmp_path / "in.pth"; sovits.write_bytes(b"sovits-v1")
-    view = await service.import_profile(ImportModelProfileRequest(display_name="voice-v1", gpt_source_path=gpt, sovits_source_path=sovits))
+    gpt = tmp_path / "in.ckpt"
+    gpt.write_bytes(b"gpt-v1")
+    sovits = tmp_path / "in.pth"
+    sovits.write_bytes(b"sovits-v1")
+    view = await service.import_profile(
+        ImportModelProfileRequest(
+            display_name="voice-v1", gpt_source_path=gpt, sovits_source_path=sovits
+        )
+    )
     gpt.write_bytes(b"changed")
     snap = await store.get_ready_snapshot(view.profile_id)
     assert sha256_file(root / snap.gpt_relative_path) == view.gpt_sha256
+
 
 async def test_failed_copy_has_no_db_row_or_visible_directory() -> None:
     with pytest.raises(PipelineError, match="MODEL_IMPORT"):
@@ -186,6 +206,7 @@ async def test_job_uses_active_profile_at_submit_not_execution_time() -> None:
     await import_and_activate("voice-b")
     assert (await jobs.get(job.job_id)).model_profile_snapshot.profile_id == before.profile_id
 
+
 def test_gsv_cache_key_changes_when_only_profile_hash_changes() -> None:
     assert gsv_cache_key(BASE, PROFILE_A) != gsv_cache_key(BASE, PROFILE_B)
 ```
@@ -202,14 +223,23 @@ def test_gsv_cache_key_changes_when_only_profile_hash_changes() -> None:
 - [ ] **Step 1: Write failing endpoint-order/error tests.**
 
 ```python
-async def test_client_loads_official_pair_before_tts(respx_mock: respx.MockRouter, tmp_path: Path) -> None:
+async def test_client_loads_official_pair_before_tts(
+    respx_mock: respx.MockRouter, tmp_path: Path
+) -> None:
     events: list[str] = []
-    respx_mock.get("http://gsv/set_gpt_weights").mock(side_effect=lambda request: events.append("gpt") or httpx.Response(200))
-    respx_mock.get("http://gsv/set_sovits_weights").mock(side_effect=lambda request: events.append("sovits") or httpx.Response(200))
-    respx_mock.post("http://gsv/tts").mock(side_effect=lambda request: events.append("tts") or wav_response())
+    respx_mock.get("http://gsv/set_gpt_weights").mock(
+        side_effect=lambda request: events.append("gpt") or httpx.Response(200)
+    )
+    respx_mock.get("http://gsv/set_sovits_weights").mock(
+        side_effect=lambda request: events.append("sovits") or httpx.Response(200)
+    )
+    respx_mock.post("http://gsv/tts").mock(
+        side_effect=lambda request: events.append("tts") or wav_response()
+    )
     await client.load_profile(PROFILE)
     await client.synthesize(REQUEST, tmp_path / "target.wav")
     assert events == ["gpt", "sovits", "tts"]
+
 
 async def test_second_load_failure_aborts_and_never_calls_tts() -> None:
     fake.fail_sovits_switch = True
@@ -231,13 +261,20 @@ async def test_second_load_failure_aborts_and_never_calls_tts() -> None:
 - [ ] **Step 1: Write failing HTTP/CLI tests.**
 
 ```python
-async def test_import_activate_and_submit_snapshots_profile(client: AsyncClient, sources: dict[str, str]) -> None:
-    created = await client.post("/api/v1/model-profiles/import", json={"display_name": "voice-v1", **sources})
+async def test_import_activate_and_submit_snapshots_profile(
+    client: AsyncClient, sources: dict[str, str]
+) -> None:
+    created = await client.post(
+        "/api/v1/model-profiles/import", json={"display_name": "voice-v1", **sources}
+    )
     assert created.status_code == 201
     profile_id = created.json()["profile_id"]
     assert (await client.post(f"/api/v1/model-profiles/{profile_id}/activate")).status_code == 200
     job = await client.post("/api/v1/jobs/gsv", json=GSV_WITHOUT_PROFILE)
-    assert (await client.get(job.json()["status_url"])).json()["model_profile_snapshot"]["profile_id"] == profile_id
+    assert (await client.get(job.json()["status_url"])).json()["model_profile_snapshot"][
+        "profile_id"
+    ] == profile_id
+
 
 def test_cli_import_posts_to_http_server(runner: CliRunner) -> None:
     assert runner.invoke(app, ["model", "list"]).exit_code == 0
@@ -261,6 +298,7 @@ def test_kill_after_directory_publish_never_exposes_half_profile(harness: Contro
     harness.restart()
     assert harness.http.get("/api/v1/model-profiles").json() == []
     assert harness.visible_profile_directories() == []
+
 
 def test_switch_failure_never_falls_back_to_base(external_server: FakeGsvServer) -> None:
     profile = external_server.import_profile("custom")

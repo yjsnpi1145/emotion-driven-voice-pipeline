@@ -260,9 +260,7 @@ class RetentionExecutor:
             await session.execute(
                 update(artifact_version_state)
                 .where(
-                    artifact_version_state.c.version_id.in_(
-                        [str(value) for value in version_ids]
-                    )
+                    artifact_version_state.c.version_id.in_([str(value) for value in version_ids])
                 )
                 .where(artifact_version_state.c.state == "deleting")
                 .values(state="deleted", checked_at_utc=_now())
@@ -272,10 +270,16 @@ class RetentionExecutor:
         """Turn an ``applying`` plan into a receipt only after all rows are tombstoned."""
         async with self._database.write_session() as session:
             plan_ids = (
-                await session.execute(
-                    select(retention_plans.c.plan_id).where(retention_plans.c.status == "applying")
+                (
+                    await session.execute(
+                        select(retention_plans.c.plan_id).where(
+                            retention_plans.c.status == "applying"
+                        )
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             for plan_id in plan_ids:
                 remaining = int(
                     (
