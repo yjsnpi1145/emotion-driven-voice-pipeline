@@ -77,3 +77,28 @@ class ModelProfileView(ModelProfileSnapshot):
         if self.status == "archived" and self.active:
             raise ValueError("an archived model profile cannot be active")
         return self
+
+
+class ModelProfileRecord(ModelProfileSnapshot):
+    source_kind: Literal["base", "imported"]
+    declared_family: str | None = None
+    relative_directory: RelativeModelPath
+    gpt_size_bytes: int = Field(gt=0)
+    sovits_size_bytes: int = Field(gt=0)
+    status: ModelProfileStatus = "ready"
+    created_at_utc: datetime
+    archived_at_utc: datetime | None = None
+
+    def to_view(self, *, active: bool) -> ModelProfileView:
+        return ModelProfileView(
+            profile_id=self.profile_id,
+            display_name=self.display_name,
+            gpt_relative_path=self.gpt_relative_path,
+            sovits_relative_path=self.sovits_relative_path,
+            gpt_sha256=self.gpt_sha256,
+            sovits_sha256=self.sovits_sha256,
+            status=self.status,
+            created_at_utc=self.created_at_utc,
+            active=active,
+            declared_family=self.declared_family,
+        )
