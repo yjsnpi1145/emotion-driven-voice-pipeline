@@ -1,9 +1,76 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Awaitable
+from typing import Protocol
 
 from voice_pipeline.core.errors import ErrorCode, PipelineError
-from voice_pipeline.modules.llm.models import DirectorPlan, MaterializedDirectedSegment
+from voice_pipeline.models.schemas import EmotionVector
+from voice_pipeline.modules.llm.models import (
+    CorrectionDirection,
+    DirectedSegment,
+    DirectorPlan,
+    MaterializedDirectedSegment,
+)
+
+
+class ReferenceDurationProbe(Protocol):
+    async def generate_and_measure(self, text: str, vector: EmotionVector, seed: int) -> float: ...
+
+
+class ReferenceTextCorrector(Protocol):
+    def correct_reference_text(
+        self,
+        *,
+        current: str,
+        direction: CorrectionDirection,
+        emotion_description: str,
+    ) -> Awaitable[str]: ...
+
+
+class ResolvedDirectedSegment(DirectedSegment):
+    reference_corrections: int
+
+
+class ReferenceTextDirector:
+    def __init__(self, corrector: ReferenceTextCorrector) -> None:
+        self._corrector = corrector
+
+    async def resolve_reference_text(
+        self,
+        segment: DirectedSegment,
+        probe: ReferenceDurationProbe,
+        *,
+        max_corrections: int,
+    ) -> ResolvedDirectedSegment:
+        current = segment.ref_text_cn
+        for correction in range(max_corrections + 1):
+            duration_seconds = await probe.generate_and_measure(
+                current, segment.emotion_vector, segment.seed
+            )
+            if 3.0 <= duration_seconds <= 9.0:
+                return ResolvedDirectedSegment.model_validate(
+                    {
+                        **segment.model_dump(),
+                        "ref_text_cn": current,
+                        "reference_corrections": correction,
+                    }
+                )
+            if correction == max_corrections:
+                raise PipelineError(
+                    ErrorCode.REFERENCE_DURATION_INVALID,
+                    "llm",
+                    "reference duration is outside 3.0..9.0 after corrections",
+                    retryable=False,
+                    details={"duration_seconds": duration_seconds, "corrections": correction},
+                )
+            direction: CorrectionDirection = "shorten" if duration_seconds > 9.0 else "lengthen"
+            current = await self._corrector.correct_reference_text(
+                current=current,
+                direction=direction,
+                emotion_description=segment.emotion_description,
+            )
+        raise AssertionError("reference correction loop must return or raise")
 
 
 def validate_director_plan(
