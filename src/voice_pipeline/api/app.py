@@ -4,18 +4,24 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from voice_pipeline.api.dependencies import build_dependencies
+from voice_pipeline.api.model_profile_routes import build_model_profile_router
 from voice_pipeline.api.routes import build_router
 from voice_pipeline.core.config import AppSettings
 from voice_pipeline.core.gpu_queue import SerialGpuQueue
 from voice_pipeline.core.jobs import InMemoryJobRegistry
+from voice_pipeline.core.model_profile_service import ModelProfileService
 from voice_pipeline.core.pipeline import SynthesisService
 from voice_pipeline.runtime.audit import EngineAuditWriter
+from voice_pipeline.storage.database import Database
+from voice_pipeline.storage.model_importer import ModelProfileImporter
+from voice_pipeline.storage.model_profile_store import SqliteModelProfileStore
 
 
 class ControlPlane:
@@ -43,6 +49,12 @@ class ControlPlane:
         self._exit_callback: Callable[[], None] | None = None
         self._accepting = True
         self._shutdown_started = False
+        self.database: Database | None = None
+        self.model_profiles: ModelProfileService | None = None
+
+    def attach_durable_state(self, database: Database, model_profiles: ModelProfileService) -> None:
+        self.database = database
+        self.model_profiles = model_profiles
 
     def set_exit_callback(self, callback: Callable[[], None]) -> None:
         self._exit_callback = callback
@@ -118,12 +130,26 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        await runtime.start()
-        await queue.start()
+        database = await Database.open(settings.storage, instance_id=uuid4(), migrate=True)
+        profile_store = SqliteModelProfileStore(
+            database,
+            models_root=settings.model_library.models_root,
+        )
+        profile_importer = ModelProfileImporter(
+            models_root=settings.model_library.models_root,
+            allowed_import_roots=settings.model_library.allowed_import_roots,
+        )
+        plane.attach_durable_state(
+            database,
+            ModelProfileService(importer=profile_importer, store=profile_store),
+        )
         try:
+            await runtime.start()
+            await queue.start()
             yield
         finally:
             await plane.shutdown()
+            await database.close()
 
     app = FastAPI(
         title="Emotion Driven Voice Pipeline",
@@ -166,4 +192,5 @@ def create_app(
 
     router = build_router(plane)
     app.include_router(router)
+    app.include_router(build_model_profile_router(plane))
     return app

@@ -10,6 +10,10 @@ checkpoint_lock_path: checkpoints.lock.yaml
 queue:
   max_concurrency: 1
   queue_timeout_seconds: 60
+model_library:
+  models_root: ../models/gpt-sovits
+  allowed_import_roots:
+    - ../external/GPT-SoVITS
 engines:
   indextts:
     base_url: http://127.0.0.1:9871
