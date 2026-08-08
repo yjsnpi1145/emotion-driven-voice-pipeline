@@ -147,6 +147,33 @@ async def test_faster_whisper_adapter_uses_local_cpu_vad_and_asr(tmp_path: Path)
     ]
 
 
+@pytest.mark.asyncio
+async def test_faster_whisper_adapter_clips_asr_intervals_to_wav_duration(tmp_path: Path) -> None:
+    from tests.unit.conftest import write_tone
+
+    model_path = tmp_path / "local-model"
+    model_path.mkdir()
+    audio_path = tmp_path / "reference.wav"
+    write_tone(audio_path, seconds=4.0)
+
+    class Model:
+        def transcribe(self, path: str, **kwargs: object):
+            return (
+                iter([SimpleNamespace(text="我还活着", start=0.0, end=4.1)]),
+                SimpleNamespace(language="zh", language_probability=0.99),
+            )
+
+    analyzer = FasterWhisperQualityAnalyzer(
+        model_path=model_path,
+        model_factory=lambda **kwargs: Model(),
+    )
+    report = await analyzer.analyze_reference(audio_path=audio_path, expected_text="我还活着")
+
+    assert report.speech_duration_seconds == pytest.approx(4.0)
+    assert report.speech_ratio == 1.0
+    assert report.speech_timestamps[0].end_seconds == pytest.approx(4.0)
+
+
 def test_faster_whisper_adapter_rejects_model_that_does_not_match_lock(tmp_path: Path) -> None:
     from voice_pipeline.core.errors import ErrorCode, PipelineError
 

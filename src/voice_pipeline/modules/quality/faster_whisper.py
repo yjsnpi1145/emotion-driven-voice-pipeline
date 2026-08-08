@@ -88,12 +88,11 @@ class FasterWhisperQualityAnalyzer:
         transcript, intervals, language, language_probability = await asyncio.to_thread(
             self._transcribe, audio_path
         )
+        clipped_intervals = _clip_intervals(intervals, total_seconds=audio.duration_seconds)
         expected = normalize_reference_text(expected_text)
         observed = normalize_reference_text(transcript)
         similarity = _similarity(expected, observed)
-        speech_seconds = sum(
-            interval.end_seconds - interval.start_seconds for interval in intervals
-        )
+        speech_seconds = _union_duration(clipped_intervals)
         report = evaluate_quality_metrics(
             metrics=QualityMetrics(
                 total_duration_seconds=audio.duration_seconds,
@@ -104,7 +103,7 @@ class FasterWhisperQualityAnalyzer:
                 normalized_expected=expected,
                 normalized_transcript=observed,
                 normalized_text_similarity=similarity,
-                speech_timestamps=tuple(intervals),
+                speech_timestamps=tuple(clipped_intervals),
                 detected_language=language,
                 detected_language_probability=language_probability,
             ),
@@ -220,6 +219,28 @@ def _result_from_segments(
         str(language) if language is not None else None,
         (float(probability) if probability is not None else None),
     )
+
+
+def _clip_intervals(
+    intervals: Iterable[SpeechInterval], *, total_seconds: float
+) -> list[SpeechInterval]:
+    clipped: list[SpeechInterval] = []
+    for interval in intervals:
+        start = min(max(interval.start_seconds, 0.0), total_seconds)
+        end = min(max(interval.end_seconds, start), total_seconds)
+        if end > start:
+            clipped.append(SpeechInterval(start_seconds=start, end_seconds=end))
+    return clipped
+
+
+def _union_duration(intervals: Iterable[SpeechInterval]) -> float:
+    merged: list[tuple[float, float]] = []
+    for interval in sorted(intervals, key=lambda item: (item.start_seconds, item.end_seconds)):
+        if not merged or interval.start_seconds > merged[-1][1]:
+            merged.append((interval.start_seconds, interval.end_seconds))
+            continue
+        merged[-1] = (merged[-1][0], max(merged[-1][1], interval.end_seconds))
+    return sum(end - start for start, end in merged)
 
 
 def _is_within(path: Path, root: Path) -> bool:
