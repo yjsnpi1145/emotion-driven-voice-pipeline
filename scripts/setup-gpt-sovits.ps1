@@ -49,7 +49,8 @@ $Head = (git -C $GsvRepo rev-parse HEAD).Trim()
 if ($Head -ne $PinnedCommit) {
   Invoke-Checked 'git' @('-C', $GsvRepo, '-c','http.proxy=','-c','https.proxy=','checkout', $PinnedCommit)
 }
-$Dirty = git -C $GsvRepo status --porcelain
+$Dirty = git -C $GsvRepo status --porcelain |
+  Where-Object { $_ -notmatch '^\?\? \.conda([/\\]|$)' }
 if ($Dirty) { throw "gsv repo is dirty`n$Dirty" }
 
 # 2. Initial env locks (explicit flag only).

@@ -62,3 +62,10 @@ def test_gsv_conda_lock_is_a_valid_explicit_conda_specification() -> None:
     lock = (ROOT / "config" / "env-locks" / "gsv-conda-explicit.txt").read_text(encoding="utf-8")
 
     assert "@EXPLICIT" in lock
+
+
+def test_gsv_setup_allows_its_owned_untracked_conda_environment_on_repeat_runs() -> None:
+    script = (ROOT / "scripts" / "setup-gpt-sovits.ps1").read_text(encoding="utf-8")
+
+    assert "$Dirty = git -C $GsvRepo status --porcelain |" in script
+    assert "Where-Object" in script
