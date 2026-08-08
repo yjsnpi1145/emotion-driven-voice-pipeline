@@ -19,6 +19,8 @@ storage:
   history_limit: 5
   cache_max_entries_per_kind: 500
   cache_max_age_days: 90
+llm:
+  mode: fake
 quality:
   mode: fake
 model_library:
@@ -36,3 +38,4 @@ engines:
     python_executable: ../external/GPT-SoVITS/.conda/python.exe
     repo_dir: ../external/GPT-SoVITS
     request_timeout_seconds: 300
+

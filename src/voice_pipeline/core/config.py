@@ -74,6 +74,23 @@ class StorageSettings(BaseModel):
         return self
 
 
+class LlmSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["fake", "openai"] = "fake"
+    base_url: str = "http://127.0.0.1:11434/v1"
+    model: str = "fake-director"
+    api_key_env: str | None = None
+    timeout_seconds: float = Field(default=60.0, gt=0, le=300)
+    max_retries: int = Field(default=2, ge=0, le=5)
+    max_reference_corrections: int = Field(default=2, ge=0, le=5)
+
+    @model_validator(mode="after")
+    def require_api_key_environment_variable(self) -> LlmSettings:
+        if self.mode == "openai" and not (self.api_key_env or "").strip():
+            raise ValueError("llm.api_key_env is required for openai mode")
+        return self
+
+
 class QualitySettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     mode: Literal["fake", "faster_whisper"] = "fake"
@@ -95,6 +112,7 @@ class AppSettings(BaseModel):
     engines: EnginesSettings
     model_library: ModelLibrarySettings = Field(default_factory=ModelLibrarySettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
+    llm: LlmSettings = Field(default_factory=LlmSettings)
     quality: QualitySettings = Field(default_factory=QualitySettings)
 
     @model_validator(mode="after")

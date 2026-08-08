@@ -316,3 +316,59 @@ storage_meta = Table(
     Column("protected_graph_revision", Integer, nullable=False),
     CheckConstraint("singleton_id = 1", name="ck_storage_meta_singleton"),
 )
+
+chapter_runs = Table(
+    "chapter_runs",
+    metadata,
+    Column("run_id", String(36), primary_key=True),
+    Column("request_id", String(36), nullable=False),
+    Column(
+        "task_id",
+        String(36),
+        ForeignKey("dubbing_tasks.task_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("status", String(16), nullable=False),
+    Column("base_voice_sha256", String(64), nullable=False),
+    Column("snapshot_json", Text, nullable=False),
+    Column("director_plan_json", Text, nullable=False),
+    Column("model_profile_snapshot_json", Text, nullable=False),
+    Column("final_audio_json", Text, nullable=True),
+    Column("final_relative_path", Text, nullable=True),
+    Column("timeline_json", Text, nullable=True),
+    Column("error_json", Text, nullable=True),
+    Column("created_at_utc", Text, nullable=False),
+    Column("started_at_utc", Text, nullable=True),
+    Column("finished_at_utc", Text, nullable=True),
+)
+
+chapter_run_segments = Table(
+    "chapter_run_segments",
+    metadata,
+    Column(
+        "run_id",
+        String(36),
+        ForeignKey("chapter_runs.run_id", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    Column("ordinal", Integer, primary_key=True),
+    Column(
+        "segment_id",
+        String(36),
+        ForeignKey("segments.segment_id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    ),
+    Column(
+        "reference_job_id",
+        String(36),
+        ForeignKey("generation_jobs.job_id", ondelete="RESTRICT"),
+        nullable=True,
+    ),
+    Column(
+        "gsv_job_id",
+        String(36),
+        ForeignKey("generation_jobs.job_id", ondelete="RESTRICT"),
+        nullable=True,
+    ),
+)

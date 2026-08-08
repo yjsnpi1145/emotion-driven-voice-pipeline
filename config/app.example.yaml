@@ -10,6 +10,14 @@ checkpoint_lock_path: checkpoints.lock.yaml
 queue:
   max_concurrency: 1
   queue_timeout_seconds: 60
+llm:
+  mode: openai
+  base_url: https://api.openai.com/v1
+  model: gpt-4.1-mini
+  api_key_env: OPENAI_API_KEY
+  timeout_seconds: 60
+  max_retries: 2
+  max_reference_corrections: 2
 quality:
   mode: faster_whisper
   model_path: ../runtime/models/faster-whisper-small
@@ -48,3 +56,4 @@ engines:
     python_executable: ../external/GPT-SoVITS/.conda/python.exe
     repo_dir: ../external/GPT-SoVITS
     request_timeout_seconds: 300
+

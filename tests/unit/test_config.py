@@ -136,3 +136,31 @@ engines:
 
     with pytest.raises(ValueError, match="faster_whisper"):
         load_settings(config)
+
+
+def test_openai_llm_mode_requires_an_api_key_environment_variable(tmp_path: Path) -> None:
+    config = tmp_path / "openai-without-key.yaml"
+    config.write_text(
+        """
+schema_version: 1
+mode: fake
+engine_lifecycle: resident
+server: {host: 127.0.0.1, port: 8765}
+runtime_dir: runtime
+engine_lock_path: engines.lock.yaml
+checkpoint_lock_path: checkpoints.lock.yaml
+queue: {max_concurrency: 1, queue_timeout_seconds: 60}
+llm: {mode: openai, base_url: https://llm.example/v1, model: director}
+engines:
+  indextts:
+    {base_url: http://127.0.0.1:9871, python_executable: i.exe, repo_dir: i,
+     request_timeout_seconds: 300}
+  gpt_sovits:
+    {base_url: http://127.0.0.1:9880, python_executable: g.exe, repo_dir: g,
+     request_timeout_seconds: 300}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="api_key_env"):
+        load_settings(config)
