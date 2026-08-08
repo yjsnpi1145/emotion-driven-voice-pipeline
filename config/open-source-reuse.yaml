@@ -224,3 +224,138 @@ modules:
     rejected_reasons:
       - supervisor 类库（如 supervisor/superlance）面向 POSIX 且生命周期语义不符
       - psutil 已作为底层复用，进程编排逻辑需按项目 deadline 约束自研
+
+  - module_id: sqlalchemy
+    introduced_in_batch: 2
+    need: SQLite durable job, version and artifact persistence
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/sqlalchemy/sqlalchemy
+        spdx_license: MIT
+        pin: 2.0.51
+    selected: SQLAlchemy async ORM
+    decision_reason: Reuses a maintained ORM and transaction implementation instead of custom SQL mapping.
+    wrapper_boundary: src/voice_pipeline/storage only owns project-specific tables and transactions.
+    lock_reference: uv.lock (sqlalchemy==2.0.51)
+
+  - module_id: alembic
+    introduced_in_batch: 2
+    need: Versioned SQLite schema migrations
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/sqlalchemy/alembic
+        spdx_license: MIT
+        pin: 1.19.0
+    selected: Alembic
+    decision_reason: Reuses maintained migration execution and revision tracking.
+    wrapper_boundary: src/voice_pipeline/storage/migrations defines only project schema revisions.
+    lock_reference: uv.lock (alembic==1.19.0)
+
+  - module_id: aiosqlite
+    introduced_in_batch: 2
+    need: Async SQLite DB-API transport
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/omnilib/aiosqlite
+        spdx_license: MIT
+        pin: 0.22.1
+    selected: aiosqlite
+    decision_reason: Reuses maintained async SQLite connection adaptation.
+    wrapper_boundary: SQLAlchemy async engine configuration only.
+    lock_reference: uv.lock (aiosqlite==0.22.1)
+
+  - module_id: portalocker
+    introduced_in_batch: 2
+    need: Cross-process local control-plane single-instance lock
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/wolph/portalocker
+        spdx_license: BSD-3-Clause
+        pin: 4.1.0
+    selected: portalocker
+    decision_reason: Reuses maintained Windows file-lock semantics instead of custom locking.
+    wrapper_boundary: storage database bootstrap lock only.
+    lock_reference: uv.lock (portalocker==4.1.0)
+
+  - module_id: faster_whisper
+    introduced_in_batch: 2
+    need: Local ASR quality gate for generated audio
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/SYSTRAN/faster-whisper
+        spdx_license: MIT
+        pin: 1.2.1
+    selected: faster-whisper
+    decision_reason: Reuses maintained CTranslate2-backed Whisper inference.
+    wrapper_boundary: quality adapter normalizes transcription output to the project quality contract.
+    lock_reference: uv.lock (faster-whisper==1.2.1) + config/quality-model.lock.yaml
+
+  - module_id: silero_vad
+    introduced_in_batch: 2
+    need: Local speech/silence VAD quality gate
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/snakers4/silero-vad
+        spdx_license: MIT
+        pin: 6.2.1
+    selected: silero-vad
+    decision_reason: Reuses upstream VAD model rather than implementing speech detection.
+    wrapper_boundary: quality adapter invokes the pinned model and returns project quality metrics.
+    lock_reference: uv.lock (silero-vad==6.2.1) + config/quality-model.lock.yaml
+
+  - module_id: rapidfuzz
+    introduced_in_batch: 2
+    need: Deterministic ASR/text alignment similarity scoring
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/rapidfuzz/RapidFuzz
+        spdx_license: MIT
+        pin: 3.14.5
+    selected: RapidFuzz
+    decision_reason: Reuses maintained optimized string scoring.
+    wrapper_boundary: quality/text.py defines only project thresholds and token normalization.
+    lock_reference: uv.lock (rapidfuzz==3.14.5)
+
+  - module_id: sqlmodel
+    introduced_in_batch: 2
+    need: Combined Pydantic and ORM candidate
+    disposition: rejected
+    candidates:
+      - repository: https://github.com/fastapi/sqlmodel
+        spdx_license: MIT
+        pin: 0.0.38
+    selected: null
+    decision_reason: Frozen public Pydantic models and SQLite rows have incompatible lifecycle and migration requirements.
+    wrapper_boundary: none
+    lock_reference: null
+    rejected_reasons:
+      - Durable migrations still require Alembic.
+      - Coupling public request contracts to mutable rows would weaken immutable snapshots.
+
+  - module_id: diskcache
+    introduced_in_batch: 2
+    need: Local cache candidate
+    disposition: rejected
+    candidates:
+      - repository: https://github.com/grantjenks/python-diskcache
+        spdx_license: Apache-2.0
+        pin: 5.6.3
+    selected: null
+    decision_reason: A separate cache database cannot atomically participate in current-pointer and parent-reference protection.
+    wrapper_boundary: none
+    lock_reference: null
+    rejected_reasons:
+      - Version/cache protection must share the Batch 2 SQLite transaction graph.
+      - Existing project cache payload semantics require durable artifact version provenance.
+
+  - module_id: model_profile_registry
+    introduced_in_batch: 2
+    need: Immutable local model-pair import, profile identity and active-selection invariants
+    disposition: custom
+    candidates: []
+    selected: null
+    decision_reason: This is project-specific glue over filesystem, SQLite and official GPT-SoVITS endpoints; standard library copying/hashing is sufficient.
+    wrapper_boundary: storage/model_importer.py + storage/model_profile_store.py + core/model_profile_service.py
+    lock_reference: null
+    rejected_reasons:
+      - No existing library supplies the required pair-level publication, SHA snapshot and no-fallback semantics.
