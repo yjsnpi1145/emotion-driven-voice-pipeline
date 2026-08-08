@@ -64,7 +64,11 @@ class ChapterSegmentProgress(StrictModel):
     ordinal: int = Field(ge=0)
     segment_id: UUID
     source_summary: str
+    reference_job_id: UUID | None = None
+    gsv_job_id: UUID | None = None
     reference_job_status: JobStatus | None = None
     gsv_job_status: JobStatus | None = None
+    reference_state: Literal["ready", "draft_pending", "missing"] = "missing"
+    gsv_state: Literal["ready", "stale", "missing"] = "missing"
     active_ref_version_id: UUID | None = None
     active_gsv_version_id: UUID | None = None

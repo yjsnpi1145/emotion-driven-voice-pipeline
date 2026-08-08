@@ -276,6 +276,7 @@ def create_app(
         )
         plane.regeneration = SegmentRegenerationService(
             jobs=plane.registry,
+            chapters=plane.chapter_store,
             segments=plane.segment_store,
             versions=plane.version_store,
             segment_jobs=plane.segment_jobs,

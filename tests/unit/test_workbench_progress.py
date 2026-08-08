@@ -17,8 +17,12 @@ def test_progress_sse_and_rows_only_accept_public_path_free_fields() -> None:
                 "ordinal": 0,
                 "segment_id": str(segment_id),
                 "source_summary": "第一句。",
+                "reference_job_id": str(uuid4()),
+                "gsv_job_id": str(uuid4()),
                 "reference_job_status": "succeeded",
                 "gsv_job_status": "running",
+                "reference_state": "ready",
+                "gsv_state": "stale",
                 "active_ref_version_id": None,
                 "active_gsv_version_id": None,
             }
@@ -31,4 +35,6 @@ def test_progress_sse_and_rows_only_accept_public_path_free_fields() -> None:
     assert event.startswith("event: chapter_progress\ndata: ")
     assert json.loads(event.split("data: ", 1)[1]) == payload
     assert rows[0].segment_id == segment_id
+    assert rows[0].reference_state == "ready"
+    assert rows[0].gsv_state == "stale"
     assert "path" not in event.casefold()

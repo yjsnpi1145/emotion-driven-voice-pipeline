@@ -75,6 +75,10 @@ async def test_workbench_chapter_progress_draft_edit_and_current_audio(
 
             progress = await client.get(f"/api/v1/chapters/{run_id}/progress")
             assert progress.status_code == 200
+            public_run = (await client.get(f"/api/v1/chapters/{run_id}")).json()
+            assert public_run["title"] == "webui chapter"
+            assert public_run["final_audio_url"] == f"/api/v1/chapters/{run_id}/audio"
+            assert str(base_voice) not in str(public_run)
             rows = progress.json()["segments"]
             assert len(rows) == 2
             assert all(row["active_gsv_version_id"] for row in rows)
@@ -104,6 +108,22 @@ async def test_workbench_chapter_progress_draft_edit_and_current_audio(
                 await app.state.plane.database.scalar_int("SELECT count(*) FROM generation_jobs")
                 == jobs_before
             )
+            derived_progress = (await client.get(f"/api/v1/chapters/{run_id}/progress")).json()[
+                "segments"
+            ]
+            assert derived_progress[0]["reference_state"] == "draft_pending"
+            assert derived_progress[0]["gsv_state"] == "stale"
+
+            ui_script = (
+                Path(__file__).parents[2] / "src" / "voice_pipeline" / "webui" / "app.js"
+            ).read_text(encoding="utf-8")
+            assert "progress.reference_state" in ui_script
+            assert "progress.gsv_state" in ui_script
+            assert "runSelectionGeneration" in ui_script
+            assert "editorDraftDirty" in ui_script
+            assert "saveInFlight" in ui_script
+            assert "setEditorSaving(true)" in ui_script
+            assert "setEditorSaving(false)" in ui_script
 
             audio = await client.get(f"/api/v1/versions/{rows[0]['active_gsv_version_id']}/audio")
             assert audio.status_code == 200

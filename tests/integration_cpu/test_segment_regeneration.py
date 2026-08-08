@@ -83,6 +83,10 @@ async def test_explicit_regeneration_keeps_or_replaces_only_the_selected_artifac
                 json={"request_id": str(uuid4()), "model_profile_id": profile_id},
             )
             assert gsv.status_code == 202
+            tracked_gsv = (await client.get(f"/api/v1/chapters/{run_id}/progress")).json()[
+                "segments"
+            ][0]
+            assert tracked_gsv["gsv_job_id"] == gsv.json()["job_id"]
             assert (await _wait(client, gsv.json()["status_url"]))["status"] == "succeeded"
             after_gsv = (await client.get(f"/api/v1/segments/{segment_id}")).json()
             assert after_gsv["active_ref_version_id"] == original_ref
@@ -96,6 +100,10 @@ async def test_explicit_regeneration_keeps_or_replaces_only_the_selected_artifac
                 json={"request_id": str(uuid4()), "base_voice_path": str(base_voice.resolve())},
             )
             assert reference.status_code == 202
+            tracked_reference = (await client.get(f"/api/v1/chapters/{run_id}/progress")).json()[
+                "segments"
+            ][0]
+            assert tracked_reference["reference_job_id"] == reference.json()["job_id"]
             assert (await _wait(client, reference.json()["status_url"]))["status"] == "succeeded"
             after_reference = (await client.get(f"/api/v1/segments/{segment_id}")).json()
             assert after_reference["active_ref_version_id"] != original_ref
@@ -117,6 +125,17 @@ async def test_explicit_regeneration_keeps_or_replaces_only_the_selected_artifac
             )
             assert both.status_code == 202
             assert (await _wait(client, both.json()["status_url"]))["status"] == "succeeded"
+            for _ in range(400):
+                tracked_both = (await client.get(f"/api/v1/chapters/{run_id}/progress")).json()[
+                    "segments"
+                ][0]
+                if tracked_both["gsv_job_id"] != gsv.json()["job_id"]:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                raise AssertionError("both regeneration did not expose its follow-up GSV job")
+            assert tracked_both["reference_job_id"] == both.json()["job_id"]
+            assert tracked_both["gsv_job_status"] in {"queued", "running", "succeeded"}
             for _ in range(400):
                 current = await client.get(f"/api/v1/segments/{segment_id}")
                 assert current.status_code == 200

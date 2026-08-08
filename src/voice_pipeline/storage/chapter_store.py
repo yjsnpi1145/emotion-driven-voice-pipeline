@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
@@ -24,7 +25,14 @@ from voice_pipeline.models.schemas import AudioResult
 from voice_pipeline.modules.llm.director import validate_director_plan
 from voice_pipeline.modules.llm.models import DirectorPlan
 from voice_pipeline.storage.database import Database
-from voice_pipeline.storage.orm import chapter_run_segments, chapter_runs, generation_jobs, segments
+from voice_pipeline.storage.orm import (
+    artifact_version_state,
+    artifact_versions,
+    chapter_run_segments,
+    chapter_runs,
+    generation_jobs,
+    segments,
+)
 from voice_pipeline.storage.segment_store import SegmentStore
 
 
@@ -166,26 +174,80 @@ class ChapterStore:
             if cast(CursorResult[Any], result).rowcount != 1:
                 raise KeyError(f"unknown chapter segment: {run_id}/{ordinal}")
 
+    async def set_segment_job_by_segment(
+        self, segment_id: UUID, kind: Literal["reference", "gsv"], job_id: UUID
+    ) -> bool:
+        """Track the latest local regeneration job when the segment belongs to a chapter."""
+        column = (
+            chapter_run_segments.c.reference_job_id
+            if kind == "reference"
+            else chapter_run_segments.c.gsv_job_id
+        )
+        async with self._database.write_session() as session:
+            result = await session.execute(
+                update(chapter_run_segments)
+                .where(chapter_run_segments.c.segment_id == str(segment_id))
+                .values({column.key: str(job_id)})
+            )
+        row_count = cast(CursorResult[Any], result).rowcount
+        if row_count is None:
+            return False
+        if row_count > 1:
+            raise RuntimeError(f"segment belongs to multiple chapter runs: {segment_id}")
+        return row_count == 1
+
     async def progress(self, run_id: UUID) -> tuple[ChapterSegmentProgress, ...]:
         """Return ordered progress using only durable job and segment state."""
         await self.get(run_id)
         reference_jobs = generation_jobs.alias("reference_jobs")
         gsv_jobs = generation_jobs.alias("gsv_jobs")
+        reference_versions = artifact_versions.alias("reference_versions")
+        gsv_versions = artifact_versions.alias("gsv_versions")
+        reference_version_state = artifact_version_state.alias("reference_version_state")
+        gsv_version_state = artifact_version_state.alias("gsv_version_state")
         statement = (
             select(
                 chapter_run_segments.c.ordinal,
                 chapter_run_segments.c.segment_id,
                 segments.c.source_text,
+                segments.c.ref_text_cn,
+                segments.c.current_emotion_vector_json,
+                segments.c.synthesis_text,
+                segments.c.speed_factor,
+                segments.c.seed,
                 segments.c.active_ref_version_id,
                 segments.c.active_gsv_version_id,
+                chapter_run_segments.c.reference_job_id,
+                chapter_run_segments.c.gsv_job_id,
                 reference_jobs.c.status.label("reference_job_status"),
                 gsv_jobs.c.status.label("gsv_job_status"),
+                reference_versions.c.input_snapshot_json.label("reference_input_snapshot"),
+                reference_version_state.c.state.label("reference_version_state"),
+                gsv_versions.c.input_snapshot_json.label("gsv_input_snapshot"),
+                gsv_versions.c.ref_version_id.label("gsv_ref_version_id"),
+                gsv_version_state.c.state.label("gsv_version_state"),
             )
             .join(segments, segments.c.segment_id == chapter_run_segments.c.segment_id)
             .outerjoin(
                 reference_jobs, reference_jobs.c.job_id == chapter_run_segments.c.reference_job_id
             )
             .outerjoin(gsv_jobs, gsv_jobs.c.job_id == chapter_run_segments.c.gsv_job_id)
+            .outerjoin(
+                reference_versions,
+                reference_versions.c.version_id == segments.c.active_ref_version_id,
+            )
+            .outerjoin(
+                reference_version_state,
+                reference_version_state.c.version_id == reference_versions.c.version_id,
+            )
+            .outerjoin(
+                gsv_versions,
+                gsv_versions.c.version_id == segments.c.active_gsv_version_id,
+            )
+            .outerjoin(
+                gsv_version_state,
+                gsv_version_state.c.version_id == gsv_versions.c.version_id,
+            )
             .where(chapter_run_segments.c.run_id == str(run_id))
             .order_by(chapter_run_segments.c.ordinal)
         )
@@ -196,8 +258,12 @@ class ChapterStore:
                 ordinal=int(row["ordinal"]),
                 segment_id=UUID(str(row["segment_id"])),
                 source_summary=_source_summary(str(row["source_text"])),
+                reference_job_id=_uuid_or_none(row["reference_job_id"]),
+                gsv_job_id=_uuid_or_none(row["gsv_job_id"]),
                 reference_job_status=_job_status(row["reference_job_status"]),
                 gsv_job_status=_job_status(row["gsv_job_status"]),
+                reference_state=_reference_state(cast(Mapping[object, object], row)),
+                gsv_state=_gsv_state(cast(Mapping[object, object], row)),
                 active_ref_version_id=(
                     UUID(str(row["active_ref_version_id"]))
                     if row["active_ref_version_id"] is not None
@@ -367,6 +433,58 @@ def _source_summary(source_text: str) -> str:
 
 def _job_status(value: object) -> JobStatus | None:
     return cast(JobStatus, str(value)) if value is not None else None
+
+
+def _uuid_or_none(value: object) -> UUID | None:
+    return UUID(str(value)) if value is not None else None
+
+
+def _reference_state(row: Mapping[object, object]) -> Literal["ready", "draft_pending", "missing"]:
+    if row["active_ref_version_id"] is None or row["reference_version_state"] != "ready":
+        return "missing"
+    snapshot = _snapshot(row["reference_input_snapshot"])
+    vector = _snapshot_list(row["current_emotion_vector_json"])
+    if snapshot is None or vector is None:
+        return "missing"
+    matches = (
+        snapshot.get("ref_text_cn") == row["ref_text_cn"]
+        and snapshot.get("emotion_vector") == vector
+        and snapshot.get("seed") == row["seed"]
+    )
+    return "ready" if matches else "draft_pending"
+
+
+def _gsv_state(row: Mapping[object, object]) -> Literal["ready", "stale", "missing"]:
+    if row["active_gsv_version_id"] is None or row["gsv_version_state"] != "ready":
+        return "missing"
+    snapshot = _snapshot(row["gsv_input_snapshot"])
+    if snapshot is None:
+        return "missing"
+    matches = (
+        row["gsv_ref_version_id"] == row["active_ref_version_id"]
+        and snapshot.get("text") == row["synthesis_text"]
+        and snapshot.get("speed_factor") == row["speed_factor"]
+        and snapshot.get("seed") == row["seed"]
+    )
+    return "ready" if matches else "stale"
+
+
+def _snapshot(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    try:
+        raw = json.loads(str(value))
+    except json.JSONDecodeError:
+        return None
+    return cast(dict[str, object], raw) if isinstance(raw, dict) else None
+
+
+def _snapshot_list(value: object) -> list[object] | None:
+    try:
+        raw = json.loads(str(value))
+    except json.JSONDecodeError:
+        return None
+    return cast(list[object], raw) if isinstance(raw, list) else None
 
 
 def _now() -> str:

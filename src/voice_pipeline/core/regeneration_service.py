@@ -13,6 +13,7 @@ from voice_pipeline.models.persistence import (
     SegmentReferenceJobRequest,
 )
 from voice_pipeline.models.schemas import ExecutionContext
+from voice_pipeline.storage.chapter_store import ChapterStore
 from voice_pipeline.storage.job_store import SqliteJobStore
 from voice_pipeline.storage.segment_store import SegmentStore
 from voice_pipeline.storage.version_store import VersionStore
@@ -25,12 +26,14 @@ class SegmentRegenerationService:
         self,
         *,
         jobs: SqliteJobStore,
+        chapters: ChapterStore,
         segments: SegmentStore,
         versions: VersionStore,
         segment_jobs: SegmentJobService,
         notify_jobs: Callable[[], Awaitable[None]],
     ) -> None:
         self._jobs = jobs
+        self._chapters = chapters
         self._segments = segments
         self._versions = versions
         self._segment_jobs = segment_jobs
@@ -41,11 +44,13 @@ class SegmentRegenerationService:
         self, segment_id: UUID, request: SegmentReferenceJobRequest
     ) -> ExecutionContext:
         context = await self._segment_jobs.submit_reference(segment_id, request)
+        await self._chapters.set_segment_job_by_segment(segment_id, "reference", context.job_id)
         await self._notify_jobs()
         return context
 
     async def submit_gsv(self, segment_id: UUID, request: SegmentGsvJobRequest) -> ExecutionContext:
         context = await self._segment_jobs.submit_gsv(segment_id, request)
+        await self._chapters.set_segment_job_by_segment(segment_id, "gsv", context.job_id)
         await self._notify_jobs()
         return context
 

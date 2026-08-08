@@ -93,14 +93,23 @@ def _public_run(run: ChapterRunRecord) -> dict[str, Any]:
     final_audio = None
     if run.final_audio is not None:
         final_audio = run.final_audio.model_dump(mode="json", exclude={"path"})
+    raw_request_snapshot = run.snapshot.get("request", {})
+    request_snapshot = (
+        cast(dict[str, Any], raw_request_snapshot) if isinstance(raw_request_snapshot, dict) else {}
+    )
+    title = request_snapshot.get("title", "未命名章节")
     return cast(
         dict[str, Any],
         {
             "run_id": str(run.run_id),
             "request_id": str(run.request_id),
             "task_id": str(run.task_id),
+            "title": str(title),
             "status": run.status,
             "final_audio": final_audio,
+            "final_audio_url": (
+                f"/api/v1/chapters/{run.run_id}/audio" if final_audio is not None else None
+            ),
             "timeline": run.timeline.model_dump(mode="json") if run.timeline is not None else None,
             "error": run.error,
             "created_at": run.created_at_utc.isoformat(),
