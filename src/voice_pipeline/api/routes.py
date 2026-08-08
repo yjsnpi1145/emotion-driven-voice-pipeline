@@ -12,7 +12,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from voice_pipeline.core.errors import ErrorCode, PipelineError
-from voice_pipeline.models.persistence import RetryJobRequest
+from voice_pipeline.models.model_profiles import ModelProfileSnapshot
+from voice_pipeline.models.persistence import GsvModelSnapshot, RetryJobRequest
 from voice_pipeline.models.schemas import (
     GsvJobRequest,
     ReferenceJobRequest,
@@ -301,10 +302,19 @@ async def _submit(plane: Any, request: Any, kind: str) -> dict[str, Any]:
                 }
             },
         )
+    frozen_request, model_profile_snapshot = await _freeze_submission_model_profile(
+        plane, request, kind
+    )
     context = await plane.registry.create(
-        request_id=request.request_id,
+        request_id=frozen_request.request_id,
         kind=kind,
-        request_snapshot=request.model_dump(mode="json"),
+        request_snapshot=frozen_request.model_dump(mode="json"),
+        model_fingerprint=(
+            plane.gsv.fingerprint().model_dump(mode="json")
+            if kind in {"gsv", "segment"}
+            else plane.index.fingerprint().model_dump(mode="json")
+        ),
+        model_profile_snapshot=model_profile_snapshot,
     )
 
     await _require_dispatcher(plane).notify()
@@ -314,6 +324,42 @@ async def _submit(plane: Any, request: Any, kind: str) -> dict[str, Any]:
         "status": "queued",
         "status_url": f"/api/v1/jobs/{context.job_id}",
     }
+
+
+async def _freeze_submission_model_profile(
+    plane: Any, request: Any, kind: str
+) -> tuple[Any, GsvModelSnapshot | None]:
+    """Resolve the selected GSV profile once, before a durable job is queued."""
+    if kind not in {"gsv", "segment"}:
+        return request, None
+    if not isinstance(request, (GsvJobRequest, SegmentSynthesisRequest)):
+        raise TypeError(f"{kind} submission has an unexpected request schema")
+    model_profiles = getattr(plane, "model_profiles", None)
+    if model_profiles is None:
+        return request, None
+    try:
+        resolved = await model_profiles.resolve_selected_profile(request.model_profile_id)
+    except PipelineError as exc:
+        if (
+            plane.settings.mode != "real"
+            and request.model_profile_id is None
+            and exc.code == ErrorCode.MODEL_PROFILE_UNAVAILABLE
+            and exc.details.get("reason") == "no_active_profile"
+        ):
+            return request, None
+        raise
+    profile = ModelProfileSnapshot(
+        profile_id=resolved.profile_id,
+        display_name=resolved.display_name,
+        gpt_relative_path=resolved.gpt_relative_path,
+        sovits_relative_path=resolved.sovits_relative_path,
+        gpt_sha256=resolved.gpt_sha256,
+        sovits_sha256=resolved.sovits_sha256,
+    )
+    return (
+        request.model_copy(update={"model_profile_id": profile.profile_id}),
+        GsvModelSnapshot(profile=profile, engine_fingerprint=plane.gsv.fingerprint()),
+    )
 
 
 def _require_dispatcher(plane: Any) -> Any:

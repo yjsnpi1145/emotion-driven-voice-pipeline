@@ -218,3 +218,100 @@ async def test_segment_gsv_job_freezes_the_active_model_profile_at_submission(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["version_id"] == gsv_version["version_id"]
     assert manifest["model_profile_snapshot"]["profile"]["profile_id"] == profile_id
+
+
+@pytest.mark.asyncio
+async def test_direct_gsv_job_freezes_active_model_profile_before_queue_execution(
+    fake_settings, tmp_path
+) -> None:
+    """A direct /jobs/gsv submission must not follow a later active-profile switch."""
+    from voice_pipeline.modules.indextts.fake import FakeIndexTTSClient
+
+    source = tmp_path / "source-models"
+    source.mkdir()
+    gpt_a, sovits_a = source / "a.ckpt", source / "a.pth"
+    gpt_b, sovits_b = source / "b.ckpt", source / "b.pth"
+    gpt_a.write_bytes(b"gpt-a")
+    sovits_a.write_bytes(b"sovits-a")
+    gpt_b.write_bytes(b"gpt-b")
+    sovits_b.write_bytes(b"sovits-b")
+    fake_settings.model_library.models_root = tmp_path / "model-library"
+    fake_settings.model_library.allowed_import_roots = [source]
+
+    base_voice = tmp_path / "voice.wav"
+    write_tone(base_voice, seconds=5.0)
+    app = create_app(fake_settings, index_client=FakeIndexTTSClient(delay_seconds=0.25))
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            imported_a = await client.post(
+                "/api/v1/model-profiles/import",
+                json={
+                    "display_name": "voice-a",
+                    "gpt_source_path": str(gpt_a.resolve()),
+                    "sovits_source_path": str(sovits_a.resolve()),
+                },
+            )
+            imported_b = await client.post(
+                "/api/v1/model-profiles/import",
+                json={
+                    "display_name": "voice-b",
+                    "gpt_source_path": str(gpt_b.resolve()),
+                    "sovits_source_path": str(sovits_b.resolve()),
+                },
+            )
+            profile_a = imported_a.json()["profile_id"]
+            profile_b = imported_b.json()["profile_id"]
+            activated_a = await client.post(f"/api/v1/model-profiles/{profile_a}/activate")
+            assert activated_a.status_code == 200
+
+            reference = await client.post(
+                "/api/v1/jobs/reference",
+                json={
+                    "request_id": "6a7f8b25-c247-4495-8f34-09f741dbed7a",
+                    "base_voice_path": str(base_voice.resolve()),
+                    "ref_text_cn": "这是供直接 GSV 任务使用的参考文本。",
+                    "emotion_vector": [0.0, 0.0, 0.2, 0.0, 0.0, 0.25, 0.0, 0.15],
+                },
+            )
+            reference_record = await _wait(client, reference.json()["job_id"])
+            assert reference_record["status"] == "succeeded"
+            manifest_path = reference_record["result"]["manifest_path"]
+
+            blocker = await client.post(
+                "/api/v1/jobs/reference",
+                json={
+                    "request_id": "7a7f8b25-c247-4495-8f34-09f741dbed7a",
+                    "base_voice_path": str(base_voice.resolve()),
+                    "ref_text_cn": "这条任务故意占用队列，让 GSV 保持排队。",
+                    "emotion_vector": [0.0, 0.0, 0.21, 0.0, 0.0, 0.24, 0.0, 0.15],
+                },
+            )
+            blocker_id = blocker.json()["job_id"]
+            for _ in range(100):
+                blocker_status = (await client.get(f"/api/v1/jobs/{blocker_id}")).json()
+                if blocker_status["status"] == "running":
+                    break
+                await asyncio.sleep(0.01)
+
+            submitted = await client.post(
+                "/api/v1/jobs/gsv",
+                json={
+                    "request_id": "8a7f8b25-c247-4495-8f34-09f741dbed7a",
+                    "reference_manifest_path": manifest_path,
+                    "target_text": "This direct job must retain voice A.",
+                    "target_language": "en",
+                },
+            )
+            assert submitted.status_code == 202
+            queued = await client.get(f"/api/v1/jobs/{submitted.json()['job_id']}")
+            activated_b = await client.post(f"/api/v1/model-profiles/{profile_b}/activate")
+            assert activated_b.status_code == 200
+            completed = await _wait(client, submitted.json()["job_id"])
+
+    assert queued.json()["request_snapshot"]["model_profile_id"] == profile_a
+    assert queued.json()["model_profile_snapshot"]["profile"]["profile_id"] == profile_a
+    assert completed["status"] == "succeeded"
+    assert [str(item.profile_id) for item in app.state.plane.gsv.loaded_profiles] == [profile_a]
