@@ -1,0 +1,23 @@
+:root { color-scheme: dark; font-family: system-ui, sans-serif; background: #111827; color: #f3f4f6; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; }
+.topbar { display: flex; align-items: baseline; gap: 1rem; padding: 1rem 1.5rem; background: #1f2937; }
+.topbar h1 { font-size: 1.25rem; margin: 0; }
+.topbar p { color: #cbd5e1; margin: 0; }
+.workbench { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(15rem, 1fr) minmax(22rem, 2fr); gap: 1px; min-height: calc(100vh - 4rem); background: #374151; }
+.workbench > section { background: #111827; padding: 1rem; overflow: auto; }
+form, .editor form { display: grid; gap: .75rem; }
+label { display: grid; gap: .3rem; color: #cbd5e1; font-size: .9rem; }
+input, textarea, select, button { font: inherit; border-radius: .35rem; border: 1px solid #4b5563; padding: .5rem; }
+input, textarea, select { background: #1f2937; color: #f9fafb; }
+button { background: #2563eb; color: white; cursor: pointer; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 3px solid #fbbf24; outline-offset: 2px; }
+#chapter-list, #segment-list { display: grid; gap: .35rem; margin-top: 1rem; }
+.segment-row { display: grid; text-align: left; background: #1f2937; }
+.segment-row[data-selected="true"] { border-color: #60a5fa; background: #172554; }
+.status { color: #93c5fd; font-size: .8rem; }
+.error { color: #fca5a5; }
+.vector-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: .5rem; }
+.audio-grid { display: grid; gap: .5rem; }
+audio { width: 100%; }
+@media (max-width: 900px) { .workbench { grid-template-columns: 1fr; } .workbench > section { min-height: 20rem; } }

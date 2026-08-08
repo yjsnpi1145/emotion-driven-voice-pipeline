@@ -43,6 +43,7 @@ voice-pipeline = "voice_pipeline.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/voice_pipeline"]
+include = ["src/voice_pipeline/webui/**"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"

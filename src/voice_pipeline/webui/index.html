@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>情绪配音工作台</title>
+    <link rel="stylesheet" href="/ui/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>情绪配音工作台</h1>
+      <p id="run-status" aria-live="polite">选择或创建一个章节任务</p>
+    </header>
+    <main class="workbench">
+      <section class="chapter-panel" aria-label="章节任务">
+        <form id="chapter-form">
+          <label>标题 <input name="title" required value="新章节" /></label>
+          <label>原文 <textarea name="source_text" required rows="5"></textarea></label>
+          <label>参考音色路径 <input name="base_voice_path" required /></label>
+          <label>目标语言
+            <select name="target_language"><option value="ja">日语</option><option value="en">英语</option><option value="zh">中文</option></select>
+          </label>
+          <label>模型配置 <select name="model_profile_id" id="model-profile" required></select></label>
+          <button type="submit">创建整篇任务</button>
+        </form>
+        <nav id="chapter-list" aria-label="章节历史"></nav>
+      </section>
+      <section class="segment-panel" aria-label="分块列表">
+        <label>搜索 <input id="segment-search" /></label>
+        <div id="segment-list" tabindex="0" aria-label="分块列表"></div>
+      </section>
+      <section id="segment-editor" class="editor" aria-label="分块编辑器">
+        <p>从左侧选择分块以编辑草稿。保存不会触发推理。</p>
+      </section>
+    </main>
+    <template id="segment-row-template"><button class="segment-row" type="button"></button></template>
+    <script type="module" src="/ui/app.js"></script>
+  </body>
+</html>

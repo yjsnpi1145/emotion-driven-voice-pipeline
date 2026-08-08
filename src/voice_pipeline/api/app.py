@@ -16,6 +16,7 @@ from voice_pipeline.api.foundation_routes import build_foundation_router
 from voice_pipeline.api.maintenance_routes import build_maintenance_router
 from voice_pipeline.api.model_profile_routes import build_model_profile_router
 from voice_pipeline.api.routes import build_router
+from voice_pipeline.api.workbench_routes import build_workbench_router
 from voice_pipeline.core.chapter_service import ChapterService
 from voice_pipeline.core.config import AppSettings
 from voice_pipeline.core.dispatcher import DurableJobDispatcher
@@ -337,4 +338,5 @@ def create_app(
     app.include_router(build_foundation_router(plane))
     app.include_router(build_maintenance_router(plane))
     app.include_router(build_chapter_router(plane))
+    app.include_router(build_workbench_router(plane))
     return app
