@@ -23,3 +23,9 @@ def test_engine_setup_allows_ignored_local_model_assets_on_repeat_runs() -> None
 
     assert "checkpoints" in script
     assert "status --porcelain" in script
+
+
+def test_index_setup_uses_the_cuda_index_required_by_its_locked_torch_wheel() -> None:
+    script = (ROOT / "scripts" / "setup-indextts.ps1").read_text(encoding="utf-8")
+
+    assert "'--extra-index-url','https://download.pytorch.org/whl/cu128'" in script

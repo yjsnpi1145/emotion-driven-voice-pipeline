@@ -72,7 +72,8 @@ if (-not (Test-Path -LiteralPath $IndexPython -PathType Leaf)) {
   }
   Invoke-Checked 'uv' @('venv', (Join-Path $IndexRepo '.venv'), '--python', '3.11', '--seed')
   Invoke-Checked 'uv' @(
-    'pip', 'sync', '--python', $IndexPython, '--require-hashes', $IndexLock
+    'pip', 'sync', '--python', $IndexPython, '--require-hashes', $IndexLock,
+    '--extra-index-url','https://download.pytorch.org/whl/cu128'
   )
   uv build --wheel --out-dir $BootstrapWheelDir
   if ($LASTEXITCODE -ne 0) { throw 'wheel build failed' }
