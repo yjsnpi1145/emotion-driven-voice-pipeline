@@ -28,8 +28,8 @@ def test_import_request_requires_absolute_source_paths(tmp_path: Path) -> None:
 
 
 def test_gsv_request_accepts_an_optional_model_profile_id(tmp_path: Path) -> None:
-    from voice_pipeline.models.schemas import GsvSynthesisRequest, ReferenceBinding
     from tests.unit.test_schemas import REQUEST_ID, _binding_payload
+    from voice_pipeline.models.schemas import GsvSynthesisRequest, ReferenceBinding
 
     request = GsvSynthesisRequest(
         request_id=REQUEST_ID,
