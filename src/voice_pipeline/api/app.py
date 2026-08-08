@@ -74,6 +74,7 @@ class ControlPlane:
         self.segment_jobs: SegmentJobService | None = None
         self.retention_planner: RetentionPlanner | None = None
         self.retention_executor: RetentionExecutor | None = None
+        self.cache_store: CacheStore | None = None
         self.quality_analyzer: QualityAnalyzer | None = None
         self.last_recovery_report: Any | None = None
 
@@ -193,9 +194,8 @@ def create_app(
         )
         plane.registry = SqliteJobStore(database, jobs_root=runtime_dir / "jobs")
         plane.artifact_store = ArtifactStore(settings.storage.artifact_root)
-        plane.service.configure_cache(
-            CacheStore(database, plane.artifact_store), plane.artifact_store
-        )
+        plane.cache_store = CacheStore(database, plane.artifact_store)
+        plane.service.configure_cache(plane.cache_store, plane.artifact_store)
         plane.service.configure_quality_cache(QualityCacheStore(database))
         plane.segment_store = SegmentStore(database)
         plane.version_store = VersionStore(database)
@@ -212,7 +212,13 @@ def create_app(
         plane.retention_planner = RetentionPlanner(
             database, history_limit=settings.storage.history_limit
         )
-        plane.retention_executor = RetentionExecutor(database, plane.artifact_store)
+        plane.retention_executor = RetentionExecutor(
+            database,
+            plane.artifact_store,
+            cache=plane.cache_store,
+            cache_max_entries_per_kind=settings.storage.cache_max_entries_per_kind,
+            cache_max_age_days=settings.storage.cache_max_age_days,
+        )
         plane.dispatcher = DurableJobDispatcher(
             store=plane.registry,
             queue=queue,

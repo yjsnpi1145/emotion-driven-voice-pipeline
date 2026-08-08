@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import httpx
 import pytest
 from sqlalchemy import update
@@ -7,7 +9,7 @@ from sqlalchemy import update
 from tests.integration_cpu.conftest import write_tone
 from tests.integration_cpu.test_segment_bound_jobs import _create_segment, _wait
 from voice_pipeline.api.app import create_app
-from voice_pipeline.storage.orm import artifact_version_state
+from voice_pipeline.storage.orm import artifact_version_state, cache_entries
 
 
 @pytest.mark.asyncio
@@ -133,3 +135,108 @@ async def test_startup_finishes_a_crash_left_retention_deletion(fake_settings, t
         recovered = await second_app.state.plane.version_store.get_version(candidate_id)
 
     assert recovered.state == "deleted"
+
+
+@pytest.mark.asyncio
+async def test_retention_keeps_candidate_deleting_when_manifest_move_fails(
+    fake_settings, monkeypatch, tmp_path
+) -> None:
+    """A filesystem failure must leave a resumable deleting marker, never a false tombstone."""
+    base_voice = tmp_path / "voice.wav"
+    write_tone(base_voice, seconds=5.0)
+    app = create_app(fake_settings)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            segment_id = await _create_segment(client)
+            for index in range(7):
+                created = await client.post(
+                    f"/api/v1/segments/{segment_id}/jobs/reference",
+                    json={
+                        "request_id": f"10000000-0000-4000-8000-{index + 1:012d}",
+                        "base_voice_path": str(base_voice.resolve()),
+                        "activate_on_success": False,
+                    },
+                )
+                assert (await _wait(client, created.json()["job_id"]))["status"] == "succeeded"
+            plan = await client.post("/api/v1/maintenance/retention/plan")
+            assert plan.status_code == 201
+            candidate_id = plan.json()["candidate_version_ids"][0]
+
+            async def deny_manifest_move(*_args, **_kwargs) -> None:
+                raise PermissionError("simulated locked manifest")
+
+            executor = app.state.plane.retention_executor
+            assert executor is not None
+            monkeypatch.setattr(executor, "_trash_version_manifests", deny_manifest_move)
+            with pytest.raises(PermissionError, match="locked manifest"):
+                await executor.apply(plan.json()["plan_id"])
+            during_failure = await client.get(f"/api/v1/versions/{candidate_id}")
+
+            monkeypatch.undo()
+            resumed = await executor.resume_deletions()
+            after_resume = await client.get(f"/api/v1/versions/{candidate_id}")
+
+    assert during_failure.json()["state"] == "deleting"
+    assert candidate_id in {str(version_id) for version_id in resumed}
+    assert after_resume.json()["state"] == "deleted"
+
+
+@pytest.mark.asyncio
+async def test_retention_apply_invalidates_expired_cache_entries(
+    fake_settings, request_json
+) -> None:
+    app = create_app(fake_settings)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            generated = await client.post("/api/v1/jobs/segment", json=request_json)
+            assert (await _wait(client, generated.json()["job_id"]))["status"] == "succeeded"
+            async with app.state.plane.database.write_session() as session:
+                await session.execute(
+                    update(cache_entries)
+                    .values(
+                        last_hit_at_utc=(datetime.now(UTC) - timedelta(days=91)).isoformat()
+                    )
+                )
+
+            plan = await client.post("/api/v1/maintenance/retention/plan")
+            applied = await client.post(
+                f"/api/v1/maintenance/retention/{plan.json()['plan_id']}/apply"
+            )
+            cache = await client.get("/api/v1/maintenance/cache")
+
+    assert applied.status_code == 200
+    assert {entry["state"] for entry in cache.json()["entries"]} == {"invalid"}
+
+
+@pytest.mark.asyncio
+async def test_retention_apply_keeps_only_lru_cache_quota_per_kind(
+    fake_settings, request_json
+) -> None:
+    fake_settings.storage.cache_max_entries_per_kind = 10
+    app = create_app(fake_settings)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for seed in range(11):
+                payload = dict(request_json)
+                payload["request_id"] = f"20000000-0000-4000-8000-{seed + 1:012d}"
+                payload["seed"] = seed
+                generated = await client.post("/api/v1/jobs/segment", json=payload)
+                assert (await _wait(client, generated.json()["job_id"]))["status"] == "succeeded"
+
+            plan = await client.post("/api/v1/maintenance/retention/plan")
+            applied = await client.post(
+                f"/api/v1/maintenance/retention/{plan.json()['plan_id']}/apply"
+            )
+            cache = await client.get("/api/v1/maintenance/cache")
+
+    assert applied.status_code == 200
+    entries = cache.json()["entries"]
+    assert len(entries) == 22
+    assert sum(entry["state"] == "ready" for entry in entries) == 20
+    assert sum(entry["state"] == "invalid" for entry in entries) == 2

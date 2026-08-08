@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import insert, select, update
@@ -132,6 +132,63 @@ class CacheStore:
                 .all()
             )
         return [dict(row) for row in rows]
+
+    async def prune(
+        self,
+        *,
+        max_entries_per_kind: int,
+        max_age_days: int,
+        now: datetime | None = None,
+    ) -> tuple[str, ...]:
+        """Invalidate expired and least-recently-used cache keys deterministically."""
+        if max_entries_per_kind < 1 or max_age_days < 1:
+            raise ValueError("cache retention limits must be positive")
+        observed_at = now or datetime.now(UTC)
+        cutoff = observed_at - timedelta(days=max_age_days)
+        async with self._database.read_session() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(
+                            cache_entries.c.cache_key,
+                            cache_entries.c.kind,
+                            cache_entries.c.last_hit_at_utc,
+                        )
+                        .where(cache_entries.c.state == "ready")
+                        .order_by(
+                            cache_entries.c.kind,
+                            cache_entries.c.last_hit_at_utc.desc(),
+                            cache_entries.c.cache_key.desc(),
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        keep_by_kind: dict[str, int] = {}
+        expired_or_lru: list[str] = []
+        for row in rows:
+            key = str(row["cache_key"])
+            kind = str(row["kind"])
+            last_hit = datetime.fromisoformat(str(row["last_hit_at_utc"]))
+            if last_hit < cutoff:
+                expired_or_lru.append(key)
+                continue
+            retained = keep_by_kind.get(kind, 0)
+            if retained >= max_entries_per_kind:
+                expired_or_lru.append(key)
+                continue
+            keep_by_kind[kind] = retained + 1
+        if not expired_or_lru:
+            return ()
+        async with self._database.write_session() as session:
+            await session.execute(
+                update(cache_entries)
+                .where(cache_entries.c.cache_key.in_(expired_or_lru))
+                .where(cache_entries.c.state == "ready")
+                .values(state="invalid")
+            )
+        return tuple(expired_or_lru)
 
     async def _invalidate(self, cache_key: str, *, reason: str) -> None:
         async with self._database.write_session() as session:

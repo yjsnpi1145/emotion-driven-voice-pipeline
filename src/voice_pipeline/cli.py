@@ -24,6 +24,8 @@ from voice_pipeline.modules.audio.atomic_output import (
 from voice_pipeline.modules.audio.wav_probe import probe_wav, sha256_file
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
+maintenance_app = typer.Typer(add_completion=False, no_args_is_help=True)
+app.add_typer(maintenance_app, name="maintenance")
 
 _POLL_INTERVAL_SECONDS = 0.25
 _DEFAULT_TIMEOUT_SECONDS = 900.0
@@ -280,6 +282,64 @@ def doctor(
             f"status={payload.get('status')} mode={payload.get('mode')} "
             f"lifecycle={payload.get('engine_lifecycle')}"
         )
+
+
+def _maintenance_request(
+    server: str, method: str, path: str, *, timeout_seconds: float = 30.0
+) -> dict[str, Any]:
+    try:
+        with _client(server, timeout_seconds) as client:
+            response = client.request(method, path)
+            if response.status_code not in (200, 201):
+                _handle_http_error(response, path)
+            return cast("dict[str, Any]", response.json())
+    except httpx.HTTPError as exc:
+        _fatal(
+            ErrorCode.CONTROL_PLANE_UNAVAILABLE.value,
+            "cli",
+            f"control plane unreachable: {exc}",
+            exit_code=3,
+        )
+    except PipelineError as exc:
+        _emit_json({"error": exc.as_dict()})
+        raise typer.Exit(_exit_code_for(exc)) from exc
+    raise AssertionError("unreachable after maintenance request failure")
+
+
+@maintenance_app.command("retention-plan")
+def maintenance_retention_plan(
+    server: str = typer.Option(..., "--server"),
+    segment_id: str | None = typer.Option(None, "--segment-id"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    del json_output
+    suffix = f"?segment_id={segment_id}" if segment_id is not None else ""
+    _emit_json(_maintenance_request(server, "POST", f"/api/v1/maintenance/retention/plan{suffix}"))
+
+
+@maintenance_app.command("retention-apply")
+def maintenance_retention_apply(
+    plan_id: str,
+    server: str = typer.Option(..., "--server"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    del json_output
+    _emit_json(
+        _maintenance_request(
+            server,
+            "POST",
+            f"/api/v1/maintenance/retention/{plan_id}/apply",
+        )
+    )
+
+
+@maintenance_app.command("cache-status")
+def maintenance_cache_status(
+    server: str = typer.Option(..., "--server"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    del json_output
+    _emit_json(_maintenance_request(server, "GET", "/api/v1/maintenance/cache"))
 
 
 @app.command()

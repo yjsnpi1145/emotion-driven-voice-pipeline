@@ -134,6 +134,8 @@ class StorageRecovery:
                         select(
                             artifact_versions.c.version_id,
                             artifact_versions.c.blob_sha256,
+                            artifact_versions.c.artifact_type,
+                            artifact_versions.c.manifest_relative_path,
                             artifact_blobs.c.relative_path,
                             artifact_version_state.c.state,
                         )
@@ -159,17 +161,32 @@ class StorageRecovery:
             blob_path = (self._store.root / str(row["relative_path"])).resolve()
             expected_sha = str(row["blob_sha256"])
             state: str | None = None
+            reason: str | None = None
             if not blob_path.is_file() or blob_path.is_symlink():
                 state = "missing"
+                reason = "canonical_blob_missing"
                 missing.append(version_id)
             else:
                 try:
                     if sha256_file(blob_path) != expected_sha:
                         state = "corrupt"
+                        reason = "canonical_blob_corrupt"
                         corrupt.append(version_id)
                 except OSError:
                     state = "missing"
+                    reason = "canonical_blob_missing"
                     missing.append(version_id)
+            if state is None:
+                manifest_state = _verify_version_manifest(
+                    root=self._store.root,
+                    relative_path=str(row["manifest_relative_path"]),
+                    version_id=version_id,
+                    artifact_type=str(row["artifact_type"]),
+                    blob_sha256=expected_sha,
+                )
+                if manifest_state is not None:
+                    state, reason = manifest_state
+                    (missing if state == "missing" else corrupt).append(version_id)
             if state is not None:
                 async with self._database.write_session() as session:
                     await session.execute(
@@ -180,7 +197,7 @@ class StorageRecovery:
                             state=state,
                             diagnostic_json=json.dumps(
                                 {
-                                    "reason": f"canonical_blob_{state}",
+                                    "reason": reason,
                                     "blob_sha256": expected_sha,
                                 },
                                 sort_keys=True,
@@ -222,3 +239,34 @@ class StorageRecovery:
                             )
                         )
         return missing, corrupt
+
+
+def _verify_version_manifest(
+    *,
+    root: Path,
+    relative_path: str,
+    version_id: UUID,
+    artifact_type: str,
+    blob_sha256: str,
+) -> tuple[str, str] | None:
+    """Return an invalid state/reason, or ``None`` for a matching immutable manifest."""
+    manifests = (root / "manifests").resolve()
+    path = (root / relative_path).resolve()
+    try:
+        path.relative_to(manifests)
+    except ValueError:
+        return "corrupt", "version_manifest_path_outside_manifests"
+    if not path.is_file() or path.is_symlink():
+        return "missing", "version_manifest_missing"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        blob = payload["blob"]
+        if (
+            payload["version_id"] != str(version_id)
+            or payload["artifact_type"] != artifact_type
+            or blob["content_sha256"] != blob_sha256
+        ):
+            return "corrupt", "version_manifest_mismatch"
+    except (OSError, TypeError, KeyError, json.JSONDecodeError):
+        return "corrupt", "version_manifest_invalid_json"
+    return None

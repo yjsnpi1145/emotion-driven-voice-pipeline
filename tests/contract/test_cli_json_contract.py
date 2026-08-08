@@ -190,3 +190,48 @@ async def test_generate_reference_then_gsv_leaves_reference_unchanged(
     # generate-gsv must not modify the reference wav or its manifest
     assert sha256_file(ref_out) == ref_sha_before
     assert sha256_file(manifest_path) == manifest_sha_before
+
+
+@pytest.mark.asyncio
+async def test_maintenance_retention_cli_uses_the_loopback_http_api(server_url) -> None:
+    planned = await asyncio.to_thread(
+        runner.invoke,
+        cli_app,
+        [
+            "maintenance",
+            "retention-plan",
+            "--server",
+            server_url,
+            "--json",
+        ],
+    )
+    assert planned.exit_code == 0, planned.output
+    plan = json.loads(planned.stdout)
+    assert plan["candidate_version_ids"] == []
+
+    applied = await asyncio.to_thread(
+        runner.invoke,
+        cli_app,
+        [
+            "maintenance",
+            "retention-apply",
+            plan["plan_id"],
+            "--server",
+            server_url,
+            "--json",
+        ],
+    )
+    assert applied.exit_code == 0, applied.output
+    assert json.loads(applied.stdout) == {
+        "plan_id": plan["plan_id"],
+        "status": "applied",
+        "deleted_version_ids": [],
+    }
+
+    cache_status = await asyncio.to_thread(
+        runner.invoke,
+        cli_app,
+        ["maintenance", "cache-status", "--server", server_url, "--json"],
+    )
+    assert cache_status.exit_code == 0, cache_status.output
+    assert json.loads(cache_status.stdout) == {"entries": []}

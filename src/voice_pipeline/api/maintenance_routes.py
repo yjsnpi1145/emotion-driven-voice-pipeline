@@ -29,6 +29,13 @@ def build_maintenance_router(plane: Any) -> APIRouter:
             raise HTTPException(status_code=409, detail={"error": exc.as_dict()}) from exc
         return cast(dict[str, Any], receipt.model_dump(mode="json"))
 
+    @router.get("/api/v1/maintenance/cache")
+    async def cache_status() -> dict[str, Any]:
+        cache = getattr(plane, "cache_store", None)
+        if cache is None:
+            raise HTTPException(status_code=503, detail="cache store is not ready")
+        return {"entries": await cache.inspect()}
+
     return router
 
 

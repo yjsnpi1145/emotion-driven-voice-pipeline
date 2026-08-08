@@ -13,6 +13,7 @@ from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.models.persistence import SegmentJobSnapshot
 from voice_pipeline.models.schemas import StrictModel
 from voice_pipeline.storage.artifact_store import ArtifactStore
+from voice_pipeline.storage.cache_store import CacheStore
 from voice_pipeline.storage.database import Database
 from voice_pipeline.storage.orm import (
     artifact_blobs,
@@ -119,11 +120,29 @@ class RetentionPlanner:
 
 
 class RetentionExecutor:
-    def __init__(self, database: Database, artifacts: ArtifactStore) -> None:
+    def __init__(
+        self,
+        database: Database,
+        artifacts: ArtifactStore,
+        *,
+        cache: CacheStore,
+        cache_max_entries_per_kind: int = 500,
+        cache_max_age_days: int = 90,
+    ) -> None:
         self._database = database
         self._artifacts = artifacts
+        self._cache = cache
+        self._cache_max_entries_per_kind = cache_max_entries_per_kind
+        self._cache_max_age_days = cache_max_age_days
 
     async def apply(self, plan_id: UUID) -> RetentionReceipt:
+        """Apply a saved plan as ``ready -> deleting -> deleted``.
+
+        The filesystem move sits between the two database transitions.  A lock
+        or power loss therefore leaves a durable ``deleting`` marker that can
+        be finished safely on the next start instead of claiming a tombstone
+        for bytes that were never moved.
+        """
         async with self._database.write_session() as session:
             plan = (
                 (
@@ -153,47 +172,52 @@ class RetentionExecutor:
                     status="applied",
                     deleted_version_ids=tuple(UUID(str(value)) for value in candidates),
                 )
-            revision = int(
-                (
-                    await session.execute(
-                        select(storage_meta.c.protected_graph_revision).where(
-                            storage_meta.c.singleton_id == 1
+            if str(plan["status"]) == "planned":
+                revision = int(
+                    (
+                        await session.execute(
+                            select(storage_meta.c.protected_graph_revision).where(
+                                storage_meta.c.singleton_id == 1
+                            )
                         )
+                    ).scalar_one()
+                )
+                if revision != int(plan["storage_revision"]):
+                    raise PipelineError(
+                        ErrorCode.RETENTION_PLAN_STALE,
+                        "retention",
+                        "protected graph changed after this retention plan was created",
+                        retryable=False,
                     )
-                ).scalar_one()
-            )
-            if revision != int(plan["storage_revision"]):
+                for version_id in candidates:
+                    await session.execute(
+                        update(artifact_version_state)
+                        .where(artifact_version_state.c.version_id == str(version_id))
+                        .where(artifact_version_state.c.state == "ready")
+                        .values(state="deleting", checked_at_utc=_now())
+                    )
+                await session.execute(
+                    update(retention_plans)
+                    .where(retention_plans.c.plan_id == str(plan_id))
+                    .values(status="applying")
+                )
+            elif str(plan["status"]) != "applying":
                 raise PipelineError(
-                    ErrorCode.RETENTION_PLAN_STALE,
+                    ErrorCode.DATABASE_INTEGRITY_FAILED,
                     "retention",
-                    "protected graph changed after this retention plan was created",
+                    "retention plan has an unknown status",
                     retryable=False,
                 )
-            for version_id in candidates:
-                await session.execute(
-                    update(artifact_version_state)
-                    .where(artifact_version_state.c.version_id == str(version_id))
-                    .where(artifact_version_state.c.state == "ready")
-                    .values(state="deleting", checked_at_utc=_now())
-                )
-            for version_id in candidates:
-                await session.execute(
-                    update(artifact_version_state)
-                    .where(artifact_version_state.c.version_id == str(version_id))
-                    .where(artifact_version_state.c.state == "deleting")
-                    .values(state="deleted", checked_at_utc=_now())
-                )
-            await session.execute(
-                update(retention_plans)
-                .where(retention_plans.c.plan_id == str(plan_id))
-                .values(status="applied", applied_at_utc=_now())
-            )
-        await self._trash_version_manifests(tuple(UUID(str(value)) for value in candidates))
+        version_ids = tuple(UUID(str(value)) for value in candidates)
+        await self._trash_version_manifests(version_ids)
+        await self._mark_deleted(version_ids)
+        await self._complete_finished_plans()
+        await self._prune_cache()
         await self._garbage_collect_blobs()
         return RetentionReceipt(
             plan_id=plan_id,
             status="applied",
-            deleted_version_ids=tuple(UUID(str(value)) for value in candidates),
+            deleted_version_ids=version_ids,
         )
 
     async def resume_deletions(self) -> tuple[UUID, ...]:
@@ -204,36 +228,77 @@ class RetentionExecutor:
         chooses a replacement current pointer; it only completes the already
         recorded deletion decision.
         """
-        async with self._database.write_session() as session:
-            rows = (
+        async with self._database.read_session() as session:
+            values = (
                 await session.execute(
-                    select(
-                        artifact_versions.c.version_id,
-                        artifact_versions.c.manifest_relative_path,
-                    )
+                    select(artifact_versions.c.version_id)
                     .join(
                         artifact_version_state,
                         artifact_versions.c.version_id == artifact_version_state.c.version_id,
                     )
                     .where(artifact_version_state.c.state == "deleting")
                 )
-            ).all()
-            version_ids = tuple(UUID(str(row.version_id)) for row in rows)
-            if version_ids:
-                await session.execute(
-                    update(artifact_version_state)
-                    .where(
-                        artifact_version_state.c.version_id.in_(
-                            [str(value) for value in version_ids]
-                        )
-                    )
-                    .where(artifact_version_state.c.state == "deleting")
-                    .values(state="deleted", checked_at_utc=_now())
-                )
+            ).scalars()
+            version_ids = tuple(UUID(str(value)) for value in values)
         await self._trash_version_manifests(version_ids)
         if version_ids:
+            await self._mark_deleted(version_ids)
+            await self._complete_finished_plans()
             await self._garbage_collect_blobs()
         return version_ids
+
+    async def _prune_cache(self) -> tuple[str, ...]:
+        return await self._cache.prune(
+            max_entries_per_kind=self._cache_max_entries_per_kind,
+            max_age_days=self._cache_max_age_days,
+        )
+
+    async def _mark_deleted(self, version_ids: tuple[UUID, ...]) -> None:
+        if not version_ids:
+            return
+        async with self._database.write_session() as session:
+            await session.execute(
+                update(artifact_version_state)
+                .where(
+                    artifact_version_state.c.version_id.in_(
+                        [str(value) for value in version_ids]
+                    )
+                )
+                .where(artifact_version_state.c.state == "deleting")
+                .values(state="deleted", checked_at_utc=_now())
+            )
+
+    async def _complete_finished_plans(self) -> None:
+        """Turn an ``applying`` plan into a receipt only after all rows are tombstoned."""
+        async with self._database.write_session() as session:
+            plan_ids = (
+                await session.execute(
+                    select(retention_plans.c.plan_id).where(retention_plans.c.status == "applying")
+                )
+            ).scalars().all()
+            for plan_id in plan_ids:
+                remaining = int(
+                    (
+                        await session.execute(
+                            select(artifact_version_state.c.version_id)
+                            .join(
+                                retention_candidates,
+                                retention_candidates.c.version_id
+                                == artifact_version_state.c.version_id,
+                            )
+                            .where(retention_candidates.c.plan_id == str(plan_id))
+                            .where(artifact_version_state.c.state != "deleted")
+                        )
+                    ).first()
+                    is not None
+                )
+                if remaining == 0:
+                    await session.execute(
+                        update(retention_plans)
+                        .where(retention_plans.c.plan_id == str(plan_id))
+                        .where(retention_plans.c.status == "applying")
+                        .values(status="applied", applied_at_utc=_now())
+                    )
 
     def _trash_manifest(self, relative_path: Path) -> None:
         source = (self._artifacts.root / relative_path).resolve()
