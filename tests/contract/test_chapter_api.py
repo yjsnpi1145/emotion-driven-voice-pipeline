@@ -49,9 +49,47 @@ async def test_chapter_routes_submit_status_audio_and_timeline_without_path_leak
             payload = status.json()
             audio = await client.get(f"/api/v1/chapters/{run_id}/audio")
             timeline = await client.get(f"/api/v1/chapters/{run_id}/timeline")
+            deleted = await client.delete(f"/api/v1/chapters/{run_id}")
+            missing = await client.get(f"/api/v1/chapters/{run_id}")
 
     assert payload["status"] == "succeeded"
     assert str(base_voice) not in str(payload)
     assert audio.status_code == 200
     assert timeline.status_code == 200
     assert len(timeline.json()["segments"]) == 2
+    assert deleted.status_code == 200
+    assert deleted.json() == {"status": "deleted", "run_id": run_id}
+    assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_chapter_delete_rejects_active_run(fake_settings, tmp_path: Path) -> None:
+    from voice_pipeline.modules.indextts.fake import FakeIndexTTSClient
+
+    fake_settings.model_library.models_root = tmp_path / "library"
+    fake_settings.model_library.allowed_import_roots = [tmp_path / "models"]
+    base_voice = tmp_path / "private-base.wav"
+    write_tone(base_voice, 5.0)
+    app = create_app(fake_settings, index_client=FakeIndexTTSClient(delay_seconds=0.5))
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            profile_id = await _import_profile(client, tmp_path)
+            submitted = await client.post(
+                "/api/v1/chapters",
+                json={
+                    "request_id": str(uuid4()),
+                    "title": "active chapter",
+                    "source_text": "这是一句正在生成的测试文本。",
+                    "target_language": "zh",
+                    "base_voice_path": str(base_voice),
+                    "model_profile_id": profile_id,
+                },
+            )
+            run_id = submitted.json()["run_id"]
+            deleted = await client.delete(f"/api/v1/chapters/{run_id}")
+
+    assert deleted.status_code == 409
+    assert deleted.json()["error"]["code"] == "CHAPTER_STATE_CONFLICT"

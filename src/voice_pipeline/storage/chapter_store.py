@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import insert, select, update
 from sqlalchemy.engine import CursorResult
 
+from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.models.chapter import (
     ChapterRunRecord,
     ChapterSegmentProgress,
@@ -125,7 +126,9 @@ class ChapterStore:
             row = (
                 (
                     await session.execute(
-                        select(chapter_runs).where(chapter_runs.c.run_id == str(run_id))
+                        select(chapter_runs)
+                        .where(chapter_runs.c.run_id == str(run_id))
+                        .where(chapter_runs.c.deleted_at_utc.is_(None))
                     )
                 )
                 .mappings()
@@ -141,11 +144,46 @@ class ChapterStore:
             rows = (
                 await session.execute(
                     select(chapter_runs)
+                    .where(chapter_runs.c.deleted_at_utc.is_(None))
                     .order_by(chapter_runs.c.created_at_utc.desc(), chapter_runs.c.run_id.desc())
                     .limit(limit)
                 )
             ).mappings()
             return [_record(dict(row)) for row in rows]
+
+    async def delete_history_entry(self, run_id: UUID) -> None:
+        """Hide one terminal chapter run while preserving its immutable local artifacts."""
+        async with self._database.write_session() as session:
+            row = (
+                (
+                    await session.execute(
+                        select(chapter_runs.c.status)
+                        .where(chapter_runs.c.run_id == str(run_id))
+                        .where(chapter_runs.c.deleted_at_utc.is_(None))
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise KeyError(f"unknown chapter run: {run_id}")
+            status = str(row["status"])
+            if status in {"queued", "running"}:
+                raise PipelineError(
+                    ErrorCode.CHAPTER_STATE_CONFLICT,
+                    "chapter",
+                    "an active chapter cannot be deleted from history",
+                    retryable=False,
+                    details={"status": status},
+                )
+            result = await session.execute(
+                update(chapter_runs)
+                .where(chapter_runs.c.run_id == str(run_id))
+                .where(chapter_runs.c.deleted_at_utc.is_(None))
+                .values(deleted_at_utc=_now())
+            )
+            if cast(CursorResult[Any], result).rowcount != 1:
+                raise KeyError(f"unknown chapter run: {run_id}")
 
     async def list_segments(self, run_id: UUID) -> list[SegmentRecord]:
         run = await self.get(run_id)

@@ -101,9 +101,12 @@ code { padding: .1rem .3rem; border-radius: .3rem; background: #edf2f7; color: #
 .panel-heading.compact { padding-top: .2rem; border-top: 1px solid var(--line); }
 .panel-heading h2, .editor-heading h2, .section-heading h3 { margin: 0; }
 .chapter-list, .model-profile-list { display: grid; gap: .55rem; }
+.chapter-row-wrap { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .4rem; }
 .chapter-row { display: grid; gap: .25rem; width: 100%; padding: .62rem .68rem; overflow: hidden; border-color: var(--line); background: #fff; color: #344054; text-align: left; font-size: .8rem; text-overflow: ellipsis; white-space: nowrap; }
 .chapter-row:hover:not(:disabled) { border-color: #93b4f5; background: var(--accent-soft); color: #1d4ed8; box-shadow: none; }
 .chapter-row[data-selected="true"] { border-color: #78a3f8; background: var(--accent-soft); color: #1d4ed8; }
+.chapter-delete { align-self: stretch; padding: .45rem .55rem; border-color: #f0b4ba; background: #fffafa; color: #b42318; font-size: .74rem; }
+.chapter-delete:hover:not(:disabled) { border-color: #d92d20; background: #fff1f2; color: #912018; box-shadow: none; }
 
 .segment-panel { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: .8rem; padding: .85rem; }
 .segment-filters { display: grid; grid-template-columns: 1fr 9rem; gap: .65rem; }

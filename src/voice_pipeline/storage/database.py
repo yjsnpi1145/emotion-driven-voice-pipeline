@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import (
 from voice_pipeline.core.config import StorageSettings
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 
-PACKAGED_HEAD = "0002_batch3_chapter_runs"
+PACKAGED_HEAD = "0003_chapter_history_soft_delete"
 
 
 class ControlInstanceLock:

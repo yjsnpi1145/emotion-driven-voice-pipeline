@@ -13,6 +13,7 @@ from voice_pipeline.core.errors import PipelineError
 from voice_pipeline.models.chapter import ChapterRunRecord, ChapterSynthesisRequest
 from voice_pipeline.modules.audio.wav_probe import sha256_file
 from voice_pipeline.storage.artifact_store import ArtifactStore
+from voice_pipeline.storage.chapter_store import ChapterStore
 
 
 def build_chapter_router(plane: Any) -> APIRouter:
@@ -36,6 +37,16 @@ def build_chapter_router(plane: Any) -> APIRouter:
     @router.get("/api/v1/chapters/{run_id}")
     async def get_chapter(run_id: UUID) -> dict[str, Any]:
         return _public_run(await _get_run(plane, run_id))
+
+    @router.delete("/api/v1/chapters/{run_id}")
+    async def delete_chapter_history(run_id: UUID) -> dict[str, str]:
+        try:
+            await cast(ChapterStore, plane.chapter_store).delete_history_entry(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="chapter run not found") from exc
+        except PipelineError as exc:
+            raise HTTPException(status_code=409, detail={"error": exc.as_dict()}) from exc
+        return {"status": "deleted", "run_id": str(run_id)}
 
     @router.get("/api/v1/chapters/{run_id}/audio")
     async def get_chapter_audio(run_id: UUID) -> FileResponse:

@@ -340,6 +340,7 @@ chapter_runs = Table(
     Column("created_at_utc", Text, nullable=False),
     Column("started_at_utc", Text, nullable=True),
     Column("finished_at_utc", Text, nullable=True),
+    Column("deleted_at_utc", Text, nullable=True),
 )
 
 chapter_run_segments = Table(

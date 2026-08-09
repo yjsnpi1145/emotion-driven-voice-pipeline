@@ -78,6 +78,13 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "formatApiError" in script.text
     assert "schema_errors" in script.text
     assert "目标语言合成文本" in script.text
+    assert 'method: "DELETE"' in script.text
+    assert "从章节历史中删除" in script.text
+    assert "chapter-delete" in script.text
+    assert "chapter-delete" in stylesheet.text
+    assert 'preload="metadata"' in script.text
+    assert 'preload="none"' not in script.text
+    assert 'player.preload = "metadata"' in script.text
     assert "用于 IndexTTS2 音色克隆的参考 WAV" in script.text
     assert "3–10 秒的参考音色" not in script.text
     assert 'withBusy(submit, "正在规划分块…"' in script.text

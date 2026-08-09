@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 
 from voice_pipeline.core.config import StorageSettings
+from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.models.chapter import ChapterSynthesisRequest
 from voice_pipeline.models.persistence import SegmentJobSnapshot
 from voice_pipeline.modules.llm.fake import FakeDirector
@@ -104,6 +105,79 @@ async def test_chapter_store_keeps_source_translation_and_chinese_reference_sepa
         assert segment.synthesis_text == "これは翻訳が必要な中国語の原文です。"
         assert segment.ref_text_cn == "这是需要翻译的中文原文。"
         assert segment.target_language == "ja"
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_chapter_history_soft_delete_hides_terminal_run_but_preserves_segments(
+    tmp_path: Path,
+) -> None:
+    database = await Database.open(_settings(tmp_path), instance_id=uuid4(), migrate=True)
+    try:
+        source = "要从历史中移除的章节。"
+        request = ChapterSynthesisRequest(
+            request_id=uuid4(),
+            title="deleted chapter",
+            source_text=source,
+            target_language="zh",
+            base_voice_path=tmp_path / "voice.wav",
+            model_profile_id=uuid4(),
+        )
+        segment_store = SegmentStore(database)
+        store = ChapterStore(database, segment_store)
+        plan = await FakeDirector().create_plan(source_text=source, target_language="zh")
+        run = await store.create_queued(
+            request=request,
+            director_plan=plan,
+            model_profile_snapshot={"profile_id": str(request.model_profile_id)},
+            base_voice_sha256="a" * 64,
+        )
+        segment = (await store.list_segments(run.run_id))[0]
+        await store.mark_running(run.run_id)
+        await store.mark_failed(
+            run.run_id,
+            {"code": "TEST_FAILURE", "stage": "test", "message": "terminal"},
+        )
+
+        await store.delete_history_entry(run.run_id)
+
+        assert all(item.run_id != run.run_id for item in await store.list_runs())
+        with pytest.raises(KeyError):
+            await store.get(run.run_id)
+        preserved = await segment_store.get_segment(segment.segment_id)
+        assert preserved.segment_id == segment.segment_id
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_chapter_history_soft_delete_rejects_active_run(tmp_path: Path) -> None:
+    database = await Database.open(_settings(tmp_path), instance_id=uuid4(), migrate=True)
+    try:
+        source = "仍在运行的章节。"
+        request = ChapterSynthesisRequest(
+            request_id=uuid4(),
+            title="active chapter",
+            source_text=source,
+            target_language="zh",
+            base_voice_path=tmp_path / "voice.wav",
+            model_profile_id=uuid4(),
+        )
+        store = ChapterStore(database, SegmentStore(database))
+        plan = await FakeDirector().create_plan(source_text=source, target_language="zh")
+        run = await store.create_queued(
+            request=request,
+            director_plan=plan,
+            model_profile_snapshot={"profile_id": str(request.model_profile_id)},
+            base_voice_sha256="a" * 64,
+        )
+
+        with pytest.raises(PipelineError) as exc_info:
+            await store.delete_history_entry(run.run_id)
+
+        assert exc_info.value.code == ErrorCode.CHAPTER_STATE_CONFLICT
+        assert (await store.get(run.run_id)).status == "queued"
     finally:
         await database.close()
 

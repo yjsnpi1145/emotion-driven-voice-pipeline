@@ -244,14 +244,57 @@ async function loadChapters() {
   state.chapters = await request("/api/v1/chapters");
   const list = $("#chapter-list");
   list.replaceChildren(...state.chapters.map((run) => {
+    const row = document.createElement("div");
+    row.className = "chapter-row-wrap";
     const button = document.createElement("button");
     button.type = "button";
     button.className = "chapter-row";
     button.dataset.selected = String(run.run_id === state.run?.run_id);
     button.textContent = `${run.status}: ${run.title || run.run_id.slice(0, 8)}`;
     button.onclick = () => selectRun(run.run_id);
-    return button;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "chapter-delete";
+    remove.textContent = "删除";
+    remove.disabled = ["queued", "running"].includes(run.status);
+    remove.title = remove.disabled ? "正在生成的章节不能删除" : "从章节历史中删除";
+    remove.onclick = () => deleteChapter(run, remove);
+    row.append(button, remove);
+    return row;
   }));
+}
+
+async function deleteChapter(run, button) {
+  if (["queued", "running"].includes(run.status)) {
+    report("正在生成的章节不能从历史中删除", true);
+    return;
+  }
+  if (!window.confirm(`确认从章节历史中删除“${run.title || shortId(run.run_id)}”？已生成音频版本仍保留在本地。`)) return;
+  await withBusy(button, "删除中…", async () => {
+    await request(`/api/v1/chapters/${run.run_id}`, { method: "DELETE" });
+    const wasSelected = state.run?.run_id === run.run_id;
+    if (wasSelected) {
+      closeEvents();
+      state.requestedRunId = null;
+      ++state.runSelectionGeneration;
+      ++state.segmentSelectionGeneration;
+      ++state.refreshGeneration;
+      state.run = null;
+      state.progress = null;
+      state.segments = [];
+      state.selected = null;
+      state.history = null;
+      state.lifecycleBySegment.clear();
+      state.pendingKinds.clear();
+      state.editorDraftDirty = false;
+      renderRunDetails();
+      renderVirtualRows();
+      renderEditor();
+    }
+    await loadChapters();
+    if (wasSelected && state.chapters.length > 0) await selectRun(state.chapters[0].run_id);
+    report("章节已从历史中删除；已生成音频版本仍保留在本地");
+  }).catch((error) => report(sanitizeMessage(error), true));
 }
 
 function isCurrentRunRequest(runId, runToken) {
@@ -401,7 +444,7 @@ function renderRunDetails() {
     label.textContent = "当前整篇成品";
     const player = document.createElement("audio");
     player.controls = true;
-    player.preload = "none";
+    player.preload = "metadata";
     player.src = state.run.final_audio_url;
     label.append(player);
     audio.append(label);
@@ -681,7 +724,7 @@ function renderHistory() {
 function historySection(label, versions) {
   const rows = versions.map((version) => `<article class="history-item"><strong>${label} ${shortId(version.version_id)}${version.active ? "（当前）" : ""}</strong>
     <span class="status">${version.ref_version_id ? `使用参考 ${shortId(version.ref_version_id)}` : ""}</span>
-    <audio controls preload="none" src="${escapeHtml(version.audio_url)}"></audio>
+    <audio controls preload="metadata" src="${escapeHtml(version.audio_url)}"></audio>
     <details><summary>查看冻结参数</summary><pre>${escapeHtml(JSON.stringify(version.input_snapshot, null, 2))}</pre></details>
     <div class="button-row"><button type="button" data-activate="${escapeHtml(version.version_id)}">设为当前</button>
     <button type="button" data-restore="${escapeHtml(version.version_id)}">恢复此版本参数</button></div></article>`).join("");
@@ -765,7 +808,7 @@ function connectEvents(runId, runToken) {
 }
 
 function audioControl(label, versionId) {
-  return versionId ? `<label>${label}<audio controls preload="none" src="/api/v1/versions/${escapeHtml(versionId)}/audio"></audio><span class="status">版本 ${shortId(versionId)}</span></label>` : `<p class="empty-audio">${label}尚未生成</p>`;
+  return versionId ? `<label>${label}<audio controls preload="metadata" src="/api/v1/versions/${escapeHtml(versionId)}/audio"></audio><span class="status">版本 ${shortId(versionId)}</span></label>` : `<p class="empty-audio">${label}尚未生成</p>`;
 }
 
 function escapeHtml(value) {
