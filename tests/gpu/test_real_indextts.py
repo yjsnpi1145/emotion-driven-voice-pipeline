@@ -52,7 +52,7 @@ async def test_real_index_reference_is_decodable_and_in_window(
 
     audio = probe_wav(target, require_reference_window=True)
     assert audio.duration_seconds >= 3.0
-    assert audio.duration_seconds <= 9.0
+    assert audio.duration_seconds <= 10.0
     assert audio.rms_dbfs > -50.0
     assert audio.channels == 1
     assert audio.sample_rate == 22050

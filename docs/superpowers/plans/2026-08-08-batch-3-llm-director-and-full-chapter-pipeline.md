@@ -16,7 +16,7 @@
 - API key 仅从 `llm.api_key_env` 环境变量读取，绝不进入 DB、manifest、日志、错误详情或 CLI JSON。
 - `source_start`/`source_end` 为 Python Unicode 字符索引 `[start,end)`，必须从 0 无缺口、无重叠覆盖 `len(source_text)`；程序用原文切片生成 `source_text`/`synthesis_text`，永不采用 LLM 给出的正文。
 - 向量顺序固定 `[happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]`，8 项、每项 `0..1`、合计 `<=0.8`；只做稳定序列化，绝不隐藏归一化或 emotion bias 乘法。
-- 参考文字时长为 3–9 秒；最多 `llm.max_reference_corrections` 次。校正响应只含 `ref_text_cn`，不能改变区间、向量、速度、停顿、语言。
+- 生成的 GPT-SoVITS 参考音频时长为 3–10 秒；输入 IndexTTS2 的 `base_voice` 不受此窗口限制。最多 `llm.max_reference_corrections` 次。校正响应只含 `ref_text_cn`，不能改变区间、向量、速度、停顿、语言。
 - 快照必须含 LLM model、原文 SHA-256、完整 director 计划、最终 ref text、base voice SHA、GSV profile snapshot、输出规格、seed、engine fingerprints。
 - `final.wav` 只能由各 ordinal 的明确当前、ready GSV 版本合成；最后段无尾部停顿；缺任一段则失败且不创建 partial final。
 - 继续维护 `docs/open-source-reuse.yaml`：HTTPX（BSD-3-Clause）、Pydantic（MIT）、NumPy（BSD-3-Clause）、SoundFile（BSD-3-Clause）均直接复用；拒绝 `openai-python`，理由为 HTTPX 已覆盖兼容协议且可减小依赖面。
@@ -128,7 +128,7 @@ async def resolve_reference_text(
 ) -> ResolvedDirectedSegment: ...
 ```
 
-- [ ] 写失败测试，probe 依次返回 `2.2, 10.1, 4.0` 时只变 ref text、保留向量/区间并记录 correction=2；超过次数仍未进 3–9 时抛 `REFERENCE_DURATION_INVALID`。
+- [ ] 写失败测试，probe 依次返回 `2.2, 10.1, 4.0` 时只变 ref text、保留向量/区间并记录 correction=2；超过次数仍未进 3–10 时抛 `REFERENCE_DURATION_INVALID`。
 - [ ] 运行 `uv run pytest tests/unit/test_llm_director.py tests/unit/test_llm_fake.py -q`，确认红。
 - [ ] 实现循环：每次测量；短则调用 `direction="lengthen"`，长则 `"shorten"`；最后一次不合格即错误。校正 JSON 模型为 `extra="forbid"`，只允许 `ref_text_cn`。
 - [ ] fake Director 按标点（否则 40 字）分割，必覆盖全文，产出合法 8D 向量和固定中文参考句，校正保持同一句以适配 fake Index 4 秒输出。

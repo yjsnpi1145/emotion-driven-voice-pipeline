@@ -48,7 +48,7 @@ class ReferenceTextDirector:
             duration_seconds = await probe.generate_and_measure(
                 current, segment.emotion_vector, segment.seed
             )
-            if 3.0 <= duration_seconds <= 9.0:
+            if 3.0 <= duration_seconds <= 10.0:
                 return ResolvedDirectedSegment.model_validate(
                     {
                         **segment.model_dump(),
@@ -60,11 +60,11 @@ class ReferenceTextDirector:
                 raise PipelineError(
                     ErrorCode.REFERENCE_DURATION_INVALID,
                     "llm",
-                    "reference duration is outside 3.0..9.0 after corrections",
+                    "reference duration is outside 3.0..10.0 after corrections",
                     retryable=False,
                     details={"duration_seconds": duration_seconds, "corrections": correction},
                 )
-            direction: CorrectionDirection = "shorten" if duration_seconds > 9.0 else "lengthen"
+            direction: CorrectionDirection = "shorten" if duration_seconds > 10.0 else "lengthen"
             current = await self._corrector.correct_reference_text(
                 current=current,
                 direction=direction,

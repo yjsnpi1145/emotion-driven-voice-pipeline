@@ -30,7 +30,7 @@ async def test_index_fake_writes_valid_reference(tmp_path, index_request) -> Non
     output = tmp_path / "reference.wav"
     result = await client.synthesize(index_request, output)
     assert result.path == output.resolve()
-    assert 3.0 <= result.duration_seconds <= 9.0
+    assert 3.0 <= result.duration_seconds <= 10.0
     assert result.channels == 1
     probed = probe_wav(output, require_reference_window=True)
     assert probed.content_sha256 == result.content_sha256

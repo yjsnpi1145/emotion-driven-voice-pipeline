@@ -30,7 +30,7 @@
 - 每个 segment、每种 artifact type 保留“当前版本 + 最近 5 个其他普通 ready 版本”；被存活 GSV 引用的参考版本和被 queued/running job 捕获的版本在配额外保护。
 - 情绪向量继续是 8 个有限浮点数、每项 `0..1`、总和 `<=0.8`；缓存中的“normalized”仅表示规范化序列化，绝不对数值做隐藏缩放。
 - 负 seed 或任何随机采样模式不命中、不写入合成缓存。
-- 参考音频真实质量门固定包含 WAV、VAD、`3..9` 秒窗口和中文 ASR 文本相似度；真实模式不得静默降级为 fake 或跳过。
+- 生成的 GPT-SoVITS 参考音频真实质量门固定包含 WAV、VAD、`3..10` 秒窗口和中文 ASR 文本相似度；输入 IndexTTS2 的音色素材不受此窗口限制；真实模式不得静默降级为 fake 或跳过。
 - GitHub/上游复用优先：SQLAlchemy、Alembic、aiosqlite、portalocker、faster-whisper/Silero VAD、RapidFuzz 直接锁版本复用；只自研项目特有的状态机、OCC、双阶段发布、版本绑定、缓存 key、安全清理和独立验收。
 - 不复制上游源码改名；所有采用/拒绝候选、SPDX、immutable pin、wrapper boundary 和锁文件证据写入 `config/open-source-reuse.yaml`。
 - 批次 2 不实现 OpenAI 兼容 LLM、自动全文分块、批量全文生成、停顿拼接、`final.wav`、WebUI、SSE 或完整的三种工作台重生成编排。
@@ -64,7 +64,7 @@
 | 通用缓存 | DiskCache | 拒绝；独立 SQLite 和淘汰语义不能原子保护 current/GSV 父引用 |
 | 缓存 | 现有数据库中的 cache index + Artifact Store | 采用；key、引用保护、清理和版本处于同一事实源 |
 | VAD | WebRTC VAD | 拒绝；只有 VAD，仍需另一套 ASR/文本一致性依赖 |
-| 对齐 | WhisperX | 拒绝；强制对齐和 diarization 对 3–9 秒中文参考过重 |
+| 对齐 | WhisperX | 拒绝；强制对齐和 diarization 对 3–10 秒中文参考过重 |
 | VAD/ASR | faster-whisper + 内置 Silero VAD | 采用；一个锁定栈完成 CPU VAD 与中文 ASR，且无需系统 FFmpeg |
 | 文本度量 | 自写 Levenshtein | 拒绝；重复通用能力 |
 | 文本度量 | RapidFuzz | 采用；只自研项目特有的 Unicode 规范化和阈值策略 |
@@ -551,7 +551,7 @@ quality_policy_fingerprint
 真实 reference 质量策略固定为：
 
 ```text
-total_duration: 3.0 <= seconds <= 9.0
+total_duration: 3.0 <= seconds <= 10.0
 speech_duration_seconds >= 1.5
 speech_ratio >= 0.35
 ASR language forced to zh
@@ -2404,7 +2404,7 @@ def test_quality_policy_boundaries(
     assert report.passed is passed
 ```
 
-还须覆盖总时长 3.0/9.0 包含端、短文本 0.75、NaN 拒绝、空 ASR、VAD 无语音和 quality fingerprint 字段。
+还须覆盖总时长 3.0/10.0 包含端、短文本 0.75、NaN 拒绝、空 ASR、VAD 无语音和 quality fingerprint 字段。
 
 - [ ] **Step 2: 写 fake analyzer pipeline 集成失败测试**
 

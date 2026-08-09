@@ -49,7 +49,7 @@ def test_quality_policy_boundaries(
     assert report.policy_fingerprint == policy.fingerprint()
 
 
-@pytest.mark.parametrize("duration", [3.0, 9.0])
+@pytest.mark.parametrize("duration", [3.0, 10.0])
 def test_quality_policy_duration_closed_boundaries(duration: float) -> None:
     policy = QualityPolicy()
     report = evaluate_quality_metrics(

@@ -982,7 +982,7 @@ $("#chapter-form").onsubmit = async (event) => {
   const data = new FormData(form);
   const requiredFields = [
     ["source_text", "请先填写需要配音的原文"],
-    ["base_voice_path", "请先选择 3–10 秒的参考音色 WAV"],
+    ["base_voice_path", "请先选择用于 IndexTTS2 音色克隆的参考 WAV"],
     ["model_profile_id", "请先导入并选择一个可用的 GPT-SoVITS 模型档案"],
   ];
   for (const [name, message] of requiredFields) {

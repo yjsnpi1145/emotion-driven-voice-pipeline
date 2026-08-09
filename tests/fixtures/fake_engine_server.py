@@ -196,7 +196,7 @@ class FakeHandler(BaseHTTPRequestHandler):
             if failure in ("short", "long"):
                 _write_simple_wav(
                     target,
-                    seconds=2.9 if failure == "short" else 9.1,
+                    seconds=2.9 if failure == "short" else 10.1,
                     sample_rate=22050,
                     frequency=_frequency(),
                 )

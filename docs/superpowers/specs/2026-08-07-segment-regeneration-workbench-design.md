@@ -160,7 +160,7 @@ active_ref_version_id
 IndexTTS2生成
 → 音频解码检查
 → VAD有效语音时长检查
-→ 3到9秒项目窗口检查
+→ 3到10秒 GPT-SoVITS 参考窗口检查
 → ASR或文本对齐检查
 → 创建不可变参考版本
 → 将新版本设为当前参考

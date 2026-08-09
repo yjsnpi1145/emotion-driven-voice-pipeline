@@ -47,7 +47,7 @@ def _director_system_prompt(
         "emotion_vector contains exactly 8 numbers ordered as joy, anger, sadness, fear, "
         "disgust, melancholy, surprise, calm; every value is within 0.0..1.0 and their sum "
         "must be <= 0.8. ref_text_cn must be natural Simplified Chinese that expresses the "
-        "segment emotion and is suitable for roughly 3 to 9 seconds of speech. "
+        "segment emotion and is suitable for roughly 3 to 10 seconds of speech. "
         "pause_after_ms must be an integer within 0..30000, speed_factor within 0.5..2.0, "
         "and seed must be an integer."
     )

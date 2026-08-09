@@ -12,7 +12,7 @@ from voice_pipeline.models.schemas import StrictModel
 class QualityPolicy(StrictModel):
     schema_version: Literal[1] = 1
     min_total_seconds: float = 3.0
-    max_total_seconds: float = 9.0
+    max_total_seconds: float = 10.0
     min_speech_seconds: float = 1.5
     min_speech_ratio: float = 0.35
     min_similarity: float = 0.60

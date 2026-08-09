@@ -21,13 +21,13 @@
 - GPT-SoVITS 使用 `batch_size=1`、`streaming_mode=false`、`parallel_infer=false`、`media_type=wav`。
 - 情绪向量顺序固定为 `[happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]`；必须正好 8 维，单项 `0.0..1.0`，总和 `<=0.8`。
 - 应用层和 Index worker 均不得自动归一化、裁剪、乘以隐藏 bias 或改写情绪向量；传入 IndexTTS2 的值必须与请求快照逐项一致。
-- Index 参考音频必须可解码、非静音、单声道且时长位于闭区间 `3.0..9.0` 秒；不合格时不得调用 GPT-SoVITS。
+- IndexTTS2 生成、供 GPT-SoVITS 使用的参考音频必须可解码、非静音、单声道且时长位于闭区间 `3.0..10.0` 秒；输入 IndexTTS2 的音色素材不受此窗口限制；不合格时不得调用 GPT-SoVITS。
 - `reference.wav` 与生成它的 `ref_text_cn` 必须绑定；GSV 请求不能另行传入一个可能不一致的 `prompt_text`。
 - 所有 GPU 工作必须经过控制面中的一个队列和一个 consumer；Uvicorn worker 数必须固定为 1。
 - 所有 HTTP 服务只绑定 `127.0.0.1`；本批次不做公网部署、鉴权或多用户。
 - GitHub 开源复用优先：实现任何模块前，先检查上游官方实现和维护活跃、许可证兼容的成熟开源库；能以固定版本/commit 直接依赖的，不自行重写。允许为本项目安全边界自研“薄适配/包装”（Index HTTP worker 外壳、两端 HTTP adapter、原子发布、受管进程生命周期、双引擎编排、单 GPU fail-closed 互斥、reference/manifest 绑定和独立验收 challenge），但内部仍复用成熟库且禁止复制上游源码改名。机器可读取舍写入 `config\open-source-reuse.yaml`，人类说明写入 `docs\batch-1-open-source-reuse.md`。
 - 不引入 SQLite、Redis、Celery、分布式队列、多 GPU、缓存、版本历史、LLM、长文本分块、整篇拼接、WebUI 或 SSE。
-- 批次 1 只做 WAV 解码、有限数值、非静音和 `3..9` 秒门禁；VAD、ASR/文本对齐、自动改写参考文本和自动重试属于后续批次。
+- 批次 1 只做 WAV 解码、有限数值、非静音和 `3..10` 秒门禁；VAD、ASR/文本对齐、自动改写参考文本和自动重试属于后续批次。
 - 单声道、`-50 dBFS`、削波比例和 4/5 试听分数是本批次为可重复验收新增的工程 guardrail，不宣称它们是原设计或上游模型的固有硬限制。
 - 生产代码不得根据测试名、黄金文件名或固定文本返回预制 WAV。
 - 所有 Windows 子进程必须使用参数数组、绝对路径和 `shell=False`；不得拼接 shell 命令字符串。
@@ -1152,7 +1152,7 @@ class PipelineError(RuntimeError):
 `modules\audio\wav_probe.py` 必须由 SoundFile 独立读取真实文件，计算 SHA-256、RMS 和 peak；不得信任 adapter 返回的 metadata。判定值固定为：
 
 ```text
-reference duration: 3.0 <= seconds <= 9.0
+reference duration: 3.0 <= seconds <= 10.0
 target duration: seconds > 0.1
 channels: exactly 1
 all samples finite
@@ -2982,7 +2982,7 @@ git commit -m "test: verify cross-process gpu serialization"
 
 GPU fixture 合并 template 与 local mapping，生成带随机 `request_id` 的完整 `SegmentSynthesisRequest` 到本次 evidence 目录。若 mapping、任一字段或音频缺失，黄金门为 **BLOCKED**，绝不能改用官方 `voice_01.wav` 冒充用户已验证资产。官方样例如需保留，只能命名 `developer-smoke`，不计入正式黄金验收。
 
-自动阈值固定在 GPU 测试代码中：参考时长 `3.0..9.0` 秒、目标时长大于 0.5 秒、RMS 高于 `-50 dBFS`。
+自动阈值固定在 GPU 测试代码中：参考时长 `3.0..10.0` 秒、目标时长大于 0.5 秒、RMS 高于 `-50 dBFS`。
 
 - [ ] **Step 2: 写真实 GPU 测试**
 
@@ -2995,7 +2995,7 @@ $env:VOICE_PIPELINE_CONFIG='D:\TTSsystem\config\acceptance.gpu.local.yaml'
 
 时运行。若变量已设置但模型、配置或 CUDA 缺失，测试必须 FAIL，不能 skip 或切换 fake。测试独立探测：
 
-- Index 真实输出可解码、非静音、`3..9` 秒；
+- Index 真实输出可解码、非静音、`3..10` 秒；
 - 日语与英语目标音频可解码、非静音、有限数值；
 - 两个目标输出 SHA-256 不同；
 - manifest 的 reference SHA-256 与 GSV adapter 日志记录一致；
@@ -3810,7 +3810,7 @@ Invoke-NativeChecked $CleanPython @(
 - source/model/checkpoint/env fingerprints 与 lock 一致；
 - lifecycle probe 的 candidate 进程全部退出；`resident_supported` 才允许最终 resident，`exclusive_required` 必须有明确 OOM/余量数值证据；最终 `resident` 为两 worker ready，`exclusive_process` 为 lifecycle-aware 状态且 audit 证明两套 worker 各自 ready/推理；
 - queue 最大并发 1，真实 GSV PID、动态目标文本 SHA-256 与 reference SHA-256 出现在 `engine-audit.jsonl`；
-- 参考为单声道、`3.0..9.0` 秒、RMS `>-50 dBFS`；
+- 参考为单声道、`3.0..10.0` 秒、RMS `>-50 dBFS`；
 - 三个目标可解码、非静音、有限值，削波比例 `<1%`；
 - reference/target 与三个 target 之间的 SHA-256 符合预期且动态输出不是固定黄金；
 - manifest 的 reference SHA-256 等于 GSV audit，seed/有效参数/fingerprint 完整；

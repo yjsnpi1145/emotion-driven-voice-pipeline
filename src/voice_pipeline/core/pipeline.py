@@ -559,9 +559,13 @@ class SynthesisService:
                 reference_sha256_or_null=reference_audio.content_sha256,
                 fingerprint=self._index.fingerprint(),
             )
-        quality_result = await self._check_reference_quality(
-            audio_path=reference_audio.path,
-            expected_text=request.ref_text_cn,
+        quality_result = (
+            await self._check_reference_quality(
+                audio_path=reference_audio.path,
+                expected_text=request.ref_text_cn,
+            )
+            if enforce_reference_window
+            else None
         )
         if request.seed >= 0:
             await self._cache_put(reference_key, reference_audio.path)

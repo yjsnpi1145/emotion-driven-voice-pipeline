@@ -35,7 +35,7 @@ cases:
     speed_factor: 1.0
 ```
 
-参考音频必须为单声道、非静音、时长在闭区间 `3.0..9.0` 秒；官方 `voice_01.wav` 仅可作
+IndexTTS2 生成、供 GPT-SoVITS 使用的参考音频必须为单声道、非静音、时长在闭区间 `3.0..10.0` 秒；输入 IndexTTS2 的音色素材不受此窗口限制；官方 `voice_01.wav` 仅可作
 `developer-smoke`，不计入黄金验收。
 
 ## 2. 显存生命周期探针
@@ -73,7 +73,7 @@ uv run pytest tests/gpu -vv -m "gpu and not gpu_residency"
 
 校验项：
 
-- Index 真实输出可解码、非静音、`3..9` 秒；
+- Index 真实输出可解码、非静音、`3..10` 秒；
 - 日语与英语目标音频可解码、非静音、有限数值；
 - 两个目标输出 SHA-256 不同；
 - manifest 的 reference SHA-256 与 GSV adapter audit log 一致；

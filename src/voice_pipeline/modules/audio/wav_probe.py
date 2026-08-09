@@ -55,11 +55,11 @@ def probe_wav(path: Path, *, require_reference_window: bool) -> AudioResult:
 
     duration = float(samples.shape[0]) / float(sample_rate)
     if require_reference_window:
-        if not (3.0 <= duration <= 9.0):
+        if not (3.0 <= duration <= 10.0):
             raise PipelineError(
                 ErrorCode.REFERENCE_DURATION_OUT_OF_RANGE,
                 "audio",
-                f"reference duration {duration:.3f}s outside closed 3.0..9.0",
+                f"reference duration {duration:.3f}s outside closed 3.0..10.0",
                 retryable=False,
             )
     elif duration <= 0.1:

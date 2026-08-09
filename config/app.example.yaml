@@ -25,7 +25,7 @@ quality:
   policy:
     schema_version: 1
     min_total_seconds: 3.0
-    max_total_seconds: 9.0
+    max_total_seconds: 10.0
     min_speech_seconds: 1.5
     min_speech_ratio: 0.35
     min_similarity: 0.60

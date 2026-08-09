@@ -58,6 +58,18 @@ async def test_reference_correction_changes_only_text_until_duration_is_in_range
 
 
 @pytest.mark.asyncio
+async def test_reference_duration_between_nine_and_ten_needs_no_correction() -> None:
+    director = ReferenceTextDirector(Corrections([]))
+
+    resolved = await director.resolve_reference_text(
+        _segment(), SequenceProbe([9.358]), max_corrections=2
+    )
+
+    assert resolved.ref_text_cn == "初始参考文本。"
+    assert resolved.reference_corrections == 0
+
+
+@pytest.mark.asyncio
 async def test_reference_correction_reports_an_explicit_duration_error_after_budget() -> None:
     director = ReferenceTextDirector(Corrections(["仍然短。", "仍然短。"]))
 

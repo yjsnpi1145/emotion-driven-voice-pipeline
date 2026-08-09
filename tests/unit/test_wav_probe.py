@@ -24,16 +24,25 @@ def write_tone(
     sf.write(path, data.astype(np.float32), sample_rate, subtype="PCM_16")
 
 
-def test_reference_must_be_between_three_and_nine_seconds(tmp_path: Path) -> None:
+def test_reference_must_be_between_three_and_ten_seconds(tmp_path: Path) -> None:
     short = tmp_path / "short.wav"
     write_tone(short, 2.9)
     with pytest.raises(PipelineError, match="REFERENCE_DURATION_OUT_OF_RANGE"):
         probe_wav(short, require_reference_window=True)
 
 
-def test_reference_longer_than_nine_seconds_rejected(tmp_path: Path) -> None:
+def test_reference_between_nine_and_ten_seconds_is_accepted(tmp_path: Path) -> None:
+    reference = tmp_path / "reference.wav"
+    write_tone(reference, 9.358)
+
+    result = probe_wav(reference, require_reference_window=True)
+
+    assert result.duration_seconds == pytest.approx(9.358, abs=0.01)
+
+
+def test_reference_longer_than_ten_seconds_rejected(tmp_path: Path) -> None:
     long_wav = tmp_path / "long.wav"
-    write_tone(long_wav, 9.1)
+    write_tone(long_wav, 10.1)
     with pytest.raises(PipelineError, match="REFERENCE_DURATION_OUT_OF_RANGE"):
         probe_wav(long_wav, require_reference_window=True)
 

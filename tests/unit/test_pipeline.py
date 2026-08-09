@@ -87,7 +87,7 @@ async def test_invalid_reference_never_calls_gsv(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_reference_job_only_calls_index(tmp_path) -> None:
+async def test_reference_job_accepts_minute_long_base_voice_and_only_calls_index(tmp_path) -> None:
     calls: list[tuple[str, object]] = []
     audit_events: list[dict[str, object]] = []
     service = SynthesisService(
@@ -97,7 +97,7 @@ async def test_reference_job_only_calls_index(tmp_path) -> None:
         audit=RecordingAuditWriter(audit_events),
     )
     request = make_request(tmp_path)
-    write_tone(request.base_voice_path, seconds=5.0)
+    write_tone(request.base_voice_path, seconds=60.0)
     context = make_context(tmp_path, request.request_id)
 
     result = await service.generate_reference(context, request)
@@ -116,6 +116,7 @@ async def test_reference_duration_probe_can_measure_audio_outside_final_window(t
         runtime=RecordingEngineRuntime(calls),
         audit=RecordingAuditWriter([]),
     )
+    service.configure_quality(DeterministicQualityAnalyzer())
     request = make_request(tmp_path)
     write_tone(request.base_voice_path, seconds=5.0)
     context = make_context(tmp_path, request.request_id)

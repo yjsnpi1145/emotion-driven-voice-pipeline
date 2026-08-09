@@ -53,7 +53,7 @@
                   <label>标题 <input name="title" required value="新章节" /></label>
                   <label>原文 <textarea name="source_text" required rows="8" placeholder="粘贴需要配音的原文"></textarea></label>
                   <label>参考音色
-                    <span class="input-action"><input id="base-voice-path" name="base_voice_path" required placeholder="选择 3–10 秒 WAV 音频" /><button id="pick-base-voice" type="button">浏览</button></span>
+                    <span class="input-action"><input id="base-voice-path" name="base_voice_path" required placeholder="选择用于 IndexTTS2 音色克隆的 WAV（可长音频）" /><button id="pick-base-voice" type="button">浏览</button></span>
                   </label>
                   <div class="field-row">
                     <label>目标语言
@@ -161,6 +161,6 @@
 
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
     <template id="segment-row-template"><button class="segment-row" type="button"></button></template>
-    <script type="module" src="/ui/app.js?v=20260809c"></script>
+    <script type="module" src="/ui/app.js?v=20260809d"></script>
   </body>
 </html>
