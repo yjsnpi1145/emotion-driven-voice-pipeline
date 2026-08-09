@@ -1,4 +1,10 @@
 import { deriveChapterStageProgress } from "./stage-progress.js";
+import {
+  chooseInitialRunId,
+  clearWorkbenchSelection,
+  readWorkbenchSelection,
+  writeWorkbenchSelection,
+} from "./selection-state.js";
 
 const state = {
   chapters: [],
@@ -36,6 +42,37 @@ const regenerationPaths = {
 };
 const ROW_HEIGHT = 96;
 const ROW_OVERSCAN = 8;
+
+function readPersistedSelection() {
+  try {
+    return readWorkbenchSelection(window.localStorage);
+  } catch {
+    return { runId: null, segmentId: null };
+  }
+}
+
+function persistCurrentSelection() {
+  if (!state.run) {
+    clearPersistedSelection();
+    return;
+  }
+  try {
+    writeWorkbenchSelection(window.localStorage, {
+      runId: state.run.run_id,
+      segmentId: state.selected?.segment_id || null,
+    });
+  } catch {
+    // Storage may be disabled; server-backed workbench state remains usable.
+  }
+}
+
+function clearPersistedSelection() {
+  try {
+    clearWorkbenchSelection(window.localStorage);
+  } catch {
+    // Storage may be disabled; clearing the in-memory state is sufficient.
+  }
+}
 
 async function request(path, options = {}) {
   const headers = options.body ? { "content-type": "application/json" } : {};
@@ -277,6 +314,7 @@ async function deleteChapter(run, button) {
     await request(`/api/v1/chapters/${run.run_id}`, { method: "DELETE" });
     const wasSelected = state.run?.run_id === run.run_id;
     if (wasSelected) {
+      clearPersistedSelection();
       closeEvents();
       state.requestedRunId = null;
       ++state.runSelectionGeneration;
@@ -296,6 +334,7 @@ async function deleteChapter(run, button) {
     }
     await loadChapters();
     if (wasSelected && state.chapters.length > 0) await selectRun(state.chapters[0].run_id);
+    if (state.chapters.length === 0) clearPersistedSelection();
     report("章节已从历史中删除；已生成音频版本仍保留在本地");
   }).catch((error) => report(sanitizeMessage(error), true));
 }
@@ -310,7 +349,7 @@ function isCurrentSegmentRequest(runId, runToken, segmentId, segmentToken) {
     && state.segmentSelectionGeneration === segmentToken;
 }
 
-async function selectRun(runId) {
+async function selectRun(runId, { preferredSegmentId = null } = {}) {
   if (state.saveInFlight) {
     setStatus("草稿正在保存，完成后可切换章节", true);
     return;
@@ -335,7 +374,9 @@ async function selectRun(runId) {
   state.run = run;
   state.progress = progress;
   state.segments = segments;
-  state.selected = state.segments[0] || null;
+  state.selected = state.segments.find((item) => item.segment_id === preferredSegmentId)
+    || state.segments[0]
+    || null;
   state.history = null;
   const segmentToken = ++state.segmentSelectionGeneration;
   await loadHistory({ runId, runToken, segmentId: state.selected?.segment_id, segmentToken });
@@ -343,6 +384,7 @@ async function selectRun(runId) {
   renderRunDetails();
   renderVirtualRows();
   renderEditor();
+  persistCurrentSelection();
   await loadChapters();
   if (!isCurrentRunRequest(runId, runToken)) return;
   connectEvents(runId, runToken);
@@ -381,6 +423,7 @@ async function refreshRun() {
   renderRunDetails();
   renderVirtualRows();
   renderEditor();
+  persistCurrentSelection();
   await loadChapters();
   return true;
 }
@@ -423,6 +466,7 @@ async function selectSegment(segment) {
   renderEditor();
   await loadHistory({ runId, runToken, segmentId: segment.segment_id, segmentToken });
   if (!isCurrentSegmentRequest(runId, runToken, segment.segment_id, segmentToken)) return;
+  persistCurrentSelection();
   renderEditor();
 }
 
@@ -1143,10 +1187,20 @@ $("#segment-scroll").onscroll = renderVirtualRows;
 
 async function initialize() {
   try {
+    const savedSelection = readPersistedSelection();
     activateView("workbench");
     await Promise.all([loadProfiles(), loadChapters(), loadLocalPaths(), loadSystemHealth()]);
-    if (state.chapters[0]) await selectRun(state.chapters[0].run_id);
-    else renderRunDetails();
+    const initialRunId = chooseInitialRunId(state.chapters, savedSelection.runId);
+    if (initialRunId) {
+      await selectRun(initialRunId, {
+        preferredSegmentId: savedSelection.runId === initialRunId
+          ? savedSelection.segmentId
+          : null,
+      });
+    } else {
+      clearPersistedSelection();
+      renderRunDetails();
+    }
   } catch (error) {
     report(sanitizeMessage(error), true);
   }

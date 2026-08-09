@@ -20,6 +20,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
             page = await client.get("/")
             script = await client.get("/ui/app.js")
             stage_script = await client.get("/ui/stage-progress.js")
+            selection_script = await client.get("/ui/selection-state.js")
             stylesheet = await client.get("/ui/styles.css")
             listing = await client.get("/api/v1/chapters")
             traversal = await client.get("/ui/../api/app.py")
@@ -28,7 +29,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'data-theme="dark-console"' in page.text
     assert 'class="brand-mark"' not in page.text
     assert ">声</div>" not in page.text
-    assert "20260809h" in page.text
+    assert "20260810a" in page.text
     assert 'id="segment-list"' in page.text
     assert 'id="segment-editor"' in page.text
     assert 'id="chapter-form"' in page.text
@@ -58,6 +59,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'id="toast-region"' in page.text
     assert script.status_code == 200
     assert stage_script.status_code == 200
+    assert selection_script.status_code == 200
     assert stylesheet.status_code == 200
     assert re.search(r"\.workbench\s*\{[^}]*grid-template-columns", stylesheet.text)
     assert "color-scheme: dark" in stylesheet.text
@@ -83,9 +85,17 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "normalizeEmotionVector" in script.text
     assert "renderChapterSummary" in script.text
     assert 'from "./stage-progress.js"' in script.text
+    assert 'from "./selection-state.js"' in script.text
+    assert "readWorkbenchSelection(window.localStorage)" in script.text
+    assert "chooseInitialRunId(state.chapters, savedSelection.runId)" in script.text
+    assert "preferredSegmentId = null" in script.text
+    assert "writeWorkbenchSelection(window.localStorage" in script.text
+    assert "clearWorkbenchSelection(window.localStorage)" in script.text
     assert "renderChapterProgress" in script.text
     assert "creationProgress" in script.text
-    select_run_source = script.text.split("async function selectRun(runId)", 1)[1].split(
+    select_run_source = script.text.split(
+        "async function selectRun(runId, { preferredSegmentId = null } = {})", 1
+    )[1].split(
         "async function refreshRun()", 1
     )[0]
     assert "state.creationProgress = null" in select_run_source
