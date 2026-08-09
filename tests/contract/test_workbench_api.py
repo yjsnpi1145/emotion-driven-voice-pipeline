@@ -25,6 +25,10 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
             traversal = await client.get("/ui/../api/app.py")
 
     assert page.status_code == 200
+    assert 'data-theme="dark-console"' in page.text
+    assert 'class="brand-mark"' not in page.text
+    assert ">声</div>" not in page.text
+    assert "20260809h" in page.text
     assert 'id="segment-list"' in page.text
     assert 'id="segment-editor"' in page.text
     assert 'id="chapter-form"' in page.text
@@ -56,7 +60,13 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert stage_script.status_code == 200
     assert stylesheet.status_code == 200
     assert re.search(r"\.workbench\s*\{[^}]*grid-template-columns", stylesheet.text)
-    assert "color-scheme: light" in stylesheet.text
+    assert "color-scheme: dark" in stylesheet.text
+    assert "--bg: #080d15" in stylesheet.text
+    assert ".brand-mark" not in stylesheet.text
+    assert "background: #fff;" not in stylesheet.text
+    assert "background: rgb(255 255 255" not in stylesheet.text
+    assert "scrollbar-width: none" in stylesheet.text
+    assert ".primary-tabs::-webkit-scrollbar" in stylesheet.text
     assert ".primary-tabs" in stylesheet.text
     assert ".health-grid" in stylesheet.text
     assert "/api/v1/chapters" in script.text
