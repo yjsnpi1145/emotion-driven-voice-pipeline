@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -33,16 +34,26 @@ class OutputReservation:
                 f"reservation for {self._path} already published or rolled back",
                 retryable=False,
             )
-        # Ownership check: our zero-byte reservation must still be in place.
-        if not self._path.is_file() or self._path.stat().st_size != 0:
-            self._active = False
-            raise PipelineError(
-                ErrorCode.OUTPUT_CONFLICT,
-                "output",
-                f"reservation ownership lost for {self._path}",
-                retryable=False,
-            )
-        os.replace(str(partial_path), str(self._path))
+        retry_delays = (0.0, 0.01, 0.025, 0.05, 0.1, 0.2)
+        for attempt, delay_seconds in enumerate(retry_delays):
+            if delay_seconds:
+                time.sleep(delay_seconds)
+            # Re-check ownership before every retry so a foreign writer can
+            # never turn a transient sharing violation into an overwrite.
+            if not self._path.is_file() or self._path.stat().st_size != 0:
+                self._active = False
+                raise PipelineError(
+                    ErrorCode.OUTPUT_CONFLICT,
+                    "output",
+                    f"reservation ownership lost for {self._path}",
+                    retryable=False,
+                )
+            try:
+                os.replace(str(partial_path), str(self._path))
+                break
+            except PermissionError:
+                if attempt == len(retry_delays) - 1:
+                    raise
         self._active = False
 
     def rollback(self) -> None:

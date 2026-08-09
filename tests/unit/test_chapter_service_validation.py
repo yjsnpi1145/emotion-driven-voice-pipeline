@@ -71,6 +71,7 @@ async def test_chapter_rejects_invalid_director_coverage_before_gpu_probe(tmp_pa
     queue = RecordingQueue()
     service = ChapterService(
         chapters=object(),  # type: ignore[arg-type]
+        segments=object(),  # type: ignore[arg-type]
         jobs=object(),  # type: ignore[arg-type]
         segment_jobs=object(),  # type: ignore[arg-type]
         versions=object(),  # type: ignore[arg-type]

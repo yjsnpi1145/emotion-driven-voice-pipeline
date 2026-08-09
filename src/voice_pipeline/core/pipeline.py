@@ -528,6 +528,7 @@ class SynthesisService:
             if request.seed >= 0
             else None
         )
+        reference_cache_hit = reference_audio is not None
         if reference_audio is None:
             await self._runtime.ensure_engine("indextts")
             identity = self._runtime.engine_identity("indextts")
@@ -567,7 +568,7 @@ class SynthesisService:
             if enforce_reference_window
             else None
         )
-        if request.seed >= 0:
+        if request.seed >= 0 and not reference_cache_hit:
             await self._cache_put(reference_key, reference_audio.path)
         binding = ReferenceBinding(
             audio=reference_audio,

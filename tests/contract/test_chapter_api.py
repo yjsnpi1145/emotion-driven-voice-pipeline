@@ -12,6 +12,29 @@ from tests.integration_cpu.test_chapter_pipeline import _import_profile
 from voice_pipeline.api.app import create_app
 
 
+class GatedIndexTTSClient:
+    """Hold the first IndexTTS inference without blocking chapter creation."""
+
+    def __init__(self) -> None:
+        from voice_pipeline.modules.indextts.fake import FakeIndexTTSClient
+
+        self._delegate = FakeIndexTTSClient()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    @property
+    def calls(self) -> int:
+        return self._delegate.calls
+
+    def fingerprint(self):
+        return self._delegate.fingerprint()
+
+    async def synthesize(self, request, output_path):
+        self.started.set()
+        await self.release.wait()
+        return await self._delegate.synthesize(request, output_path)
+
+
 @pytest.mark.asyncio
 async def test_chapter_routes_submit_status_audio_and_timeline_without_path_leak(
     fake_settings, tmp_path: Path
@@ -93,3 +116,51 @@ async def test_chapter_delete_rejects_active_run(fake_settings, tmp_path: Path) 
 
     assert deleted.status_code == 409
     assert deleted.json()["error"]["code"] == "CHAPTER_STATE_CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_chapter_submit_returns_before_reference_duration_probe_finishes(
+    fake_settings, tmp_path: Path
+) -> None:
+    fake_settings.model_library.models_root = tmp_path / "library"
+    fake_settings.model_library.allowed_import_roots = [tmp_path / "models"]
+    base_voice = tmp_path / "private-base.wav"
+    write_tone(base_voice, 5.0)
+    index = GatedIndexTTSClient()
+    app = create_app(fake_settings, index_client=index)
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            profile_id = await _import_profile(client, tmp_path)
+            post_task = asyncio.create_task(
+                client.post(
+                    "/api/v1/chapters",
+                    json={
+                        "request_id": str(uuid4()),
+                        "title": "fast chapter",
+                        "source_text": "只有一句。",
+                        "target_language": "zh",
+                        "base_voice_path": str(base_voice),
+                        "model_profile_id": profile_id,
+                    },
+                )
+            )
+            completed, _ = await asyncio.wait({post_task}, timeout=1.0)
+            returned_before_probe = post_task in completed
+            index.release.set()
+            submitted = await post_task
+
+            assert returned_before_probe
+            assert submitted.status_code == 202
+            run_id = submitted.json()["run_id"]
+            await asyncio.wait_for(index.started.wait(), timeout=1.0)
+            for _ in range(300):
+                status = await client.get(f"/api/v1/chapters/{run_id}")
+                if status.json()["status"] in {"succeeded", "failed", "interrupted"}:
+                    break
+                await asyncio.sleep(0.01)
+
+    assert status.json()["status"] == "succeeded"
+    assert index.calls == 1

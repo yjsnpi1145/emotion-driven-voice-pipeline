@@ -17,6 +17,8 @@ from voice_pipeline.models.persistence import (
     GsvModelSnapshot,
     OutputAudioSpec,
     SegmentGsvJobRequest,
+    SegmentInputsPatch,
+    SegmentRecord,
     SegmentReferenceJobRequest,
 )
 from voice_pipeline.models.schemas import (
@@ -36,6 +38,7 @@ from voice_pipeline.modules.llm.models import (
 from voice_pipeline.storage.artifact_store import ArtifactStore
 from voice_pipeline.storage.chapter_store import ChapterStore
 from voice_pipeline.storage.job_store import SqliteJobStore
+from voice_pipeline.storage.segment_store import SegmentStore
 from voice_pipeline.storage.version_store import VersionStore
 
 
@@ -56,6 +59,7 @@ class ChapterService:
         self,
         *,
         chapters: ChapterStore,
+        segments: SegmentStore,
         jobs: SqliteJobStore,
         segment_jobs: SegmentJobService,
         versions: VersionStore,
@@ -70,6 +74,7 @@ class ChapterService:
         notify_jobs: Callable[[], Awaitable[None]],
     ) -> None:
         self._chapters = chapters
+        self._segments = segments
         self._jobs = jobs
         self._segment_jobs = segment_jobs
         self._versions = versions
@@ -106,17 +111,18 @@ class ChapterService:
             source_text=request.source_text, target_language=request.target_language
         )
         validate_director_plan(request.source_text, plan)
-        corrected = await self._correct_reference_texts(plan, base_voice)
         run = await self._chapters.create_queued(
             request=request,
-            director_plan=corrected,
+            director_plan=plan,
             model_profile_snapshot=GsvModelSnapshot(
                 profile=profile_snapshot,
                 engine_fingerprint=self._gsv_fingerprint(),
             ).model_dump(mode="json"),
             base_voice_sha256=sha256_file(base_voice),
         )
-        task = asyncio.create_task(self._run(run.run_id, base_voice, request.model_profile_id))
+        task = asyncio.create_task(
+            self._run(run.run_id, base_voice, request.model_profile_id, plan)
+        )
         self._active[run.run_id] = task
         task.add_done_callback(lambda _: self._active.pop(run.run_id, None))
         return run
@@ -147,12 +153,27 @@ class ChapterService:
             remaining = max(0.0, deadline - asyncio.get_running_loop().time())
             await asyncio.wait(tasks, timeout=remaining)
 
-    async def _correct_reference_texts(self, plan: DirectorPlan, base_voice: Path) -> DirectorPlan:
+    async def _resolve_reference_text(
+        self,
+        segment: SegmentRecord,
+        planned: DirectedSegment,
+        base_voice: Path,
+    ) -> SegmentRecord:
         resolver = ReferenceTextDirector(self._director)
-        corrected: list[DirectedSegment] = []
-        for segment in plan.segments:
+        current = segment
+        for conflict_attempt in range(2):
+            directed = planned.model_copy(
+                update={
+                    "ref_text_cn": current.ref_text_cn,
+                    "emotion_vector": current.current_emotion_vector,
+                    "synthesis_text": current.synthesis_text,
+                    "pause_after_ms": current.pause_after_ms,
+                    "speed_factor": current.speed_factor,
+                    "seed": current.seed,
+                }
+            )
             resolved = await resolver.resolve_reference_text(
-                segment,
+                directed,
                 _ServiceReferenceDurationProbe(
                     synthesis=self._synthesis,
                     queue=self._queue,
@@ -165,13 +186,40 @@ class ChapterService:
                     self._max_reference_corrections,
                 ),
             )
-            corrected.append(segment.model_copy(update={"ref_text_cn": resolved.ref_text_cn}))
-        return plan.model_copy(update={"segments": tuple(corrected)})
+            if resolved.ref_text_cn == current.ref_text_cn:
+                return current
+            try:
+                return await self._segments.patch_inputs(
+                    current.segment_id,
+                    SegmentInputsPatch(
+                        expected_ref_draft_revision=current.ref_draft_revision,
+                        expected_gsv_draft_revision=current.gsv_draft_revision,
+                        ref_text_cn=resolved.ref_text_cn,
+                    ),
+                )
+            except PipelineError as exc:
+                if exc.code != ErrorCode.VERSION_CONFLICT:
+                    raise
+                # A user edit made while the background probe was running
+                # wins. Re-probe it once instead of publishing stale inputs.
+                current = await self._segments.get_segment(current.segment_id)
+                if conflict_attempt == 1:
+                    return current
+        raise AssertionError("reference resolution loop must return or raise")
 
-    async def _run(self, run_id: UUID, base_voice: Path, model_profile_id: UUID) -> None:
+    async def _run(
+        self,
+        run_id: UUID,
+        base_voice: Path,
+        model_profile_id: UUID,
+        plan: DirectorPlan,
+    ) -> None:
         try:
             await self._chapters.mark_running(run_id)
             for segment in await self._chapters.list_segments(run_id):
+                segment = await self._segments.get_segment(segment.segment_id)
+                planned = plan.segments[segment.ordinal]
+                segment = await self._resolve_reference_text(segment, planned, base_voice)
                 reference = await self._segment_jobs.submit_reference(
                     segment.segment_id,
                     SegmentReferenceJobRequest(request_id=uuid4(), base_voice_path=base_voice),

@@ -249,6 +249,7 @@ def create_app(
         )
         plane.chapter_service = ChapterService(
             chapters=plane.chapter_store,
+            segments=plane.segment_store,
             jobs=plane.registry,
             segment_jobs=plane.segment_jobs,
             versions=plane.version_store,

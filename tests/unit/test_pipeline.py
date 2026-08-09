@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -13,11 +14,25 @@ from tests.unit.conftest import (
     make_request,
     write_tone,
 )
+from voice_pipeline.core.config import StorageSettings
 from voice_pipeline.core.pipeline import SynthesisService
 from voice_pipeline.models.schemas import ExecutionContext, SegmentSynthesisRequest
 from voice_pipeline.modules.quality.fake import DeterministicQualityAnalyzer
 from voice_pipeline.modules.quality.models import QualityPolicy
 from voice_pipeline.modules.quality.text import evaluate_quality
+from voice_pipeline.storage.artifact_store import ArtifactStore
+from voice_pipeline.storage.cache_store import CacheStore
+from voice_pipeline.storage.database import Database
+
+
+class CountingArtifactStore(ArtifactStore):
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.publish_calls = 0
+
+    def publish_blob(self, staged):
+        self.publish_calls += 1
+        return super().publish_blob(staged)
 
 
 @pytest.mark.asyncio
@@ -128,6 +143,39 @@ async def test_reference_duration_probe_can_measure_audio_outside_final_window(t
     )
 
     assert result.reference.audio.duration_seconds == pytest.approx(2.0, abs=0.01)
+    assert [name for name, _ in calls] == ["ensure:indextts", "index"]
+
+
+@pytest.mark.asyncio
+async def test_reference_cache_hit_does_not_republish_content_blob(tmp_path) -> None:
+    runtime_dir = (tmp_path / "runtime").resolve()
+    database = await Database.open(
+        StorageSettings(
+            database_path=runtime_dir / "state" / "pipeline.sqlite3",
+            artifact_root=runtime_dir / "artifacts",
+            control_lock_path=runtime_dir / "state" / "control.lock",
+        ),
+        instance_id=uuid4(),
+        migrate=True,
+    )
+    calls: list[tuple[str, object]] = []
+    artifacts = CountingArtifactStore(runtime_dir / "artifacts")
+    service = SynthesisService(
+        index=RecordingIndexClient(calls, duration_seconds=4.0),
+        gsv=RecordingGsvClient(calls),
+        runtime=RecordingEngineRuntime(calls),
+        audit=RecordingAuditWriter([]),
+    )
+    service.configure_cache(CacheStore(database, artifacts), artifacts)
+    request = make_request(tmp_path)
+    write_tone(request.base_voice_path, seconds=5.0)
+    try:
+        await service.generate_reference(make_context(tmp_path, request.request_id), request)
+        await service.generate_reference(make_context(tmp_path, request.request_id), request)
+    finally:
+        await database.close()
+
+    assert artifacts.publish_calls == 1
     assert [name for name, _ in calls] == ["ensure:indextts", "index"]
 
 

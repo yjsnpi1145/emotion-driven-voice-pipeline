@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -42,6 +43,31 @@ def test_publish_replaces_owned_reservation_with_partial(tmp_path) -> None:
     assert target.read_bytes() == b"audio-data"
     with pytest.raises(PipelineError, match="OUTPUT_CONFLICT"):
         reservation.publish(partial)
+
+
+def test_publish_retries_a_transient_permission_error(tmp_path, monkeypatch) -> None:
+    from voice_pipeline.modules.audio import atomic_output
+
+    target = tmp_path / "target.wav"
+    reservation = reserve_output_path(target)
+    partial = tmp_path / "partial.wav"
+    partial.write_bytes(b"audio-data")
+    real_replace = os.replace
+    attempts = 0
+
+    def flaky_replace(source, destination) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError("transient Windows file lock")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(atomic_output.os, "replace", flaky_replace)
+
+    reservation.publish(partial)
+
+    assert attempts == 2
+    assert target.read_bytes() == b"audio-data"
 
 
 def test_rollback_after_publish_does_not_delete_published_file(tmp_path) -> None:
