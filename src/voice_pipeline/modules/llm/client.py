@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 from collections.abc import Sequence
+from time import perf_counter
 from typing import TypeVar
 
 import httpx
@@ -28,8 +29,10 @@ class OpenAiDirectorClient:
         settings: LlmSettings,
         *,
         http_client: httpx.AsyncClient | None = None,
+        api_key: str | None = None,
     ) -> None:
         self._settings = settings
+        self._api_key = api_key
         self._http = http_client or httpx.AsyncClient(
             base_url=settings.base_url.rstrip("/") + "/",
             timeout=settings.timeout_seconds,
@@ -91,11 +94,28 @@ class OpenAiDirectorClient:
         )
         return _validate_payload(ReferenceTextCorrection, content).ref_text_cn
 
+    async def test_connection(self) -> int:
+        started = perf_counter()
+        content = await self._post_json(
+            [
+                {"role": "system", "content": "Return JSON only."},
+                {"role": "user", "content": 'Return exactly {"ok": true}.'},
+            ]
+        )
+        if content.get("ok") is not True:
+            raise PipelineError(
+                ErrorCode.LLM_INVALID_RESPONSE,
+                "llm",
+                "LLM connection test did not return ok=true",
+                retryable=False,
+            )
+        return max(0, round((perf_counter() - started) * 1000))
+
     async def _post_json(self, messages: Sequence[dict[str, str]]) -> dict[str, object]:
         headers = {"Content-Type": "application/json"}
         if self._settings.mode == "openai":
             key_name = self._settings.api_key_env
-            secret = os.environ.get(key_name or "")
+            secret = self._api_key or os.environ.get(key_name or "")
             if not secret:
                 raise PipelineError(
                     ErrorCode.LLM_UNAVAILABLE,

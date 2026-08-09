@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import UUID
 
 from voice_pipeline.models.model_profiles import (
@@ -26,6 +27,9 @@ class ModelProfileService:
 
     async def get_profile(self, profile_id: UUID) -> ModelProfileView:
         return await self._store.get_view(profile_id)
+
+    async def profile_directory(self, profile_id: UUID) -> Path:
+        return await self._store.profile_directory(profile_id)
 
     async def activate_profile(self, profile_id: UUID) -> ModelProfileView:
         return await self._store.activate(profile_id)

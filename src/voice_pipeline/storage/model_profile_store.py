@@ -152,6 +152,17 @@ class SqliteModelProfileStore:
             ).scalar_one_or_none()
         return record.to_view(active=str(profile_id) == active_value)
 
+    async def profile_directory(self, profile_id: UUID) -> Path:
+        record = await self._get_record(profile_id)
+        resolved = (self._models_root / record.relative_directory).resolve(strict=True)
+        try:
+            resolved.relative_to(self._models_root)
+        except ValueError as exc:
+            raise ValueError("profile directory escapes the model library") from exc
+        if not resolved.is_dir() or resolved.is_symlink():
+            raise ValueError("profile directory is missing or invalid")
+        return resolved
+
     async def _get_record(self, profile_id: UUID) -> ModelProfileRecord:
         async with self._database.read_session() as session:
             row = (

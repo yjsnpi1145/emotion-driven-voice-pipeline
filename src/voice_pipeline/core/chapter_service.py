@@ -157,7 +157,11 @@ class ChapterService:
                     jobs_root=self._jobs_root / "chapter-reference-probes",
                     base_voice=base_voice,
                 ),
-                max_corrections=self._max_reference_corrections,
+                max_corrections=getattr(
+                    self._director,
+                    "max_reference_corrections",
+                    self._max_reference_corrections,
+                ),
             )
             corrected.append(segment.model_copy(update={"ref_text_cn": resolved.ref_text_cn}))
         return plan.model_copy(update={"segments": tuple(corrected)})

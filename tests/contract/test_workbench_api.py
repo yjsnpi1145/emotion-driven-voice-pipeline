@@ -32,9 +32,23 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'id="segment-state-filter"' in page.text
     assert 'id="model-profile-form"' in page.text
     assert 'id="model-profile-list"' in page.text
+    assert 'data-view="workbench"' in page.text
+    assert 'data-view="models"' in page.text
+    assert 'data-view="llm"' in page.text
+    assert 'data-view="system"' in page.text
+    assert 'id="llm-settings-form"' in page.text
+    assert 'id="system-health-grid"' in page.text
+    assert 'id="open-model-library"' in page.text
+    assert 'id="pick-gpt-weight"' in page.text
+    assert 'id="pick-sovits-weight"' in page.text
+    assert 'id="pick-base-voice"' in page.text
+    assert 'id="toast-region"' in page.text
     assert script.status_code == 200
     assert stylesheet.status_code == 200
-    assert re.search(r"\.workbench\s*\{[^}]*;\s*height:\s*calc\(100vh - 8\.5rem\)", stylesheet.text)
+    assert re.search(r"\.workbench\s*\{[^}]*grid-template-columns", stylesheet.text)
+    assert "color-scheme: light" in stylesheet.text
+    assert ".primary-tabs" in stylesheet.text
+    assert ".health-grid" in stylesheet.text
     assert "/api/v1/chapters" in script.text
     assert "/progress" in script.text
     assert "/events" in script.text
@@ -48,6 +62,13 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "renderVirtualRows" in script.text
     assert "normalizeEmotionVector" in script.text
     assert "renderChapterSummary" in script.text
+    assert "/api/v1/settings/llm" in script.text
+    assert "/api/v1/settings/llm/test" in script.text
+    assert "/api/v1/local/open-folder" in script.text
+    assert "/api/v1/local/pick-file" in script.text
+    assert "/open-folder`" in script.text
+    assert "renderSystemHealth" in script.text
+    assert "activateView" in script.text
     assert "const formElement = event.currentTarget;" in script.text
     assert 'if (kind !== "reference") body.model_profile_id = profile;' in script.text
     assert 'id="normalize-vector"' in script.text
@@ -57,7 +78,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
         in script.text
     )
     assert "19871" not in script.text
-    assert "api_key" not in script.text
+    assert "Bearer sk-" not in script.text
     assert "cdn" not in page.text.casefold()
     assert listing.status_code == 200
     assert listing.json() == []

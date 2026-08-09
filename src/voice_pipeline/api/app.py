@@ -15,10 +15,12 @@ from voice_pipeline.api.dependencies import build_dependencies
 from voice_pipeline.api.foundation_routes import build_foundation_router
 from voice_pipeline.api.maintenance_routes import build_maintenance_router
 from voice_pipeline.api.model_profile_routes import build_model_profile_router
+from voice_pipeline.api.product_routes import build_product_router
 from voice_pipeline.api.routes import build_router
 from voice_pipeline.api.workbench_routes import build_workbench_router
 from voice_pipeline.core.chapter_service import ChapterService
 from voice_pipeline.core.config import AppSettings
+from voice_pipeline.core.desktop_service import DesktopService
 from voice_pipeline.core.dispatcher import DurableJobDispatcher
 from voice_pipeline.core.gpu_queue import SerialGpuQueue
 from voice_pipeline.core.job_executor import JobExecutor
@@ -27,8 +29,7 @@ from voice_pipeline.core.model_profile_service import ModelProfileService
 from voice_pipeline.core.pipeline import SynthesisService
 from voice_pipeline.core.regeneration_service import SegmentRegenerationService
 from voice_pipeline.core.segment_job_service import SegmentJobService
-from voice_pipeline.modules.llm.client import OpenAiDirectorClient
-from voice_pipeline.modules.llm.fake import FakeDirector
+from voice_pipeline.modules.llm.runtime import RuntimeDirector
 from voice_pipeline.modules.quality.fake import DeterministicQualityAnalyzer
 from voice_pipeline.modules.quality.faster_whisper import FasterWhisperQualityAnalyzer
 from voice_pipeline.modules.quality.ports import QualityAnalyzer
@@ -87,6 +88,7 @@ class ControlPlane:
         self.chapter_store: ChapterStore | None = None
         self.chapter_service: ChapterService | None = None
         self.llm_client: Any | None = None
+        self.desktop_service: DesktopService | None = None
         self.regeneration: SegmentRegenerationService | None = None
 
     def attach_durable_state(self, database: Database, model_profiles: ModelProfileService) -> None:
@@ -233,8 +235,17 @@ def create_app(
             require_model_profile=settings.mode == "real",
         )
         plane.chapter_store = ChapterStore(database, plane.segment_store)
-        plane.llm_client = (
-            FakeDirector() if settings.llm.mode == "fake" else OpenAiDirectorClient(settings.llm)
+        plane.llm_client = RuntimeDirector(
+            settings.llm,
+            state_dir=runtime_dir / "state",
+        )
+        await plane.llm_client.start()
+        plane.desktop_service = DesktopService(
+            model_library=settings.model_library.models_root,
+            model_sources=settings.model_library.allowed_import_roots,
+            artifacts=settings.storage.artifact_root,
+            logs=runtime_dir / "logs",
+            profile_directory=model_profile_service.profile_directory,
         )
         plane.chapter_service = ChapterService(
             chapters=plane.chapter_store,
@@ -348,6 +359,7 @@ def create_app(
     router = build_router(plane)
     app.include_router(router)
     app.include_router(build_model_profile_router(plane))
+    app.include_router(build_product_router(plane))
     app.include_router(build_foundation_router(plane))
     app.include_router(build_maintenance_router(plane))
     app.include_router(build_chapter_router(plane))

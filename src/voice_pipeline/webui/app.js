@@ -17,6 +17,11 @@ const state = {
   editorDraftDirty: false,
   refreshDeferred: false,
   saveInFlight: false,
+  activeView: "workbench",
+  llmSettings: null,
+  localPaths: null,
+  health: null,
+  toastTimer: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -49,6 +54,33 @@ function setStatus(text, error = false) {
   const element = $("#run-status");
   element.textContent = text;
   element.classList.toggle("error", error);
+}
+
+function showToast(message, error = false) {
+  const root = $("#toast-region");
+  const toast = document.createElement("div");
+  toast.className = `toast${error ? " error-toast" : ""}`;
+  toast.textContent = sanitizeMessage(message);
+  root.replaceChildren(toast);
+  window.clearTimeout(state.toastTimer);
+  state.toastTimer = window.setTimeout(() => toast.remove(), error ? 6500 : 3800);
+}
+
+function report(message, error = false) {
+  setStatus(message, error);
+  showToast(message, error);
+}
+
+async function withBusy(button, label, operation) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = label;
+  try {
+    return await operation();
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
 }
 
 function shortId(value) {
@@ -114,27 +146,48 @@ async function loadProfiles() {
     return option;
   }));
   select.disabled = readyProfiles.length === 0;
+  $("#model-count").textContent = `${readyProfiles.length} / ${state.profiles.length} 个可用`;
+  const active = readyProfiles.find((item) => item.active);
+  const indicator = $("#active-model-indicator");
+  indicator.textContent = active ? `当前模型 · ${active.display_name}` : "未选择模型";
+  indicator.dataset.state = active ? "ready" : "warning";
   renderProfiles();
 }
 
 function renderProfiles() {
   const list = $("#model-profile-list");
+  if (state.profiles.length === 0) {
+    list.innerHTML = '<div class="empty-state compact"><strong>还没有模型档案</strong><p>使用左侧向导导入训练好的 .ckpt 与 .pth 权重。</p></div>';
+    return;
+  }
   list.replaceChildren(...state.profiles.map((profile) => {
     const card = document.createElement("article");
     card.className = "model-profile-card";
-    const title = document.createElement("strong");
-    title.textContent = `${profile.display_name}${profile.active ? "（当前）" : ""}`;
+    card.dataset.active = String(profile.active);
+    const heading = document.createElement("div");
+    heading.className = "model-card-heading";
+    const title = document.createElement("div");
+    title.innerHTML = `<strong>${escapeHtml(profile.display_name)}</strong><span class="badge" data-state="${escapeHtml(profile.status)}">${profile.active ? "当前使用" : profile.status === "ready" ? "可用" : escapeHtml(profile.status)}</span>`;
     const detail = document.createElement("span");
     detail.className = "status";
-    detail.textContent = `${profile.status}${profile.declared_family ? ` · ${profile.declared_family}` : ""}`;
-    card.append(title, detail);
+    detail.textContent = `${profile.declared_family || "未标注模型家族"} · GPT ${shortId(profile.gpt_sha256)} · SoVITS ${shortId(profile.sovits_sha256)}`;
+    const actions = document.createElement("div");
+    actions.className = "button-row";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "secondary-button";
+    open.textContent = "打开文件夹";
+    open.onclick = () => openProfileFolder(profile.profile_id, open);
+    actions.append(open);
     if (profile.status === "ready" && !profile.active) {
       const activate = document.createElement("button");
       activate.type = "button";
       activate.textContent = "设为当前模型";
       activate.onclick = () => activateProfile(profile.profile_id);
-      card.append(activate);
+      actions.append(activate);
     }
+    heading.append(title);
+    card.append(heading, detail, actions);
     return card;
   }));
 }
@@ -151,9 +204,9 @@ async function importModelProfile(event) {
     });
     formElement.reset();
     await loadProfiles();
-    setStatus(`模型档案“${profile.display_name}”已导入；请显式设为当前模型`);
+    report(`模型档案“${profile.display_name}”已导入；请显式设为当前模型`);
   } catch (error) {
-    setStatus(sanitizeMessage(error), true);
+    report(sanitizeMessage(error), true);
   }
 }
 
@@ -161,9 +214,9 @@ async function activateProfile(profileId) {
   try {
     await request(`/api/v1/model-profiles/${profileId}/activate`, { method: "POST", body: "{}" });
     await loadProfiles();
-    setStatus("当前 GPT-SoVITS 模型已切换；已入队任务不受影响");
+    report("当前 GPT-SoVITS 模型已切换；已入队任务不受影响");
   } catch (error) {
-    setStatus(sanitizeMessage(error), true);
+    report(sanitizeMessage(error), true);
   }
 }
 
@@ -313,7 +366,7 @@ function renderRunDetails() {
   const compose = $("#compose-chapter");
   if (!state.run) {
     title.textContent = "选择或创建一个章节任务";
-    summary.textContent = "尚未选择章节";
+    renderChapterSummary({ ready: 0, generating: 0, failed: 0, stale: 0, draft_pending: 0, waiting: 0 });
     audio.replaceChildren();
     compose.disabled = true;
     return;
@@ -701,6 +754,207 @@ function escapeHtml(value) {
   return node.innerHTML;
 }
 
+function activateView(view) {
+  const requested = $("#view-" + view) ? view : "workbench";
+  state.activeView = requested;
+  document.querySelectorAll(".view-panel").forEach((panel) => {
+    panel.hidden = panel.dataset.view !== requested;
+  });
+  document.querySelectorAll(".tab-button").forEach((button) => {
+    button.setAttribute("aria-selected", String(button.dataset.view === requested));
+  });
+  if (requested === "models") {
+    Promise.all([loadProfiles(), loadLocalPaths()]).catch((error) => report(error, true));
+  } else if (requested === "llm") {
+    loadLlmSettings().catch((error) => report(error, true));
+  } else if (requested === "system") {
+    loadSystemHealth().catch((error) => report(error, true));
+  } else {
+    window.requestAnimationFrame(renderVirtualRows);
+  }
+}
+
+async function loadLocalPaths() {
+  state.localPaths = await request("/api/v1/local/paths");
+  $("#model-library-path").textContent = state.localPaths.model_library;
+}
+
+async function openResource(resource, button) {
+  await withBusy(button, "正在打开…", async () => {
+    await request("/api/v1/local/open-folder", {
+      method: "POST",
+      body: JSON.stringify({ resource }),
+    });
+    showToast("已在资源管理器中打开文件夹");
+  }).catch((error) => report(error, true));
+}
+
+async function openProfileFolder(profileId, button) {
+  await withBusy(button, "正在打开…", async () => {
+    await request(`/api/v1/model-profiles/${profileId}/open-folder`, {
+      method: "POST",
+      body: "{}",
+    });
+    showToast("已打开模型档案文件夹");
+  }).catch((error) => report(error, true));
+}
+
+async function pickLocalFile(kind, target, button) {
+  await withBusy(button, "选择中…", async () => {
+    const result = await request("/api/v1/local/pick-file", {
+      method: "POST",
+      body: JSON.stringify({ kind }),
+    });
+    if (result.selected && result.path) {
+      $(target).value = result.path;
+      showToast("已选择本地文件");
+    }
+  }).catch((error) => report(error, true));
+}
+
+function llmSettingsPayload() {
+  const form = $("#llm-settings-form");
+  const data = new FormData(form);
+  const payload = {
+    mode: data.get("mode"),
+    base_url: String(data.get("base_url") || "").trim(),
+    model: String(data.get("model") || "").trim(),
+    timeout_seconds: Number(data.get("timeout_seconds")),
+    max_retries: Number(data.get("max_retries")),
+    max_reference_corrections: Number(data.get("max_reference_corrections")),
+    clear_api_key: data.get("clear_api_key") === "on",
+  };
+  const key = String(data.get("api_key") || "").trim();
+  if (key) payload.api_key = key;
+  return payload;
+}
+
+function renderLlmSettings(settings) {
+  const form = $("#llm-settings-form");
+  for (const name of ["mode", "base_url", "model", "timeout_seconds", "max_retries", "max_reference_corrections"]) {
+    form.elements[name].value = settings[name];
+  }
+  form.elements.api_key.value = "";
+  form.elements.clear_api_key.checked = false;
+  const isOpenAi = settings.mode === "openai";
+  const stateChip = $("#llm-state-chip");
+  stateChip.textContent = isOpenAi ? (settings.api_key_configured ? "API 已配置" : "API 未配置密钥") : "内置模拟模式";
+  stateChip.dataset.state = isOpenAi && !settings.api_key_configured ? "warning" : "ready";
+  $("#llm-current-model").textContent = isOpenAi ? settings.model : "内置模拟导演";
+  const rows = [
+    ["接口", settings.base_url],
+    ["模型", settings.model],
+    ["密钥", settings.api_key_configured ? "已安全保存" : "未保存"],
+    ["超时与重试", `${settings.timeout_seconds} 秒 · ${settings.max_retries} 次`],
+    ["配置来源", settings.source === "runtime" ? "WebUI 本地配置" : "启动配置"],
+  ];
+  $("#llm-summary").innerHTML = rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
+}
+
+async function loadLlmSettings() {
+  state.llmSettings = await request("/api/v1/settings/llm");
+  renderLlmSettings(state.llmSettings);
+}
+
+async function saveLlmSettings(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const submit = form.querySelector('button[type="submit"]');
+  await withBusy(submit, "保存中…", async () => {
+    state.llmSettings = await request("/api/v1/settings/llm", {
+      method: "PUT",
+      body: JSON.stringify(llmSettingsPayload()),
+    });
+    renderLlmSettings(state.llmSettings);
+    report("LLM 设置已保存，新章节将立即使用此配置");
+  }).catch((error) => report(error, true));
+}
+
+async function testLlmSettings(button) {
+  await withBusy(button, "测试中…", async () => {
+    const result = await request("/api/v1/settings/llm/test", {
+      method: "POST",
+      body: JSON.stringify(llmSettingsPayload()),
+    });
+    report(`连接成功 · ${result.model} · ${result.latency_ms} ms`);
+  }).catch((error) => report(error, true));
+}
+
+function healthStateLabel(value) {
+  const labels = {
+    ready: "正常",
+    accepting: "可接收任务",
+    running: "运行中",
+    stopped_expected: "按需启动",
+    stopped: "已停止",
+    starting: "启动中",
+    degraded: "需检查",
+    unhealthy: "异常",
+    unavailable: "不可用",
+    poisoned: "队列锁定",
+  };
+  return labels[value] || value || "未知";
+}
+
+function healthCard(title, stateValue, details) {
+  const card = document.createElement("article");
+  const stateName = String(stateValue || "unknown");
+  card.className = "health-card";
+  card.dataset.state = stateName;
+  const heading = document.createElement("div");
+  heading.className = "health-card-heading";
+  const name = document.createElement("strong");
+  name.textContent = title;
+  const chip = document.createElement("span");
+  chip.className = "status-chip";
+  chip.dataset.state = ["ready", "accepting", "stopped_expected"].includes(stateName) ? "ready" : stateName;
+  chip.textContent = healthStateLabel(stateName);
+  heading.append(name, chip);
+  const list = document.createElement("dl");
+  list.className = "summary-list compact";
+  list.innerHTML = details.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value ?? "—")}</dd></div>`).join("");
+  card.append(heading, list);
+  return card;
+}
+
+function renderSystemHealth(health) {
+  const root = $("#system-health-grid");
+  const workers = health.workers || {};
+  const storage = health.storage || {};
+  const dispatcher = health.dispatcher || {};
+  const queue = health.gpu_queue || {};
+  const cards = [
+    healthCard("控制服务", health.status, [["PID", health.control?.pid], ["运行模式", health.mode], ["引擎策略", health.engine_lifecycle]]),
+    healthCard("IndexTTS2", workers.indextts?.state, [["活动推理", workers.indextts?.active_inference], ["进程", workers.indextts?.pid], ["解释器", workers.indextts?.python_executable]]),
+    healthCard("GPT-SoVITS", workers.gpt_sovits?.state, [["活动推理", workers.gpt_sovits?.active_inference], ["进程", workers.gpt_sovits?.pid], ["解释器", workers.gpt_sovits?.python_executable]]),
+    healthCard("项目存储", storage.status, [["数据库", storage.quick_check], ["迁移版本", storage.alembic_revision], ["缺失音频", storage.missing_ready_versions]]),
+    healthCard("任务调度", dispatcher.state, [["等待任务", dispatcher.queued_count], ["当前任务", shortId(dispatcher.active_job_id)], ["恢复中断", dispatcher.recovered_interrupted_count]]),
+    healthCard("GPU 串行队列", queue.state, [["正在执行", queue.active_count], ["排队", queue.queued_count], ["最大并发", queue.max_concurrency]]),
+  ];
+  root.replaceChildren(...cards);
+  const indicator = $("#service-indicator");
+  indicator.textContent = health.status === "ready" ? "服务正常" : `服务${healthStateLabel(health.status)}`;
+  indicator.dataset.state = health.status;
+}
+
+async function loadSystemHealth() {
+  state.health = await request("/api/v1/health");
+  renderSystemHealth(state.health);
+}
+
+async function refreshActiveView(button) {
+  await withBusy(button, "刷新中…", async () => {
+    if (state.activeView === "models") await Promise.all([loadProfiles(), loadLocalPaths()]);
+    else if (state.activeView === "llm") await loadLlmSettings();
+    else if (state.activeView === "system") await loadSystemHealth();
+    else {
+      await Promise.all([loadProfiles(), loadChapters(), loadSystemHealth()]);
+      if (state.run) await refreshRun();
+    }
+    showToast("已刷新");
+  }).catch((error) => report(error, true));
+}
+
 $("#chapter-form").onsubmit = async (event) => {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
@@ -720,17 +974,38 @@ $("#chapter-form").onsubmit = async (event) => {
 
 $("#compose-chapter").onclick = composeChapter;
 $("#model-profile-form").onsubmit = importModelProfile;
+$("#llm-settings-form").onsubmit = saveLlmSettings;
+$("#test-llm").onclick = (event) => testLlmSettings(event.currentTarget);
+$("#toggle-api-key").onclick = (event) => {
+  const input = $("#llm-api-key");
+  input.type = input.type === "password" ? "text" : "password";
+  event.currentTarget.textContent = input.type === "password" ? "显示" : "隐藏";
+};
+$("#pick-base-voice").onclick = (event) => pickLocalFile("base_voice", "#base-voice-path", event.currentTarget);
+$("#pick-gpt-weight").onclick = (event) => pickLocalFile("gpt_weight", "#gpt-source-path", event.currentTarget);
+$("#pick-sovits-weight").onclick = (event) => pickLocalFile("sovits_weight", "#sovits-source-path", event.currentTarget);
+$("#open-model-library").onclick = (event) => openResource("model_library", event.currentTarget);
+$("#open-model-sources").onclick = (event) => openResource("model_sources", event.currentTarget);
+$("#refresh-system").onclick = (event) => withBusy(event.currentTarget, "刷新中…", loadSystemHealth).catch((error) => report(error, true));
+$("#refresh-global").onclick = (event) => refreshActiveView(event.currentTarget);
+document.querySelectorAll(".tab-button").forEach((button) => {
+  button.onclick = () => activateView(button.dataset.view);
+});
+document.querySelectorAll("[data-open-resource]").forEach((button) => {
+  button.onclick = () => openResource(button.dataset.openResource, button);
+});
 $("#segment-search").oninput = () => { $("#segment-scroll").scrollTop = 0; renderVirtualRows(); };
 $("#segment-state-filter").onchange = () => { $("#segment-scroll").scrollTop = 0; renderVirtualRows(); };
 $("#segment-scroll").onscroll = renderVirtualRows;
 
 async function initialize() {
   try {
-    await Promise.all([loadProfiles(), loadChapters()]);
+    activateView("workbench");
+    await Promise.all([loadProfiles(), loadChapters(), loadLocalPaths(), loadSystemHealth()]);
     if (state.chapters[0]) await selectRun(state.chapters[0].run_id);
     else renderRunDetails();
   } catch (error) {
-    setStatus(sanitizeMessage(error), true);
+    report(sanitizeMessage(error), true);
   }
 }
 
