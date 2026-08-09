@@ -27,7 +27,7 @@ from voice_pipeline.storage.segment_store import SegmentStore
 from voice_pipeline.storage.version_store import VersionStore
 
 _WEBUI_ROOT = Path(__file__).parents[1] / "webui"
-_WEBUI_FILES = {"index.html", "app.js", "styles.css"}
+_WEBUI_FILES = {"index.html", "app.js", "stage-progress.js", "styles.css"}
 
 
 def build_workbench_router(plane: Any) -> APIRouter:
