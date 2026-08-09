@@ -33,6 +33,26 @@ def _validate_non_blank_text(value: str) -> str:
 NonBlankText = Annotated[str, AfterValidator(_validate_non_blank_text)]
 
 
+def _validate_chinese_reference_text(value: str) -> str:
+    stripped = _validate_non_blank_text(value)
+    if not any(
+        "\u3400" <= character <= "\u4dbf"
+        or "\u4e00" <= character <= "\u9fff"
+        or "\uf900" <= character <= "\ufaff"
+        for character in stripped
+    ):
+        raise ValueError("Chinese reference text must contain a CJK ideograph")
+    if any(
+        "\u3040" <= character <= "\u30ff" or "\uff66" <= character <= "\uff9d"
+        for character in stripped
+    ):
+        raise ValueError("Chinese reference text must not contain Japanese kana")
+    return stripped
+
+
+ChineseReferenceText = Annotated[str, AfterValidator(_validate_chinese_reference_text)]
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -97,7 +117,7 @@ class RuntimeHealth(StrictModel):
 
 class IndexSynthesisRequest(StrictModel):
     request_id: UUID
-    text: NonBlankText
+    text: ChineseReferenceText
     speaker_audio_path: Path
     emotion_vector: EmotionVector
     seed: int
@@ -106,7 +126,7 @@ class IndexSynthesisRequest(StrictModel):
 
 class ReferenceBinding(StrictModel):
     audio: AudioResult
-    ref_text_cn: NonBlankText
+    ref_text_cn: ChineseReferenceText
     emotion_vector: EmotionVector
     base_voice_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     engine_fingerprint: EngineFingerprint
@@ -126,7 +146,7 @@ class GsvSynthesisRequest(StrictModel):
 class SegmentSynthesisRequest(StrictModel):
     request_id: UUID
     base_voice_path: Path
-    ref_text_cn: NonBlankText
+    ref_text_cn: ChineseReferenceText
     emotion_vector: EmotionVector
     target_text: NonBlankText
     target_language: LanguageCode
@@ -138,7 +158,7 @@ class SegmentSynthesisRequest(StrictModel):
 class ReferenceJobRequest(StrictModel):
     request_id: UUID
     base_voice_path: Path
-    ref_text_cn: NonBlankText
+    ref_text_cn: ChineseReferenceText
     emotion_vector: EmotionVector
     seed: int = 1234
 

@@ -52,15 +52,17 @@
                 <form id="chapter-form" class="stack-form" novalidate>
                   <label>标题 <input name="title" required value="新章节" /></label>
                   <label>原文 <textarea name="source_text" required rows="8" placeholder="粘贴需要配音的原文"></textarea></label>
+                  <p class="help">原文可使用中文、日语、英语、韩语或其他语言。</p>
                   <label>参考音色
                     <span class="input-action"><input id="base-voice-path" name="base_voice_path" required placeholder="选择用于 IndexTTS2 音色克隆的 WAV（可长音频）" /><button id="pick-base-voice" type="button">浏览</button></span>
                   </label>
                   <div class="field-row">
                     <label>目标语言
-                      <select name="target_language"><option value="ja">日语</option><option value="en">英语</option><option value="zh">中文</option></select>
+                      <select name="target_language"><option value="ja">日语</option><option value="en">英语</option><option value="zh">中文</option><option value="ko">韩语</option><option value="yue">粤语</option></select>
                     </label>
                     <label>模型配置 <select name="model_profile_id" id="model-profile" required></select></label>
                   </div>
+                  <p class="help">目标语言与原文不同时自动翻译；IndexTTS2 始终使用中文情绪参考文本。</p>
                   <button class="primary-button full-width" type="submit">创建并开始生成</button>
                 </form>
               </details>
@@ -161,6 +163,6 @@
 
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
     <template id="segment-row-template"><button class="segment-row" type="button"></button></template>
-    <script type="module" src="/ui/app.js?v=20260809d"></script>
+    <script type="module" src="/ui/app.js?v=20260809e"></script>
   </body>
 </html>

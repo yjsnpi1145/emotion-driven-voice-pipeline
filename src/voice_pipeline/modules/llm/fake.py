@@ -21,6 +21,7 @@ class FakeDirector:
                     source_end=end,
                     emotion_description="平静、克制",
                     emotion_vector=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3),
+                    synthesis_text=source_text[start:end],
                     ref_text_cn="我仍然保持冷静。",
                     pause_after_ms=500,
                     speed_factor=1.0,

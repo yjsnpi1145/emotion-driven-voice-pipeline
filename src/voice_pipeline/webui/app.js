@@ -479,7 +479,7 @@ function renderEditor() {
   const frozenReference = progress.active_ref_version_id ? shortId(progress.active_ref_version_id) : "无可用参考音频";
   root.innerHTML = `<form id="segment-form"><div class="editor-heading"><div><p class="eyebrow">分块 ${segment.ordinal + 1}</p><h2>编辑配音草稿</h2></div><div class="state-pills"><span class="badge">参考：${escapeHtml(lifecycle.reference)}</span><span class="badge">GSV：${escapeHtml(lifecycle.gsv)}</span></div></div>
     <label>原文 <textarea readonly>${escapeHtml(segment.source_text)}</textarea></label>
-    <label>合成文本 <textarea name="synthesis_text">${escapeHtml(segment.synthesis_text)}</textarea></label>
+    <label>目标语言合成文本 <textarea name="synthesis_text">${escapeHtml(segment.synthesis_text)}</textarea></label>
     <label>中文参考文本 <textarea name="ref_text_cn">${escapeHtml(segment.ref_text_cn)}</textarea></label>
     <div class="parameter-grid"><label>速度 <input name="speed_factor" type="number" min="0.5" max="2" step="0.05" value="${segment.speed_factor}"></label>
     <label>停顿(ms) <input name="pause_after_ms" type="number" min="0" max="30000" value="${segment.pause_after_ms}"></label>

@@ -36,6 +36,7 @@ def _segment() -> DirectedSegment:
         source_end=1,
         emotion_description="空洞、悲伤",
         emotion_vector=(0.0, 0.02, 0.28, 0.03, 0.0, 0.27, 0.0, 0.2),
+        synthesis_text="これは目標言語の本文です。",
         ref_text_cn="初始参考文本。",
         pause_after_ms=0,
         speed_factor=1.0,

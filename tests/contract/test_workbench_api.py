@@ -45,6 +45,9 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'id="pick-base-voice"' in page.text
     assert "用于 IndexTTS2 音色克隆的 WAV（可长音频）" in page.text
     assert "3–10 秒的参考音色" not in page.text
+    assert "原文可使用中文、日语、英语、韩语或其他语言" in page.text
+    assert "与原文不同时自动翻译" in page.text
+    assert "IndexTTS2 始终使用中文情绪参考文本" in page.text
     assert 'id="toast-region"' in page.text
     assert script.status_code == 200
     assert stylesheet.status_code == 200
@@ -74,6 +77,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "activateView" in script.text
     assert "formatApiError" in script.text
     assert "schema_errors" in script.text
+    assert "目标语言合成文本" in script.text
     assert "用于 IndexTTS2 音色克隆的参考 WAV" in script.text
     assert "3–10 秒的参考音色" not in script.text
     assert 'withBusy(submit, "正在规划分块…"' in script.text

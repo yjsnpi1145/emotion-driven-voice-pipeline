@@ -39,7 +39,7 @@ async def _create_segment(client: httpx.AsyncClient) -> str:
             "source_text": "test.",
             "synthesis_text": "test",
             "llm_emotion_vector": [0.0, 0.0, 0.2, 0.0, 0.0, 0.25, 0.0, 0.15],
-            "ref_text_cn": "reference",
+            "ref_text_cn": "这是中文参考文本。",
             "speed_factor": 1.0,
             "pause_after_ms": 0,
             "seed": 1,

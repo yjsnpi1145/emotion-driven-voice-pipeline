@@ -126,7 +126,7 @@ def validate_director_plan(
             )
         materialized.append(
             MaterializedDirectedSegment(
-                **segment.model_dump(), source_text=source_slice, synthesis_text=source_slice
+                **segment.model_dump(), source_text=source_slice
             )
         )
         previous_end = segment.source_end

@@ -10,6 +10,7 @@ from pydantic import JsonValue as PydanticJsonValue
 
 from voice_pipeline.models.model_profiles import ModelProfileSnapshot
 from voice_pipeline.models.schemas import (
+    ChineseReferenceText,
     EmotionVector,
     EngineFingerprint,
     LanguageCode,
@@ -157,7 +158,7 @@ class RestoreVersionInputsRequest(StrictModel):
 class SegmentInputsPatch(StrictModel):
     expected_ref_draft_revision: int = Field(ge=0)
     expected_gsv_draft_revision: int = Field(ge=0)
-    ref_text_cn: NonBlankText | None = None
+    ref_text_cn: ChineseReferenceText | None = None
     current_emotion_vector: EmotionVector | None = None
     synthesis_text: NonBlankText | None = None
     speed_factor: float | None = Field(default=None, ge=0.5, le=2.0)
@@ -235,7 +236,7 @@ class CreateSegmentRequest(StrictModel):
     source_text: NonBlankText
     synthesis_text: NonBlankText
     llm_emotion_vector: EmotionVector
-    ref_text_cn: NonBlankText
+    ref_text_cn: ChineseReferenceText
     speed_factor: float = Field(ge=0.5, le=2.0)
     pause_after_ms: int = Field(ge=0, le=30_000)
     seed: int
@@ -258,7 +259,7 @@ class SegmentRecord(StrictModel):
     target_language: LanguageCode
     llm_emotion_vector: EmotionVector
     current_emotion_vector: EmotionVector
-    ref_text_cn: NonBlankText
+    ref_text_cn: ChineseReferenceText
     speed_factor: float = Field(ge=0.5, le=2.0)
     pause_after_ms: int = Field(ge=0, le=30_000)
     seed: int

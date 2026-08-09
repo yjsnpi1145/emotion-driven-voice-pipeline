@@ -9,6 +9,7 @@ import pytest
 import respx
 
 from voice_pipeline.core.config import LlmSettings
+from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.modules.llm.client import OpenAiDirectorClient
 
 
@@ -31,6 +32,7 @@ async def test_openai_client_uses_chat_completions_without_exposing_secret(monke
                                 "source_end": 2,
                                 "emotion_description": "平静",
                                 "emotion_vector": [0, 0, 0, 0, 0, 0, 0, 0.3],
+                                "synthesis_text": "これは目標言語の配音本文です。",
                                 "ref_text_cn": "我很平静。",
                                 "pause_after_ms": 0,
                                 "speed_factor": 1.0,
@@ -70,6 +72,7 @@ async def test_openai_client_uses_chat_completions_without_exposing_secret(monke
         "source_end",
         "emotion_description",
         "emotion_vector",
+        "synthesis_text",
         "ref_text_cn",
         "pause_after_ms",
         "speed_factor",
@@ -77,6 +80,71 @@ async def test_openai_client_uses_chat_completions_without_exposing_secret(monke
     ):
         assert required_field in system_prompt
     assert "<= 0.8" in system_prompt
+    assert "synthesis_text must be written in target_language" in system_prompt
+    assert "translate the complete source slice" in system_prompt
+    assert "ref_text_cn must always be natural Simplified Chinese" in system_prompt
+    assert "never copy Japanese, English, Korean" in system_prompt
     assert plan.segments[0].source_end == 2
+    assert plan.segments[0].synthesis_text == "これは目標言語の配音本文です。"
     assert secret not in repr(plan)
     assert secret not in os.environ.get("PIPELINE_LLM_KEY", "")[: -len(secret)]
+
+
+@pytest.mark.asyncio
+@respx.mock
+@pytest.mark.parametrize(
+    ("segment_update", "expected_path"),
+    [
+        ({"synthesis_text": None}, "segments.0.synthesis_text"),
+        ({"ref_text_cn": "これは日本語の参考文です。"}, "segments.0.ref_text_cn"),
+    ],
+)
+async def test_openai_client_rejects_missing_translation_or_non_chinese_reference(
+    segment_update: dict[str, object], expected_path: str
+) -> None:
+    source = "これは原文です。"
+    segment: dict[str, object] = {
+        "ordinal": 0,
+        "source_start": 0,
+        "source_end": len(source),
+        "emotion_description": "平静",
+        "emotion_vector": [0, 0, 0, 0, 0, 0, 0, 0.3],
+        "synthesis_text": source,
+        "ref_text_cn": "这是一段平静的中文参考。",
+        "pause_after_ms": 0,
+        "speed_factor": 1.0,
+        "seed": 1234,
+    }
+    segment.update(segment_update)
+    respx.post("https://llm.example/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": {
+                                "source_text_sha256": hashlib.sha256(
+                                    source.encode("utf-8")
+                                ).hexdigest(),
+                                "segments": [segment],
+                            }
+                        }
+                    }
+                ]
+            },
+        )
+    )
+    settings = LlmSettings(
+        mode="openai",
+        base_url="https://llm.example/v1",
+        model="director",
+        api_key_env="PIPELINE_LLM_KEY",
+    )
+    async with httpx.AsyncClient(base_url=settings.base_url + "/") as http:
+        client = OpenAiDirectorClient(settings, http_client=http, api_key="secret")
+        with pytest.raises(PipelineError) as exc_info:
+            await client.create_plan(source_text=source, target_language="ja")
+
+    assert exc_info.value.code == ErrorCode.LLM_INVALID_RESPONSE
+    assert exc_info.value.details["schema_errors"][0]["path"] == expected_path

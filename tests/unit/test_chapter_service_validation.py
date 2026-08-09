@@ -26,6 +26,7 @@ class InvalidCoverageDirector:
                     source_end=1,
                     emotion_description="calm",
                     emotion_vector=(0, 0, 0, 0, 0, 0, 0, 0.3),
+                    synthesis_text="これは訳文です。",
                     ref_text_cn="我很平静。",
                     pause_after_ms=0,
                     speed_factor=1.0,

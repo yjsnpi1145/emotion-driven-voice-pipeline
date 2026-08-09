@@ -10,6 +10,7 @@ from voice_pipeline.core.config import StorageSettings
 from voice_pipeline.models.chapter import ChapterSynthesisRequest
 from voice_pipeline.models.persistence import SegmentJobSnapshot
 from voice_pipeline.modules.llm.fake import FakeDirector
+from voice_pipeline.modules.llm.models import DirectedSegment, DirectorPlan
 from voice_pipeline.storage.chapter_store import ChapterStore
 from voice_pipeline.storage.database import Database
 from voice_pipeline.storage.job_store import SqliteJobStore
@@ -53,6 +54,56 @@ async def test_chapter_store_materializes_contiguous_directed_segments(tmp_path:
             "第一句。",
             "第二句。",
         ]
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_chapter_store_keeps_source_translation_and_chinese_reference_separate(
+    tmp_path: Path,
+) -> None:
+    database = await Database.open(_settings(tmp_path), instance_id=uuid4(), migrate=True)
+    try:
+        source = "这是需要翻译的中文原文。"
+        request = ChapterSynthesisRequest(
+            request_id=uuid4(),
+            title="translated chapter",
+            source_text=source,
+            target_language="ja",
+            base_voice_path=tmp_path / "voice.wav",
+            model_profile_id=uuid4(),
+        )
+        plan = DirectorPlan(
+            source_text_sha256=hashlib.sha256(source.encode("utf-8")).hexdigest(),
+            segments=(
+                DirectedSegment(
+                    ordinal=0,
+                    source_start=0,
+                    source_end=len(source),
+                    emotion_description="平静、克制",
+                    emotion_vector=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3),
+                    synthesis_text="これは翻訳が必要な中国語の原文です。",
+                    ref_text_cn="这是需要翻译的中文原文。",
+                    pause_after_ms=500,
+                    speed_factor=1.0,
+                    seed=1234,
+                ),
+            ),
+        )
+        store = ChapterStore(database, SegmentStore(database))
+
+        run = await store.create_queued(
+            request=request,
+            director_plan=plan,
+            model_profile_snapshot={"profile_id": str(request.model_profile_id)},
+            base_voice_sha256="a" * 64,
+        )
+
+        segment = (await store.list_segments(run.run_id))[0]
+        assert segment.source_text == source
+        assert segment.synthesis_text == "これは翻訳が必要な中国語の原文です。"
+        assert segment.ref_text_cn == "这是需要翻译的中文原文。"
+        assert segment.target_language == "ja"
     finally:
         await database.close()
 
