@@ -19,6 +19,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
         ) as client:
             page = await client.get("/")
             script = await client.get("/ui/app.js")
+            stage_script = await client.get("/ui/stage-progress.js")
             stylesheet = await client.get("/ui/styles.css")
             listing = await client.get("/api/v1/chapters")
             traversal = await client.get("/ui/../api/app.py")
@@ -29,6 +30,8 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'id="chapter-form"' in page.text
     assert 'id="chapter-form" class="stack-form" novalidate' in page.text
     assert 'id="chapter-summary"' in page.text
+    assert 'id="chapter-progress"' in page.text
+    assert page.text.index('id="chapter-progress"') < page.text.index("<h3>章节历史</h3>")
     assert 'id="chapter-audio"' in page.text
     assert 'id="segment-state-filter"' in page.text
     assert 'id="model-profile-form"' in page.text
@@ -50,6 +53,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "IndexTTS2 始终使用中文情绪参考文本" in page.text
     assert 'id="toast-region"' in page.text
     assert script.status_code == 200
+    assert stage_script.status_code == 200
     assert stylesheet.status_code == 200
     assert re.search(r"\.workbench\s*\{[^}]*grid-template-columns", stylesheet.text)
     assert "color-scheme: light" in stylesheet.text
@@ -68,6 +72,24 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "renderVirtualRows" in script.text
     assert "normalizeEmotionVector" in script.text
     assert "renderChapterSummary" in script.text
+    assert 'from "./stage-progress.js"' in script.text
+    assert "renderChapterProgress" in script.text
+    assert "creationProgress" in script.text
+    select_run_source = script.text.split("async function selectRun(runId)", 1)[1].split(
+        "async function refreshRun()", 1
+    )[0]
+    assert "state.creationProgress = null" in select_run_source
+    assert 'setAttribute("role", "progressbar")' in script.text
+    assert 'aria-valuenow' in script.text
+    assert "文本规划" in stage_script.text
+    assert "参考音频" in stage_script.text
+    assert "GSV 合成" in stage_script.text
+    assert "整篇拼接" in stage_script.text
+    assert ".chapter-progress" in stylesheet.text
+    assert ".stage-progress-track" in stylesheet.text
+    assert '[data-state="active"]' in stylesheet.text
+    assert '[data-state="complete"]' in stylesheet.text
+    assert '[data-state="failed"]' in stylesheet.text
     assert "/api/v1/settings/llm" in script.text
     assert "/api/v1/settings/llm/test" in script.text
     assert "/api/v1/local/open-folder" in script.text

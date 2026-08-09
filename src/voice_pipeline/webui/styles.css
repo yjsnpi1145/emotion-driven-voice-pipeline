@@ -100,6 +100,32 @@ code { padding: .1rem .3rem; border-radius: .3rem; background: #edf2f7; color: #
 .panel-heading, .editor-heading, .section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
 .panel-heading.compact { padding-top: .2rem; border-top: 1px solid var(--line); }
 .panel-heading h2, .editor-heading h2, .section-heading h3 { margin: 0; }
+.chapter-progress { display: grid; gap: .65rem; padding: .72rem; border: 1px solid var(--line); border-radius: .58rem; background: var(--panel-soft); }
+.stage-progress-heading { display: flex; justify-content: space-between; align-items: end; gap: .75rem; }
+.stage-progress-heading .eyebrow { margin-bottom: .12rem; }
+.stage-progress-heading strong { color: #344054; font-size: .84rem; }
+.stage-progress-percent { color: var(--accent); font-size: 1rem; font-weight: 780; }
+.stage-progress-track { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .22rem; }
+.stage-progress-segment { position: relative; height: .48rem; overflow: hidden; border-radius: 999px; background: #e7ebf1; }
+.stage-progress-fill { display: block; height: 100%; border-radius: inherit; background: #7aa2ed; transition: width .25s ease; }
+.stage-progress-segment[data-state="complete"] .stage-progress-fill { background: var(--success); }
+.stage-progress-segment[data-state="failed"] { background: #f5c3c8; box-shadow: inset 0 0 0 1px #e89ba4; }
+.stage-progress-segment[data-state="active"] { background: #dce8fc; box-shadow: inset 0 0 0 1px #a9c2f4; }
+.stage-progress-segment[data-state="active"]::after { position: absolute; inset: 0; background: linear-gradient(110deg, transparent 22%, rgb(37 99 235 / 26%) 48%, transparent 74%); animation: stage-progress-sweep 1.25s linear infinite; content: ""; }
+.stage-progress-stages { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; margin: 0; padding: 0; list-style: none; }
+.stage-progress-stages li { display: grid; grid-template-columns: 1.45rem minmax(0, 1fr); align-items: center; gap: .38rem; min-width: 0; color: var(--muted); }
+.stage-progress-stages li > span:last-child { display: grid; min-width: 0; }
+.stage-progress-stages strong, .stage-progress-stages small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stage-progress-stages strong { color: #475467; font-size: .71rem; }
+.stage-progress-stages small { font-size: .67rem; }
+.stage-progress-marker { display: grid; place-items: center; width: 1.35rem; height: 1.35rem; border: 1px solid var(--line-strong); border-radius: 50%; background: #fff; color: #667085; font-size: .68rem; font-weight: 760; }
+.stage-progress-stages li[data-state="active"] strong { color: var(--accent); }
+.stage-progress-stages li[data-state="active"] .stage-progress-marker { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.stage-progress-stages li[data-state="complete"] strong { color: var(--success); }
+.stage-progress-stages li[data-state="complete"] .stage-progress-marker { border-color: var(--success); background: var(--success-soft); color: var(--success); }
+.stage-progress-stages li[data-state="failed"] strong { color: var(--danger); }
+.stage-progress-stages li[data-state="failed"] .stage-progress-marker { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
+@keyframes stage-progress-sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
 .chapter-list, .model-profile-list { display: grid; gap: .55rem; }
 .chapter-row-wrap { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .4rem; }
 .chapter-row { display: grid; gap: .25rem; width: 100%; padding: .62rem .68rem; overflow: hidden; border-color: var(--line); background: #fff; color: #344054; text-align: left; font-size: .8rem; text-overflow: ellipsis; white-space: nowrap; }
@@ -223,4 +249,8 @@ details summary { cursor: pointer; color: #475467; font-size: .82rem; }
   .settings-card { padding: .8rem; }
   .folder-actions .button-row { width: 100%; }
   .folder-actions button { flex: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-progress-segment[data-state="active"]::after { animation: none; }
 }

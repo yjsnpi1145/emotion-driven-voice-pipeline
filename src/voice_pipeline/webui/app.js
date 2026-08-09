@@ -1,3 +1,5 @@
+import { deriveChapterStageProgress } from "./stage-progress.js";
+
 const state = {
   chapters: [],
   profiles: [],
@@ -17,6 +19,7 @@ const state = {
   editorDraftDirty: false,
   refreshDeferred: false,
   saveInFlight: false,
+  creationProgress: null,
   activeView: "workbench",
   llmSettings: null,
   localPaths: null,
@@ -312,6 +315,7 @@ async function selectRun(runId) {
     setStatus("草稿正在保存，完成后可切换章节", true);
     return;
   }
+  state.creationProgress = null;
   const runToken = ++state.runSelectionGeneration;
   state.requestedRunId = runId;
   ++state.segmentSelectionGeneration;
@@ -423,6 +427,7 @@ async function selectSegment(segment) {
 }
 
 function renderRunDetails() {
+  renderChapterProgress();
   const title = $("#chapter-title");
   const summary = $("#chapter-summary");
   const audio = $("#chapter-audio");
@@ -453,6 +458,65 @@ function renderRunDetails() {
   }
   compose.disabled = state.segments.length === 0 || counts.generating > 0 || counts.waiting > 0;
   compose.title = compose.disabled ? "所有分块需要有可用的当前 GSV 音频后才能拼接" : "按当前 GSV 版本和停顿重新拼接";
+}
+
+function renderChapterProgress() {
+  const host = $("#chapter-progress");
+  const model = deriveChapterStageProgress(state.run, state.progress, state.creationProgress);
+  const heading = document.createElement("div");
+  heading.className = "stage-progress-heading";
+  const headingCopy = document.createElement("div");
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = "任务进度";
+  const status = document.createElement("strong");
+  status.textContent = model.statusLabel;
+  headingCopy.append(eyebrow, status);
+  const percentage = document.createElement("span");
+  percentage.className = "stage-progress-percent";
+  percentage.textContent = model.overallPercent === null ? "—" : `${model.overallPercent}%`;
+  heading.append(headingCopy, percentage);
+
+  const rail = document.createElement("div");
+  rail.className = "stage-progress-track";
+  rail.setAttribute("role", "progressbar");
+  rail.setAttribute("aria-valuemin", "0");
+  rail.setAttribute("aria-valuemax", "100");
+  rail.setAttribute("aria-valuetext", model.statusLabel);
+  if (model.overallPercent !== null) {
+    rail.setAttribute("aria-valuenow", String(model.overallPercent));
+  }
+  model.stages.forEach((stage) => {
+    const segment = document.createElement("span");
+    segment.className = "stage-progress-segment";
+    segment.dataset.state = stage.state;
+    segment.dataset.indeterminate = String(stage.indeterminate);
+    segment.title = `${stage.label}：${stage.detail}`;
+    const fill = document.createElement("span");
+    fill.className = "stage-progress-fill";
+    fill.style.width = `${stage.ratio * 100}%`;
+    segment.append(fill);
+    rail.append(segment);
+  });
+
+  const stages = document.createElement("ol");
+  stages.className = "stage-progress-stages";
+  model.stages.forEach((stage, index) => {
+    const item = document.createElement("li");
+    item.dataset.state = stage.state;
+    const marker = document.createElement("span");
+    marker.className = "stage-progress-marker";
+    marker.textContent = stage.state === "complete" ? "✓" : String(index + 1);
+    const copy = document.createElement("span");
+    const label = document.createElement("strong");
+    label.textContent = stage.label;
+    const detail = document.createElement("small");
+    detail.textContent = stage.detail;
+    copy.append(label, detail);
+    item.append(marker, copy);
+    stages.append(item);
+  });
+  host.replaceChildren(heading, rail, stages);
 }
 
 function renderChapterSummary(counts) {
@@ -1036,12 +1100,19 @@ $("#chapter-form").onsubmit = async (event) => {
     }
   }
   const submit = form.querySelector('button[type="submit"]');
+  state.creationProgress = { status: "planning" };
+  renderChapterProgress();
   await withBusy(submit, "正在规划分块…", async () => {
     const result = await request("/api/v1/chapters", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(data), request_id: crypto.randomUUID() }) });
+    state.creationProgress = null;
     await loadChapters();
     await selectRun(result.run_id);
     report("整篇任务已创建，正在按分块顺序生成");
-  }).catch((error) => report(sanitizeMessage(error), true));
+  }).catch((error) => {
+    if (state.creationProgress?.status === "planning") state.creationProgress = { status: "failed" };
+    renderChapterProgress();
+    report(sanitizeMessage(error), true);
+  });
 };
 
 $("#compose-chapter").onclick = composeChapter;
