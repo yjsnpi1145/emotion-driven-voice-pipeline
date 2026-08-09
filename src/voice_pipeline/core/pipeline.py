@@ -493,7 +493,11 @@ class SynthesisService:
     # ------------------------------------------------------------------ #
 
     async def generate_reference(
-        self, context: ExecutionContext, request: ReferenceJobRequest
+        self,
+        context: ExecutionContext,
+        request: ReferenceJobRequest,
+        *,
+        enforce_reference_window: bool = True,
     ) -> ReferenceSynthesisResult:
         self._validate_context(context, request.request_id)
         self._validate_inputs(request)
@@ -516,7 +520,11 @@ class SynthesisService:
             output_spec=OutputAudioSpec(sample_rate=22050),
         )
         reference_audio = (
-            await self._cache_hit(reference_key, reference_path, reference=True)
+            await self._cache_hit(
+                reference_key,
+                reference_path,
+                reference=enforce_reference_window,
+            )
             if request.seed >= 0
             else None
         )
@@ -537,7 +545,10 @@ class SynthesisService:
                 lambda: self._index.synthesize(index_request, reference_path),
                 job_id=context.job_id,
             )
-            reference_audio = probe_wav(reference_audio.path, require_reference_window=True)
+            reference_audio = probe_wav(
+                reference_audio.path,
+                require_reference_window=enforce_reference_window,
+            )
             self._write_audit(
                 job_id=context.job_id,
                 request_id=context.request_id,

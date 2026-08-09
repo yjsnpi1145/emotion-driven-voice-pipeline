@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 
 import httpx
@@ -56,6 +57,26 @@ async def test_openai_client_uses_chat_completions_without_exposing_secret(monke
 
     assert route.called
     assert route.calls[0].request.headers["Authorization"] == f"Bearer {secret}"
+    request_body = json.loads(route.calls[0].request.content)
+    system_prompt = request_body["messages"][0]["content"]
+    user_payload = json.loads(request_body["messages"][1]["content"])
+    source_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    assert user_payload["source_text_sha256"] == source_sha256
+    assert user_payload["source_length"] == len(source)
+    assert source_sha256 in system_prompt
+    for required_field in (
+        "ordinal",
+        "source_start",
+        "source_end",
+        "emotion_description",
+        "emotion_vector",
+        "ref_text_cn",
+        "pause_after_ms",
+        "speed_factor",
+        "seed",
+    ):
+        assert required_field in system_prompt
+    assert "<= 0.8" in system_prompt
     assert plan.segments[0].source_end == 2
     assert secret not in repr(plan)
     assert secret not in os.environ.get("PIPELINE_LLM_KEY", "")[: -len(secret)]

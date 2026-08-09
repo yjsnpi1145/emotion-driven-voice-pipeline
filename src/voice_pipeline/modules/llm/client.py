@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 from collections.abc import Sequence
@@ -21,6 +22,35 @@ from voice_pipeline.modules.llm.models import (
 
 _RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
 _RETRY_DELAYS_SECONDS: tuple[float, ...] = (0.25, 0.5, 1.0)
+
+
+def _director_system_prompt(
+    *, source_sha256: str, source_length: int, target_language: LanguageCode
+) -> str:
+    schema = json.dumps(
+        DirectorPlan.model_json_schema(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return (
+        "Return exactly one JSON object and no markdown. The object MUST validate against "
+        f"this JSON Schema: {schema}\n"
+        f"Echo source_text_sha256 exactly as {source_sha256}. The source has exactly "
+        f"{source_length} Python Unicode characters and target_language is {target_language}. "
+        "segments must be non-empty, ordinal must start at 0 and increase by 1, source_start "
+        "and source_end are Python string-slice indices, the first source_start must be 0, "
+        "every source_start must equal the previous source_end, and the final source_end must "
+        f"be {source_length}. Never rewrite or return the source text. "
+        "For every segment provide all fields: ordinal, source_start, source_end, "
+        "emotion_description, emotion_vector, ref_text_cn, pause_after_ms, speed_factor, seed. "
+        "emotion_vector contains exactly 8 numbers ordered as joy, anger, sadness, fear, "
+        "disgust, melancholy, surprise, calm; every value is within 0.0..1.0 and their sum "
+        "must be <= 0.8. ref_text_cn must be natural Simplified Chinese that expresses the "
+        "segment emotion and is suitable for roughly 3 to 9 seconds of speech. "
+        "pause_after_ms must be an integer within 0..30000, speed_factor within 0.5..2.0, "
+        "and seed must be an integer."
+    )
 
 
 class OpenAiDirectorClient:
@@ -44,19 +74,26 @@ class OpenAiDirectorClient:
             await self._http.aclose()
 
     async def create_plan(self, *, source_text: str, target_language: LanguageCode) -> DirectorPlan:
+        source_sha256 = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
         content = await self._post_json(
             [
                 {
                     "role": "system",
-                    "content": (
-                        "Return JSON only. Segment the supplied source by Python character "
-                        "ranges. Do not return rewritten source text."
+                    "content": _director_system_prompt(
+                        source_sha256=source_sha256,
+                        source_length=len(source_text),
+                        target_language=target_language,
                     ),
                 },
                 {
                     "role": "user",
                     "content": json.dumps(
-                        {"source_text": source_text, "target_language": target_language},
+                        {
+                            "source_text": source_text,
+                            "source_text_sha256": source_sha256,
+                            "source_length": len(source_text),
+                            "target_language": target_language,
+                        },
                         ensure_ascii=False,
                         separators=(",", ":"),
                     ),
@@ -213,9 +250,21 @@ def _validate_payload(model: type[T], payload: dict[str, object]) -> T:
     try:
         return model.model_validate(payload)
     except ValidationError as exc:
+        schema_errors = [
+            {
+                "path": ".".join(str(part) for part in error["loc"]),
+                "type": str(error["type"]),
+            }
+            for error in exc.errors(
+                include_url=False,
+                include_context=False,
+                include_input=False,
+            )[:20]
+        ]
         raise PipelineError(
             ErrorCode.LLM_INVALID_RESPONSE,
             "llm",
             "LLM JSON does not match the required schema",
             retryable=False,
+            details={"schema_errors": schema_errors},
         ) from exc

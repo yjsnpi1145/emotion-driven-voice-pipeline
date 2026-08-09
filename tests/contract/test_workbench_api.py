@@ -27,6 +27,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'id="segment-list"' in page.text
     assert 'id="segment-editor"' in page.text
     assert 'id="chapter-form"' in page.text
+    assert 'id="chapter-form" class="stack-form" novalidate' in page.text
     assert 'id="chapter-summary"' in page.text
     assert 'id="chapter-audio"' in page.text
     assert 'id="segment-state-filter"' in page.text
@@ -69,6 +70,10 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "/open-folder`" in script.text
     assert "renderSystemHealth" in script.text
     assert "activateView" in script.text
+    assert "formatApiError" in script.text
+    assert "schema_errors" in script.text
+    assert 'withBusy(submit, "正在规划分块…"' in script.text
+    assert "report(sanitizeMessage(error), true)" in script.text
     assert "const formElement = event.currentTarget;" in script.text
     assert 'if (kind !== "reference") body.model_profile_id = profile;' in script.text
     assert 'id="normalize-vector"' in script.text

@@ -38,10 +38,30 @@ async function request(path, options = {}) {
   const headers = options.body ? { "content-type": "application/json" } : {};
   const response = await fetch(path, { headers, ...options });
   if (!response.ok) {
-    const payload = await response.text();
-    throw new Error(sanitizeMessage(payload || `HTTP ${response.status}`));
+    const raw = await response.text();
+    let payload = raw;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      // Non-JSON upstream/proxy errors retain their plain-text message.
+    }
+    throw new Error(formatApiError(payload, response.status));
   }
   return response.json();
+}
+
+function formatApiError(payload, status) {
+  if (!payload || typeof payload !== "object") {
+    return sanitizeMessage(payload || `HTTP ${status}`);
+  }
+  const error = payload.error && typeof payload.error === "object" ? payload.error : payload;
+  const message = error.message || `请求失败（HTTP ${status}）`;
+  const schemaErrors = Array.isArray(error.details?.schema_errors)
+    ? error.details.schema_errors.map((item) => item.path).filter(Boolean)
+    : [];
+  const fields = schemaErrors.length ? `；无效字段：${schemaErrors.join("、")}` : "";
+  const code = error.code ? ` [${error.code}]` : "";
+  return sanitizeMessage(`${message}${fields}${code}`);
 }
 
 function sanitizeMessage(message) {
@@ -770,6 +790,7 @@ function activateView(view) {
   } else if (requested === "system") {
     loadSystemHealth().catch((error) => report(error, true));
   } else {
+    Promise.all([loadProfiles(), loadChapters()]).catch((error) => report(error, true));
     window.requestAnimationFrame(renderVirtualRows);
   }
 }
@@ -957,19 +978,27 @@ async function refreshActiveView(button) {
 
 $("#chapter-form").onsubmit = async (event) => {
   event.preventDefault();
-  const data = new FormData(event.currentTarget);
-  if (!data.get("model_profile_id")) {
-    setStatus("请先导入并选择一个可用的 GPT-SoVITS 模型档案", true);
-    return;
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const requiredFields = [
+    ["source_text", "请先填写需要配音的原文"],
+    ["base_voice_path", "请先选择 3–10 秒的参考音色 WAV"],
+    ["model_profile_id", "请先导入并选择一个可用的 GPT-SoVITS 模型档案"],
+  ];
+  for (const [name, message] of requiredFields) {
+    if (!String(data.get(name) || "").trim()) {
+      report(message, true);
+      form.elements[name]?.focus();
+      return;
+    }
   }
-  try {
+  const submit = form.querySelector('button[type="submit"]');
+  await withBusy(submit, "正在规划分块…", async () => {
     const result = await request("/api/v1/chapters", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(data), request_id: crypto.randomUUID() }) });
     await loadChapters();
     await selectRun(result.run_id);
-    setStatus("整篇任务已创建，正在按分块顺序生成");
-  } catch (error) {
-    setStatus(sanitizeMessage(error), true);
-  }
+    report("整篇任务已创建，正在按分块顺序生成");
+  }).catch((error) => report(sanitizeMessage(error), true));
 };
 
 $("#compose-chapter").onclick = composeChapter;

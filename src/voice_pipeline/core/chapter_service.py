@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Protocol, cast
@@ -26,7 +27,7 @@ from voice_pipeline.models.schemas import (
 )
 from voice_pipeline.modules.audio.composer import ComposeInput, compose_final
 from voice_pipeline.modules.audio.wav_probe import sha256_file
-from voice_pipeline.modules.llm.director import ReferenceTextDirector
+from voice_pipeline.modules.llm.director import ReferenceTextDirector, validate_director_plan
 from voice_pipeline.modules.llm.models import (
     CorrectionDirection,
     DirectedSegment,
@@ -104,6 +105,7 @@ class ChapterService:
         plan = await self._director.create_plan(
             source_text=request.source_text, target_language=request.target_language
         )
+        validate_director_plan(request.source_text, plan)
         corrected = await self._correct_reference_texts(plan, base_voice)
         run = await self._chapters.create_queued(
             request=request,
@@ -318,5 +320,14 @@ class _ServiceReferenceDurationProbe:
             emotion_vector=vector,  # type: ignore[arg-type]
             seed=seed,
         )
-        result = await self._queue.run(lambda: self._synthesis.generate_reference(context, request))
-        return result.reference.audio.duration_seconds
+        try:
+            result = await self._queue.run(
+                lambda: self._synthesis.generate_reference(
+                    context,
+                    request,
+                    enforce_reference_window=False,
+                )
+            )
+            return result.reference.audio.duration_seconds
+        finally:
+            await asyncio.to_thread(shutil.rmtree, context.job_dir, True)

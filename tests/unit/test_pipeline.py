@@ -108,6 +108,29 @@ async def test_reference_job_only_calls_index(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_reference_duration_probe_can_measure_audio_outside_final_window(tmp_path) -> None:
+    calls: list[tuple[str, object]] = []
+    service = SynthesisService(
+        index=RecordingIndexClient(calls, duration_seconds=2.0),
+        gsv=RecordingGsvClient(calls),
+        runtime=RecordingEngineRuntime(calls),
+        audit=RecordingAuditWriter([]),
+    )
+    request = make_request(tmp_path)
+    write_tone(request.base_voice_path, seconds=5.0)
+    context = make_context(tmp_path, request.request_id)
+
+    result = await service.generate_reference(
+        context,
+        request,
+        enforce_reference_window=False,
+    )
+
+    assert result.reference.audio.duration_seconds == pytest.approx(2.0, abs=0.01)
+    assert [name for name, _ in calls] == ["ensure:indextts", "index"]
+
+
+@pytest.mark.asyncio
 async def test_quality_failure_keeps_index_diagnostic_and_never_calls_gsv(tmp_path) -> None:
     from voice_pipeline.core.errors import ErrorCode, PipelineError
 

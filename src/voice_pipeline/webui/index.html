@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>情绪配音工作台</title>
-    <link rel="stylesheet" href="/ui/styles.css?v=20260809b" />
+    <link rel="stylesheet" href="/ui/styles.css?v=20260809c" />
   </head>
   <body>
     <div class="app-shell">
@@ -49,7 +49,7 @@
             <aside class="chapter-panel panel" aria-label="章节任务">
               <details class="accordion" open>
                 <summary>新建整篇配音</summary>
-                <form id="chapter-form" class="stack-form">
+                <form id="chapter-form" class="stack-form" novalidate>
                   <label>标题 <input name="title" required value="新章节" /></label>
                   <label>原文 <textarea name="source_text" required rows="8" placeholder="粘贴需要配音的原文"></textarea></label>
                   <label>参考音色
@@ -161,6 +161,6 @@
 
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
     <template id="segment-row-template"><button class="segment-row" type="button"></button></template>
-    <script type="module" src="/ui/app.js?v=20260809b"></script>
+    <script type="module" src="/ui/app.js?v=20260809c"></script>
   </body>
 </html>
