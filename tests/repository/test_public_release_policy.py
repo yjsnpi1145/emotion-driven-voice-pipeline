@@ -63,6 +63,16 @@ def test_windows_launcher_wraps_the_managed_service_lifecycle() -> None:
     assert "workers.indextts2" not in launcher
 
 
+def test_windows_launcher_uses_cmd_compatible_crlf_line_endings() -> None:
+    raw = (ROOT / "启动服务.bat").read_bytes()
+    attributes_path = ROOT / ".gitattributes"
+
+    assert b"\r\n" in raw
+    assert b"\n" not in raw.replace(b"\r\n", b"")
+    assert attributes_path.is_file()
+    assert "*.bat text eol=crlf" in attributes_path.read_text(encoding="utf-8")
+
+
 def test_readme_documents_the_windows_double_click_launcher() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
