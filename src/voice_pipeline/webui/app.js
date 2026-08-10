@@ -28,6 +28,10 @@ const state = {
   creationProgress: null,
   activeView: "workbench",
   llmSettings: null,
+  llmActivity: { active: false, active_operation: null, active_since_utc: null, events: [] },
+  llmActivityTimer: null,
+  llmActivityLoading: false,
+  llmActivityUnavailable: false,
   localPaths: null,
   health: null,
   toastTimer: null,
@@ -42,6 +46,12 @@ const regenerationPaths = {
 };
 const ROW_HEIGHT = 96;
 const ROW_OVERSCAN = 8;
+const LLM_ACTIVITY_POLL_MS = 750;
+const llmOperationLabels = {
+  chapter_plan: "章节规划",
+  reference_correction: "参考修正",
+  connection_test: "连接测试",
+};
 
 function readPersistedSelection() {
   try {
@@ -108,6 +118,115 @@ function sanitizeMessage(message) {
   return String(message)
     .replace(/[A-Za-z]:[\\/][^\s"']+/g, "[本地路径]")
     .replace(/\\\\[^\s"']+/g, "[本地路径]");
+}
+
+function formatActivityTime(value) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "--:--:--";
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(timestamp);
+}
+
+function llmElapsedSeconds(value) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return 0;
+  return Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+}
+
+function renderLlmActivity() {
+  const log = $("#llm-activity-log");
+  const status = $("#llm-activity-status");
+  if (!log || !status) return;
+
+  const shouldFollow = log.scrollHeight - log.scrollTop - log.clientHeight < 32;
+  const activity = state.llmActivity;
+  const events = Array.isArray(activity.events) ? activity.events : [];
+  const latest = events.at(-1);
+
+  if (state.llmActivityUnavailable) {
+    status.dataset.state = "degraded";
+    status.textContent = "连接异常";
+  } else if (activity.active) {
+    status.dataset.state = "active";
+    status.textContent = `正在工作 · ${llmElapsedSeconds(activity.active_since_utc)}s`;
+  } else if (latest?.kind === "failed") {
+    status.dataset.state = "degraded";
+    status.textContent = "失败";
+  } else if (latest?.kind === "completed") {
+    status.dataset.state = "ready";
+    status.textContent = "已完成";
+  } else {
+    status.dataset.state = "idle";
+    status.textContent = "空闲";
+  }
+
+  if (!events.length) {
+    const empty = document.createElement("p");
+    empty.className = "llm-activity-empty";
+    empty.textContent = state.llmActivityUnavailable ? "活动接口暂时不可用，正在重试" : "等待 LLM 请求";
+    log.replaceChildren(empty);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  for (const event of events) {
+    const entry = document.createElement("article");
+    entry.className = "llm-activity-entry";
+    entry.dataset.kind = event.kind;
+
+    const time = document.createElement("time");
+    time.className = "llm-activity-time";
+    time.dateTime = event.created_at_utc;
+    time.textContent = formatActivityTime(event.created_at_utc);
+
+    const operation = document.createElement("span");
+    operation.className = "llm-activity-operation";
+    operation.textContent = llmOperationLabels[event.operation] || "LLM";
+
+    const message = document.createElement("span");
+    message.className = "llm-activity-message";
+    message.textContent = event.message;
+
+    entry.append(time, operation, message);
+    if (event.content) {
+      const output = document.createElement("pre");
+      output.textContent = event.content;
+      entry.append(output);
+    }
+    fragment.append(entry);
+  }
+  log.replaceChildren(fragment);
+  if (shouldFollow) {
+    window.requestAnimationFrame(() => {
+      log.scrollTop = log.scrollHeight;
+    });
+  }
+}
+
+async function loadLlmActivity() {
+  if (state.llmActivityLoading) return;
+  state.llmActivityLoading = true;
+  try {
+    state.llmActivity = await request("/api/v1/llm/activity");
+    state.llmActivityUnavailable = false;
+  } catch {
+    state.llmActivityUnavailable = true;
+  } finally {
+    state.llmActivityLoading = false;
+    renderLlmActivity();
+  }
+}
+
+function startLlmActivityPolling() {
+  if (state.llmActivityTimer !== null) return;
+  void loadLlmActivity();
+  state.llmActivityTimer = window.setInterval(() => {
+    void loadLlmActivity();
+  }, LLM_ACTIVITY_POLL_MS);
 }
 
 function setStatus(text, error = false) {
@@ -1186,6 +1305,7 @@ $("#segment-state-filter").onchange = () => { $("#segment-scroll").scrollTop = 0
 $("#segment-scroll").onscroll = renderVirtualRows;
 
 async function initialize() {
+  startLlmActivityPolling();
   try {
     const savedSelection = readPersistedSelection();
     activateView("workbench");

@@ -10,6 +10,7 @@ import respx
 
 from voice_pipeline.core.config import LlmSettings
 from voice_pipeline.core.errors import ErrorCode, PipelineError
+from voice_pipeline.modules.llm.activity import LlmActivityLog
 from voice_pipeline.modules.llm.client import OpenAiDirectorClient
 
 
@@ -53,9 +54,12 @@ async def test_openai_client_uses_chat_completions_without_exposing_secret(monke
         model="director",
         api_key_env="PIPELINE_LLM_KEY",
     )
+    activity = LlmActivityLog()
     async with httpx.AsyncClient(base_url=settings.base_url + "/") as http:
-        client = OpenAiDirectorClient(settings, http_client=http)
+        client = OpenAiDirectorClient(settings, http_client=http, activity=activity)
         plan = await client.create_plan(source_text=source, target_language="ja")
+
+    activity_payload = (await activity.snapshot()).model_dump(mode="json")
 
     assert route.called
     assert route.calls[0].request.headers["Authorization"] == f"Bearer {secret}"
@@ -88,6 +92,14 @@ async def test_openai_client_uses_chat_completions_without_exposing_secret(monke
     assert plan.segments[0].synthesis_text == "これは目標言語の配音本文です。"
     assert secret not in repr(plan)
     assert secret not in os.environ.get("PIPELINE_LLM_KEY", "")[: -len(secret)]
+    assert [event["kind"] for event in activity_payload["events"]] == [
+        "request_sent",
+        "response",
+    ]
+    assert "synthesis_text" in activity_payload["events"][-1]["content"]
+    serialized_activity = json.dumps(activity_payload, ensure_ascii=False)
+    assert secret not in serialized_activity
+    assert "authorization" not in serialized_activity.casefold()
 
 
 @pytest.mark.asyncio

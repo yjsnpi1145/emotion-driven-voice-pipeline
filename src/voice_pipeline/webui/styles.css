@@ -101,6 +101,22 @@ code { padding: .1rem .3rem; border-radius: .3rem; background: var(--input); col
 .panel-heading, .editor-heading, .section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
 .panel-heading.compact { padding-top: .2rem; border-top: 1px solid var(--line); }
 .panel-heading h2, .editor-heading h2, .section-heading h3 { margin: 0; }
+.llm-activity-console { display: grid; gap: .58rem; padding: .72rem; border: 1px solid var(--line); border-radius: .58rem; background: #0a111c; }
+.llm-activity-heading { display: flex; align-items: center; justify-content: space-between; gap: .65rem; }
+.llm-activity-heading .eyebrow { margin-bottom: .1rem; }
+.llm-activity-heading strong { color: #d5deea; font-size: .84rem; }
+.llm-activity-status[data-state="active"] { border-color: #3269a8; background: var(--accent-soft); color: #8dbbff; }
+.llm-activity-status[data-state="active"]::before { width: .42rem; height: .42rem; border-radius: 50%; background: currentcolor; box-shadow: 0 0 .55rem currentcolor; animation: llm-activity-pulse 1.2s ease-in-out infinite; content: ""; }
+.llm-activity-log { display: grid; align-content: start; gap: .48rem; min-height: 4.5rem; max-height: 11.5rem; overflow-y: auto; padding: .55rem; border: 1px solid #1c2b3d; border-radius: .42rem; background: #060b12; scrollbar-color: #31445e transparent; }
+.llm-activity-empty { align-self: center; margin: auto; color: var(--muted); font-size: .73rem; }
+.llm-activity-entry { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: baseline; gap: .38rem; font-size: .7rem; }
+.llm-activity-time { color: #65758a; font-variant-numeric: tabular-nums; }
+.llm-activity-operation { color: #82aef0; font-weight: 700; }
+.llm-activity-message { min-width: 0; color: #aebdd0; overflow-wrap: anywhere; }
+.llm-activity-entry[data-kind="failed"] .llm-activity-message { color: var(--danger); }
+.llm-activity-entry[data-kind="retrying"] .llm-activity-message { color: var(--warning); }
+.llm-activity-entry pre { grid-column: 1 / -1; max-height: 9rem; overflow: auto; margin: .12rem 0 0; padding: .48rem; border-left: 2px solid #2f67a9; background: #0b1421; color: #bcd0e8; font: .68rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+@keyframes llm-activity-pulse { 50% { opacity: .38; transform: scale(.78); } }
 .chapter-progress { display: grid; gap: .65rem; padding: .72rem; border: 1px solid var(--line); border-radius: .58rem; background: var(--panel-soft); }
 .stage-progress-heading { display: flex; justify-content: space-between; align-items: end; gap: .75rem; }
 .stage-progress-heading .eyebrow { margin-bottom: .12rem; }
@@ -253,5 +269,6 @@ details summary { cursor: pointer; color: #aebed1; font-size: .82rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .stage-progress-segment[data-state="active"]::after { animation: none; }
+  .stage-progress-segment[data-state="active"]::after,
+  .llm-activity-status[data-state="active"]::before { animation: none; }
 }

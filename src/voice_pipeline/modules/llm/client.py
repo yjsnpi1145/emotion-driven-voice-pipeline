@@ -7,6 +7,7 @@ import os
 from collections.abc import Sequence
 from time import perf_counter
 from typing import TypeVar
+from uuid import UUID, uuid4
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -14,6 +15,11 @@ from pydantic import BaseModel, ValidationError
 from voice_pipeline.core.config import LlmSettings
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.models.schemas import LanguageCode
+from voice_pipeline.modules.llm.activity import (
+    LlmActivityKind,
+    LlmActivityLog,
+    LlmOperation,
+)
 from voice_pipeline.modules.llm.models import (
     CorrectionDirection,
     DirectorPlan,
@@ -69,6 +75,7 @@ class OpenAiDirectorClient:
         *,
         http_client: httpx.AsyncClient | None = None,
         api_key: str | None = None,
+        activity: LlmActivityLog | None = None,
     ) -> None:
         self._settings = settings
         self._api_key = api_key
@@ -77,12 +84,19 @@ class OpenAiDirectorClient:
             timeout=settings.timeout_seconds,
         )
         self._owns_http = http_client is None
+        self._activity = activity
 
     async def aclose(self) -> None:
         if self._owns_http:
             await self._http.aclose()
 
-    async def create_plan(self, *, source_text: str, target_language: LanguageCode) -> DirectorPlan:
+    async def create_plan(
+        self,
+        *,
+        source_text: str,
+        target_language: LanguageCode,
+        activity_id: UUID | None = None,
+    ) -> DirectorPlan:
         source_sha256 = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
         content = await self._post_json(
             [
@@ -107,7 +121,9 @@ class OpenAiDirectorClient:
                         separators=(",", ":"),
                     ),
                 },
-            ]
+            ],
+            operation_id=activity_id or uuid4(),
+            operation="chapter_plan",
         )
         return _validate_payload(DirectorPlan, content)
 
@@ -117,6 +133,7 @@ class OpenAiDirectorClient:
         current: str,
         direction: CorrectionDirection,
         emotion_description: str,
+        activity_id: UUID | None = None,
     ) -> str:
         content = await self._post_json(
             [
@@ -136,17 +153,21 @@ class OpenAiDirectorClient:
                         separators=(",", ":"),
                     ),
                 },
-            ]
+            ],
+            operation_id=activity_id or uuid4(),
+            operation="reference_correction",
         )
         return _validate_payload(ReferenceTextCorrection, content).ref_text_cn
 
-    async def test_connection(self) -> int:
+    async def test_connection(self, *, activity_id: UUID | None = None) -> int:
         started = perf_counter()
         content = await self._post_json(
             [
                 {"role": "system", "content": "Return JSON only."},
                 {"role": "user", "content": 'Return exactly {"ok": true}.'},
-            ]
+            ],
+            operation_id=activity_id or uuid4(),
+            operation="connection_test",
         )
         if content.get("ok") is not True:
             raise PipelineError(
@@ -157,7 +178,13 @@ class OpenAiDirectorClient:
             )
         return max(0, round((perf_counter() - started) * 1000))
 
-    async def _post_json(self, messages: Sequence[dict[str, str]]) -> dict[str, object]:
+    async def _post_json(
+        self,
+        messages: Sequence[dict[str, str]],
+        *,
+        operation_id: UUID,
+        operation: LlmOperation,
+    ) -> dict[str, object]:
         headers = {"Content-Type": "application/json"}
         if self._settings.mode == "openai":
             key_name = self._settings.api_key_env
@@ -178,6 +205,12 @@ class OpenAiDirectorClient:
         }
         attempts = self._settings.max_retries + 1
         for attempt in range(attempts):
+            await self._emit(
+                operation_id=operation_id,
+                operation=operation,
+                kind="request_sent",
+                message=f"请求已发送（第 {attempt + 1}/{attempts} 次）· {self._settings.model}",
+            )
             try:
                 response = await self._http.post(
                     "chat/completions", headers=headers, json=request_body
@@ -190,9 +223,24 @@ class OpenAiDirectorClient:
                         "LLM API request failed",
                         retryable=True,
                     ) from exc
+                await self._emit(
+                    operation_id=operation_id,
+                    operation=operation,
+                    kind="retrying",
+                    message=f"网络请求失败，{_delay_for(attempt):.2f} 秒后重试",
+                )
                 await asyncio.sleep(_delay_for(attempt))
                 continue
             if response.status_code in _RETRYABLE_STATUS_CODES and attempt + 1 < attempts:
+                await self._emit(
+                    operation_id=operation_id,
+                    operation=operation,
+                    kind="retrying",
+                    message=(
+                        f"模型返回 HTTP {response.status_code}，"
+                        f"{_delay_for(attempt):.2f} 秒后重试"
+                    ),
+                )
                 await asyncio.sleep(_delay_for(attempt))
                 continue
             if response.status_code >= 400:
@@ -212,12 +260,44 @@ class OpenAiDirectorClient:
                     "LLM response lacks choices[0].message.content",
                     retryable=False,
                 ) from exc
+            await self._emit(
+                operation_id=operation_id,
+                operation=operation,
+                kind="response",
+                message=f"已收到模型响应 · HTTP {response.status_code}",
+                content=_render_output(message),
+            )
             return _decode_content(message)
         raise AssertionError("retry loop must return or raise")
+
+    async def _emit(
+        self,
+        *,
+        operation_id: UUID,
+        operation: LlmOperation,
+        kind: LlmActivityKind,
+        message: str,
+        content: str | None = None,
+    ) -> None:
+        if self._activity is None:
+            return
+        await self._activity.emit(
+            operation_id=operation_id,
+            operation=operation,
+            kind=kind,
+            message=message,
+            content=content,
+        )
 
 
 def _delay_for(attempt: int) -> float:
     return _RETRY_DELAYS_SECONDS[min(attempt, len(_RETRY_DELAYS_SECONDS) - 1)]
+
+
+def _render_output(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    return json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _decode_content(content: object) -> dict[str, object]:

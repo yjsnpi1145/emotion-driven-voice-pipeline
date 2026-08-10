@@ -110,3 +110,21 @@ async def test_clear_api_key_removes_persisted_secret(tmp_path: Path) -> None:
     assert director.max_reference_corrections == 4
     assert not (tmp_path / "state" / "llm-secret.txt").exists()
     await director.aclose()
+
+
+@pytest.mark.asyncio
+async def test_runtime_director_records_fake_plan_lifecycle_and_output(tmp_path: Path) -> None:
+    director = RuntimeDirector(LlmSettings(), state_dir=tmp_path / "state")
+    await director.start()
+
+    plan = await director.create_plan(source_text="第一句。", target_language="zh")
+    snapshot = await director.activity.snapshot()
+
+    assert snapshot.active is False
+    assert [event.kind for event in snapshot.events] == ["started", "completed"]
+    assert snapshot.events[0].operation == "chapter_plan"
+    assert snapshot.events[0].operation_id == snapshot.events[1].operation_id
+    assert snapshot.events[1].content is not None
+    assert plan.source_text_sha256 in snapshot.events[1].content
+    assert "第一句。" in snapshot.events[1].content
+    await director.aclose()

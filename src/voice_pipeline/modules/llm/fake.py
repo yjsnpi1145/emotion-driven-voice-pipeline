@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from uuid import UUID
 
 from voice_pipeline.models.schemas import LanguageCode
 from voice_pipeline.modules.llm.models import DirectedSegment, DirectorPlan
@@ -9,8 +10,14 @@ from voice_pipeline.modules.llm.models import DirectedSegment, DirectorPlan
 class FakeDirector:
     """A deterministic source-range director used by local CPU tests."""
 
-    async def create_plan(self, *, source_text: str, target_language: LanguageCode) -> DirectorPlan:
-        del target_language
+    async def create_plan(
+        self,
+        *,
+        source_text: str,
+        target_language: LanguageCode,
+        activity_id: UUID | None = None,
+    ) -> DirectorPlan:
+        del target_language, activity_id
         boundaries = _boundaries(source_text)
         return DirectorPlan(
             source_text_sha256=hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
@@ -37,8 +44,9 @@ class FakeDirector:
         current: str,
         direction: str,
         emotion_description: str,
+        activity_id: UUID | None = None,
     ) -> str:
-        del direction, emotion_description
+        del direction, emotion_description, activity_id
         return current
 
 

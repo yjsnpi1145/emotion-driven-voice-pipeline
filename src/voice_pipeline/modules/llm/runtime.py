@@ -5,8 +5,10 @@ import json
 import os
 from pathlib import Path
 from typing import Protocol
+from uuid import UUID, uuid4
 
 from voice_pipeline.core.config import LlmSettings
+from voice_pipeline.core.errors import PipelineError
 from voice_pipeline.models.runtime_settings import (
     LlmConnectionTestResult,
     LlmSettingsSnapshot,
@@ -14,6 +16,7 @@ from voice_pipeline.models.runtime_settings import (
     LlmSettingsView,
 )
 from voice_pipeline.models.schemas import LanguageCode
+from voice_pipeline.modules.llm.activity import LlmActivityLog, LlmOperation
 from voice_pipeline.modules.llm.client import OpenAiDirectorClient
 from voice_pipeline.modules.llm.fake import FakeDirector
 from voice_pipeline.modules.llm.models import CorrectionDirection, DirectorPlan
@@ -23,7 +26,11 @@ _RUNTIME_KEY_ENV = "VOICE_PIPELINE_RUNTIME_LLM_KEY"
 
 class _Director(Protocol):
     async def create_plan(
-        self, *, source_text: str, target_language: LanguageCode
+        self,
+        *,
+        source_text: str,
+        target_language: LanguageCode,
+        activity_id: UUID | None = None,
     ) -> DirectorPlan: ...
 
     async def correct_reference_text(
@@ -32,6 +39,7 @@ class _Director(Protocol):
         current: str,
         direction: CorrectionDirection,
         emotion_description: str,
+        activity_id: UUID | None = None,
     ) -> str: ...
 
 
@@ -54,6 +62,7 @@ class RuntimeDirector:
         self._secret = os.environ.get(config.api_key_env or "") or None
         self._source: str = "config"
         self._director: _Director = FakeDirector()
+        self.activity = LlmActivityLog()
         self._lock = asyncio.Lock()
         self._started = False
 
@@ -102,27 +111,59 @@ class RuntimeDirector:
 
     async def test_connection(self, request: LlmSettingsUpdate) -> LlmConnectionTestResult:
         snapshot = request.snapshot()
-        async with self._lock:
-            secret = self._updated_secret(request)
-            candidate = self._build_director(snapshot, secret)
-            try:
-                if isinstance(candidate, OpenAiDirectorClient):
-                    latency_ms = await candidate.test_connection()
-                else:
-                    latency_ms = 0
-            finally:
-                await _close(candidate)
-        return LlmConnectionTestResult(
-            base_url=snapshot.base_url,
-            model=snapshot.model,
-            latency_ms=latency_ms,
+        operation_id = uuid4()
+        await self._record_started(operation_id, "connection_test", "开始测试 LLM 连接")
+        try:
+            async with self._lock:
+                secret = self._updated_secret(request)
+                candidate = self._build_director(snapshot, secret)
+                try:
+                    if isinstance(candidate, OpenAiDirectorClient):
+                        latency_ms = await candidate.test_connection(activity_id=operation_id)
+                    else:
+                        latency_ms = 0
+                finally:
+                    await _close(candidate)
+            result = LlmConnectionTestResult(
+                base_url=snapshot.base_url,
+                model=snapshot.model,
+                latency_ms=latency_ms,
+            )
+        except BaseException as exc:
+            await self._record_failed(operation_id, "connection_test", exc)
+            raise
+        await self._record_completed(
+            operation_id,
+            "connection_test",
+            "LLM 连接测试完成",
+            json.dumps(
+                {"model": result.model, "latency_ms": result.latency_ms},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
         )
+        return result
 
     async def create_plan(self, *, source_text: str, target_language: LanguageCode) -> DirectorPlan:
-        async with self._lock:
-            return await self._director.create_plan(
-                source_text=source_text, target_language=target_language
-            )
+        operation_id = uuid4()
+        await self._record_started(operation_id, "chapter_plan", "开始规划章节分块")
+        try:
+            async with self._lock:
+                result = await self._director.create_plan(
+                    source_text=source_text,
+                    target_language=target_language,
+                    activity_id=operation_id,
+                )
+        except BaseException as exc:
+            await self._record_failed(operation_id, "chapter_plan", exc)
+            raise
+        await self._record_completed(
+            operation_id,
+            "chapter_plan",
+            f"章节规划完成 · {len(result.segments)} 个分块",
+            result.model_dump_json(),
+        )
+        return result
 
     async def correct_reference_text(
         self,
@@ -131,12 +172,28 @@ class RuntimeDirector:
         direction: CorrectionDirection,
         emotion_description: str,
     ) -> str:
-        async with self._lock:
-            return await self._director.correct_reference_text(
-                current=current,
-                direction=direction,
-                emotion_description=emotion_description,
-            )
+        operation_id = uuid4()
+        await self._record_started(
+            operation_id, "reference_correction", "开始修正中文参考文本"
+        )
+        try:
+            async with self._lock:
+                result = await self._director.correct_reference_text(
+                    current=current,
+                    direction=direction,
+                    emotion_description=emotion_description,
+                    activity_id=operation_id,
+                )
+        except BaseException as exc:
+            await self._record_failed(operation_id, "reference_correction", exc)
+            raise
+        await self._record_completed(
+            operation_id,
+            "reference_correction",
+            "中文参考文本修正完成",
+            json.dumps({"ref_text_cn": result}, ensure_ascii=False, separators=(",", ":")),
+        )
+        return result
 
     async def aclose(self) -> None:
         async with self._lock:
@@ -156,6 +213,48 @@ class RuntimeDirector:
                 max_reference_corrections=snapshot.max_reference_corrections,
             ),
             api_key=secret,
+            activity=self.activity,
+        )
+
+    async def _record_started(
+        self, operation_id: UUID, operation: LlmOperation, message: str
+    ) -> None:
+        await self.activity.emit(
+            operation_id=operation_id,
+            operation=operation,
+            kind="started",
+            message=message,
+        )
+
+    async def _record_completed(
+        self,
+        operation_id: UUID,
+        operation: LlmOperation,
+        message: str,
+        content: str,
+    ) -> None:
+        await self.activity.emit(
+            operation_id=operation_id,
+            operation=operation,
+            kind="completed",
+            message=message,
+            content=content,
+        )
+
+    async def _record_failed(
+        self, operation_id: UUID, operation: LlmOperation, error: BaseException
+    ) -> None:
+        if isinstance(error, PipelineError):
+            message = f"{error.code.value}: {error.message}"
+        elif isinstance(error, asyncio.CancelledError):
+            message = "LLM 操作已取消"
+        else:
+            message = "LLM 操作发生内部错误"
+        await self.activity.emit(
+            operation_id=operation_id,
+            operation=operation,
+            kind="failed",
+            message=message,
         )
 
     def _updated_secret(self, request: LlmSettingsUpdate) -> str | None:

@@ -23,19 +23,26 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
             selection_script = await client.get("/ui/selection-state.js")
             stylesheet = await client.get("/ui/styles.css")
             listing = await client.get("/api/v1/chapters")
+            llm_activity = await client.get("/api/v1/llm/activity")
             traversal = await client.get("/ui/../api/app.py")
 
     assert page.status_code == 200
     assert 'data-theme="dark-console"' in page.text
     assert 'class="brand-mark"' not in page.text
     assert ">声</div>" not in page.text
-    assert "20260810a" in page.text
+    assert "20260810b" in page.text
     assert 'id="segment-list"' in page.text
     assert 'id="segment-editor"' in page.text
     assert 'id="chapter-form"' in page.text
     assert 'id="chapter-form" class="stack-form" novalidate' in page.text
     assert 'id="chapter-summary"' in page.text
     assert 'id="chapter-progress"' in page.text
+    assert 'id="llm-activity-console"' in page.text
+    assert 'id="llm-activity-status"' in page.text
+    assert 'id="llm-activity-log"' in page.text
+    assert page.text.index('id="llm-activity-console"') < page.text.index(
+        'id="chapter-progress"'
+    )
     assert page.text.index('id="chapter-progress"') < page.text.index("<h3>章节历史</h3>")
     assert 'id="chapter-audio"' in page.text
     assert 'id="segment-state-filter"' in page.text
@@ -106,12 +113,19 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "GSV 合成" in stage_script.text
     assert "整篇拼接" in stage_script.text
     assert ".chapter-progress" in stylesheet.text
+    assert ".llm-activity-console" in stylesheet.text
+    assert ".llm-activity-log" in stylesheet.text
+    assert re.search(r"\.llm-activity-log\s*\{[^}]*overflow-y:\s*auto", stylesheet.text)
     assert ".stage-progress-track" in stylesheet.text
     assert '[data-state="active"]' in stylesheet.text
     assert '[data-state="complete"]' in stylesheet.text
     assert '[data-state="failed"]' in stylesheet.text
     assert "/api/v1/settings/llm" in script.text
     assert "/api/v1/settings/llm/test" in script.text
+    assert "/api/v1/llm/activity" in script.text
+    assert "renderLlmActivity" in script.text
+    assert "750" in script.text
+    assert ".textContent = event.content" in script.text
     assert "/api/v1/local/open-folder" in script.text
     assert "/api/v1/local/pick-file" in script.text
     assert "/open-folder`" in script.text
@@ -144,4 +158,32 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "cdn" not in page.text.casefold()
     assert listing.status_code == 200
     assert listing.json() == []
+    assert llm_activity.status_code == 200
+    assert llm_activity.json() == {
+        "active": False,
+        "active_operation": None,
+        "active_since_utc": None,
+        "events": [],
+    }
     assert traversal.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_llm_activity_endpoint_exposes_recent_director_lifecycle(fake_settings) -> None:
+    app = create_app(fake_settings)
+    async with app.router.lifespan_context(app):
+        await app.state.plane.llm_client.create_plan(
+            source_text="第一句。第二句。",
+            target_language="zh",
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/v1/llm/activity")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["active"] is False
+    assert [event["kind"] for event in payload["events"]] == ["started", "completed"]
+    assert payload["events"][0]["operation"] == "chapter_plan"
+    assert "segments" in payload["events"][-1]["content"]

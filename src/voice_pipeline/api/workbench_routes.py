@@ -54,6 +54,15 @@ def build_workbench_router(plane: Any) -> APIRouter:
     async def list_chapters() -> list[dict[str, Any]]:
         return [_public_run(item) for item in await _chapters(plane).list_runs(limit=100)]
 
+    @router.get("/api/v1/llm/activity")
+    async def llm_activity() -> dict[str, Any]:
+        director = getattr(plane, "llm_client", None)
+        activity = getattr(director, "activity", None)
+        if activity is None:
+            raise HTTPException(status_code=503, detail="LLM activity is not ready")
+        snapshot = await activity.snapshot()
+        return cast(dict[str, Any], snapshot.model_dump(mode="json"))
+
     @router.get("/api/v1/chapters/{run_id}/progress")
     async def chapter_progress(run_id: UUID) -> dict[str, Any]:
         return await _progress_payload(plane, run_id)
