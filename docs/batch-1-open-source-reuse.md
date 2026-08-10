@@ -12,7 +12,7 @@
 
 | 模块 | 来源 | SPDX | pin |
 |---|---|---|---|
-| IndexTTS2 推理 | github.com/index-tts/index-tts | MIT | `90ca4d608209584bad3a5bd5becc0b80c146e60f` |
+| IndexTTS2 推理 | github.com/index-tts/index-tts | bilibili Model Use License Agreement | `90ca4d608209584bad3a5bd5becc0b80c146e60f` |
 | GPT-SoVITS api_v2.py | github.com/RVC-Boss/GPT-SoVITS | MIT | `d523079fc05d9a8028d6085bffe4a2757c32abb6` |
 | FastAPI | github.com/fastapi/fastapi | MIT | `>=0.115.2,<1` |
 | Uvicorn | github.com/encode/uvicorn | BSD-3-Clause | `>=0.34,<1` |
@@ -25,6 +25,9 @@
 | Hugging Face Hub | github.com/huggingface/huggingface_hub | Apache-2.0 | cli+hf_xet |
 | uv | github.com/astral-sh/uv | MIT OR Apache-2.0 | 0.11.24 |
 | pytest 生态 | github.com/pytest-dev/pytest 等 | MIT | `>=8.3,<9` 等 |
+
+IndexTTS2 固定提交不是 MIT；其源码与模型由独立的 bilibili Model Use License Agreement
+约束，具体条款和固定链接见根目录 `MODEL_LICENSES.md`。本项目许可证不覆盖上游引擎或权重。
 
 ## 薄包装（thin_wrapper）
 

@@ -7,13 +7,18 @@
 [CmdletBinding()]
 param(
   [switch]$WriteInitialEnvLocks,
-  [switch]$VerifyDisposableRebuild
+  [switch]$VerifyDisposableRebuild,
+  [switch]$DownloadModels,
+  [switch]$AcceptModelLicenses
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$RepoRoot = 'D:\TTSsystem'
+$RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 Set-Location $RepoRoot
+if (-not $AcceptModelLicenses) {
+  throw 'IndexTTS2 setup requires -AcceptModelLicenses. Read MODEL_LICENSES.md first.'
+}
 
 function Invoke-Checked {
   param([Parameter(Mandatory)][string]$FilePath, [Parameter(Mandatory)][string[]]$ArgumentList)
@@ -95,8 +100,8 @@ if ($NeedsSync) {
 & $IndexPython -c "import sys; assert sys.version_info[:2] == (3, 11); print(sys.executable)"
 if ($LASTEXITCODE -ne 0) { throw 'index python version check failed' }
 
-# 5. Model downloads (pinned revisions only).
-if ($WriteInitialEnvLocks) {
+# 5. Model downloads (pinned revisions only, license accepted above).
+if ($DownloadModels) {
   $PinnedRoot = Join-Path $Checkpoints 'hf_cache\pinned'
   New-Item -ItemType Directory -Force -Path $PinnedRoot | Out-Null
   uv tool run --from "huggingface-hub[cli,hf_xet]" hf download `

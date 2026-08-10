@@ -5,7 +5,22 @@ build-backend = "hatchling.build"
 [project]
 name = "emotion-driven-voice-pipeline"
 version = "0.1.0"
+description = "Local emotion-directed cross-language dubbing workbench"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "MODEL_LICENSES.md"]
 requires-python = ">=3.11,<3.12"
+keywords = ["text-to-speech", "dubbing", "gpt-sovits", "indextts2", "fastapi"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Win32 (MS Windows)",
+  "Framework :: FastAPI",
+  "Operating System :: Microsoft :: Windows :: Windows 10",
+  "Operating System :: Microsoft :: Windows :: Windows 11",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
 dependencies = [
   "aiosqlite>=0.22,<0.23",
   "alembic>=1.18.5,<2",

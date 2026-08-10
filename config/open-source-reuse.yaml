@@ -5,7 +5,8 @@ modules:
     disposition: reuse
     candidates:
       - repository: https://github.com/index-tts/index-tts
-        spdx_license: MIT
+        spdx_license: LicenseRef-bilibili-model-use-license
+        license_url: https://github.com/index-tts/index-tts/blob/90ca4d608209584bad3a5bd5becc0b80c146e60f/LICENSE
         pin: 90ca4d608209584bad3a5bd5becc0b80c146e60f
     selected: https://github.com/index-tts/index-tts
     decision_reason: 官方推理实现，维护活跃；固定 commit 依赖并在独立 worker 环境中调用
@@ -161,7 +162,8 @@ modules:
     disposition: thin_wrapper
     candidates:
       - repository: https://github.com/index-tts/index-tts
-        spdx_license: MIT
+        spdx_license: LicenseRef-bilibili-model-use-license
+        license_url: https://github.com/index-tts/index-tts/blob/90ca4d608209584bad3a5bd5becc0b80c146e60f/LICENSE
         pin: 90ca4d608209584bad3a5bd5becc0b80c146e60f
     selected: https://github.com/index-tts/index-tts (上游推理) + 本项目薄 worker
     decision_reason: 项目安全边界需要独立进程、路径限制、指纹握手与原子发布；内部仍调用官方 IndexTTS2.infer

@@ -7,12 +7,14 @@
 [CmdletBinding()]
 param(
   [switch]$WriteInitialEnvLocks,
-  [switch]$VerifyDisposableRebuild
+  [switch]$VerifyDisposableRebuild,
+  [switch]$DownloadModels,
+  [switch]$AcceptModelLicenses
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$RepoRoot = 'D:\TTSsystem'
+$RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 Set-Location $RepoRoot
 
 function Invoke-Checked {
@@ -49,8 +51,16 @@ $Head = (git -C $GsvRepo rev-parse HEAD).Trim()
 if ($Head -ne $PinnedCommit) {
   Invoke-Checked 'git' @('-C', $GsvRepo, '-c','http.proxy=','-c','https.proxy=','checkout', $PinnedCommit)
 }
+$AllowedRuntimePaths = @(
+  'GPT_SoVITS/configs/tts_infer.yaml',
+  'GPT_SoVITS/text/ja_userdic/user.dict',
+  'GPT_SoVITS/text/ja_userdic/userdict.md5'
+)
 $Dirty = git -C $GsvRepo status --porcelain |
-  Where-Object { $_ -notmatch '^\?\? \.conda([/\\]|$)' }
+  Where-Object {
+    $StatusPath = $_.Substring(3).Replace('\', '/')
+    $StatusPath -notmatch '^\.conda(/|$)' -and $StatusPath -notin $AllowedRuntimePaths
+  }
 if ($Dirty) { throw "gsv repo is dirty`n$Dirty" }
 
 # 2. Initial env locks (explicit flag only).
@@ -105,8 +115,11 @@ if ($NeedsPipSync) {
 & $GsvPython -c "import sys; assert sys.version_info[:2] == (3, 11); print(sys.executable)"
 if ($LASTEXITCODE -ne 0) { throw 'gsv python version check failed' }
 
-# 5. Pretrained assets (pinned revision, SHA verified).
-if ($WriteInitialEnvLocks) {
+# 5. Pretrained assets (pinned revision, SHA verified, explicit license acceptance).
+if ($DownloadModels -and -not $AcceptModelLicenses) {
+  throw 'Model download requires -AcceptModelLicenses. Read MODEL_LICENSES.md first.'
+}
+if ($DownloadModels) {
   New-Item -ItemType Directory -Force -Path $Downloads | Out-Null
   uv tool run --from "huggingface-hub[cli,hf_xet]" hf download `
     XXXXRT/GPT-SoVITS-Pretrained `
@@ -114,12 +127,37 @@ if ($WriteInitialEnvLocks) {
     --local-dir $Downloads
   if ($LASTEXITCODE -ne 0) { throw 'pretrained download failed' }
   $Archive = Join-Path $Downloads 'pretrained_models.zip'
-  if (Test-Path -LiteralPath $Archive -PathType Leaf) {
-    $ActualSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash.ToLower()
-    if ($ActualSha -ne $PinnedArchiveSha) {
-      throw "pretrained_models.zip SHA mismatch: $ActualSha"
+  if (-not (Test-Path -LiteralPath $Archive -PathType Leaf)) {
+    throw "pretrained archive is missing after download: $Archive"
+  }
+  $ActualSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash.ToLower()
+  if ($ActualSha -ne $PinnedArchiveSha) {
+    throw "pretrained_models.zip SHA mismatch: $ActualSha"
+  }
+
+  $Staging = Join-Path $Downloads 'pretrained-extracted'
+  if (Test-Path -LiteralPath $Staging) {
+    Remove-Item -LiteralPath $Staging -Recurse -Force
+  }
+  New-Item -ItemType Directory -Force -Path $Staging | Out-Null
+  Expand-Archive -LiteralPath $Archive -DestinationPath $Staging -Force
+
+  $ExtractedRoot = $Staging
+  foreach ($Candidate in @(
+    (Join-Path $Staging 'pretrained_models'),
+    (Join-Path $Staging 'GPT_SoVITS\pretrained_models')
+  )) {
+    if (Test-Path -LiteralPath $Candidate -PathType Container) {
+      $ExtractedRoot = $Candidate
+      break
     }
   }
+  $PretrainedModels = Join-Path $GsvRepo 'GPT_SoVITS\pretrained_models'
+  New-Item -ItemType Directory -Force -Path $PretrainedModels | Out-Null
+  Get-ChildItem -LiteralPath $ExtractedRoot -Force | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination $PretrainedModels -Recurse -Force
+  }
+  Remove-Item -LiteralPath $Staging -Recurse -Force
 }
 
 # 6. GPU sanity (only meaningful on a CUDA machine).

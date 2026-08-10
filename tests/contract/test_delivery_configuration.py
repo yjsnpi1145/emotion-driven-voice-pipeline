@@ -99,6 +99,14 @@ def test_gsv_setup_allows_its_owned_untracked_conda_environment_on_repeat_runs()
     assert "Where-Object" in script
 
 
+def test_gsv_setup_allows_runtime_generated_upstream_files_on_repeat_runs() -> None:
+    script = (ROOT / "scripts" / "setup-gpt-sovits.ps1").read_text(encoding="utf-8")
+
+    assert "GPT_SoVITS/configs/tts_infer.yaml" in script
+    assert "GPT_SoVITS/text/ja_userdic/user.dict" in script
+    assert "GPT_SoVITS/text/ja_userdic/userdict.md5" in script
+
+
 def test_checkpoint_lock_script_uses_builtin_json_compatible_yaml_serialization() -> None:
     script = (ROOT / "scripts" / "lock-engine-assets.ps1").read_text(encoding="utf-8")
 

@@ -48,7 +48,7 @@
 - Produces: machine-readable project license metadata and human-readable separate model terms.
 
 - [ ] Add the unmodified Apache License 2.0 text.
-- [ ] Declare `license = "Apache-2.0"`, README, description, keywords, classifiers and project URLs in package metadata.
+- [ ] Declare `license = "Apache-2.0"`, README, description, keywords and classifiers in package metadata; add project URLs only after the canonical GitHub owner/repository exists.
 - [ ] Replace the false IndexTTS2 MIT labels with `LicenseRef-bilibili-model-use-license` and the pinned license URL.
 - [ ] Document that weights are downloaded separately and are never relicensed by this repository.
 - [ ] Run repository policy tests and `uv lock --check`.
@@ -128,4 +128,3 @@
 - [ ] Export only tracked files into a temporary directory, run `uv sync --frozen --extra dev`, start fake mode on a temporary port, verify `/api/v1/health`, then stop it.
 - [ ] Scan current history for common secrets and list all historical blobs by size; fail if a secret candidate or blob over 10 MiB is present.
 - [ ] Confirm `git status --short` is empty and commit the verified public-release preparation.
-

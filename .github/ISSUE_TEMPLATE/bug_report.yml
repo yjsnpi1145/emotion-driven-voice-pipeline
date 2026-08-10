@@ -1,0 +1,64 @@
+name: Bug report
+description: Report a reproducible defect without private voices, text, paths or credentials.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not upload API keys, model weights, private audio, SQLite files or an unsanitized runtime directory.
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Runtime mode
+      options:
+        - fake
+        - real / exclusive_process
+        - real / resident
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Commit or release
+      placeholder: 0123456 or v0.1.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Sanitized environment
+      description: Windows version, Python version, GPU model and VRAM. Do not include a username or absolute path.
+      placeholder: Windows 11, Python 3.11.15, RTX 5070 Ti 16 GB
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction
+      description: Prefer fake mode and synthetic text/audio descriptions.
+      placeholder: |
+        1. Start with config/app.fake.yaml
+        2. Open the workbench
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected and actual result
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Include error codes or selected health fields, not the entire runtime directory.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I removed credentials, private text/audio, model files and absolute user paths.
+          required: true
+

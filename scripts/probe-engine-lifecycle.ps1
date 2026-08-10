@@ -8,9 +8,9 @@
 
   Usage:
     pwsh -NoProfile -File scripts/probe-engine-lifecycle.ps1 `
-      -BaseConfig 'D:\TTSsystem\config\acceptance.gpu.local.yaml' `
-      -EvidenceDir 'D:\TTSsystem\runtime\developer-gpu\lifecycle' `
-      -OutputConfig 'D:\TTSsystem\runtime\developer-gpu\effective.gpu.yaml' -Json
+      -BaseConfig '.\config\app.public.local.yaml' `
+      -EvidenceDir '.\runtime\developer-gpu\lifecycle' `
+      -OutputConfig '.\runtime\developer-gpu\effective.gpu.yaml' -Json
 #>
 [CmdletBinding()]
 param(
@@ -22,7 +22,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$RepoRoot = 'D:\TTSsystem'
+$RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 Set-Location $RepoRoot
 
 $Evidence = (New-Item -ItemType Directory -Force -Path $EvidenceDir).FullName

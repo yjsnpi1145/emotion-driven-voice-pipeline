@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-python311:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.24"
+          enable-cache: true
+
+      - name: Sync locked development environment
+        run: uv sync --frozen --extra dev
+
+      - name: Lint Python
+        run: uv run ruff check src tests
+
+      - name: Type check
+        run: uv run mypy src workers
+
+      - name: Check WebUI JavaScript
+        run: node --check src/voice_pipeline/webui/app.js
+
+      - name: Run CPU and process tests
+        run: uv run pytest -q -m "not gpu and not gpu_residency and not quality_model"
+
+      - name: Build wheel
+        run: uv build --wheel --out-dir dist
+

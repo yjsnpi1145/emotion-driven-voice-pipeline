@@ -1,10 +1,12 @@
 [CmdletBinding()]
 param(
-    [string]$Root = 'D:\TTSsystem',
-    [switch]$Offline
+    [string]$Root,
+    [switch]$Offline,
+    [switch]$AcceptModelLicenses
 )
 
 $ErrorActionPreference = 'Stop'
+$Root = if ($Root) { $Root } else { Join-Path $PSScriptRoot '..' }
 $Root = (Resolve-Path -LiteralPath $Root).Path
 $LockPath = Join-Path $Root 'config\quality-model.lock.yaml'
 $Destination = Join-Path $Root 'runtime\models\faster-whisper-small'
@@ -16,6 +18,7 @@ if (-not (Test-Path -LiteralPath $LockPath -PathType Leaf)) {
 $env:VOICE_PIPELINE_QUALITY_LOCK = $LockPath
 $env:VOICE_PIPELINE_QUALITY_DESTINATION = $Destination
 $env:VOICE_PIPELINE_QUALITY_OFFLINE = if ($Offline) { '1' } else { '0' }
+$env:VOICE_PIPELINE_ACCEPT_MODEL_LICENSES = if ($AcceptModelLicenses) { '1' } else { '0' }
 
 @'
 from __future__ import annotations
@@ -32,6 +35,7 @@ from huggingface_hub import snapshot_download
 lock_path = Path(os.environ["VOICE_PIPELINE_QUALITY_LOCK"])
 destination = Path(os.environ["VOICE_PIPELINE_QUALITY_DESTINATION"])
 offline = os.environ["VOICE_PIPELINE_QUALITY_OFFLINE"] == "1"
+accepted = os.environ["VOICE_PIPELINE_ACCEPT_MODEL_LICENSES"] == "1"
 lock = yaml.safe_load(lock_path.read_text(encoding="utf-8"))
 if lock.get("schema_version") != 1 or not isinstance(lock.get("files"), list):
     raise SystemExit("quality model lock has an invalid schema")
@@ -56,6 +60,10 @@ def verify() -> bool:
 if not verify():
     if offline:
         raise SystemExit("pinned faster-whisper model asset is missing or does not match lock")
+    if not accepted:
+        raise SystemExit(
+            "model download requires -AcceptModelLicenses; read MODEL_LICENSES.md first"
+        )
     destination.mkdir(parents=True, exist_ok=True)
     snapshot_download(
         repo_id=lock["repository"],

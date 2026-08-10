@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose a focused improvement to the local workbench.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the production task that is difficult today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain the user-visible result, not only an implementation library.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Chapter planning / translation
+        - IndexTTS2 reference generation
+        - GPT-SoVITS synthesis / models
+        - WebUI
+        - Persistence / versions
+        - Setup / packaging
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Local and privacy constraints
+      description: Note any GPU, offline, model-license or data-transfer constraints.
+

@@ -11,7 +11,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$RepoRoot = 'D:\TTSsystem'
+$RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $LockPath = Join-Path $RepoRoot 'config\checkpoints.lock.yaml'
 $EngineLock = Join-Path $RepoRoot 'config\engines.lock.yaml'
 
