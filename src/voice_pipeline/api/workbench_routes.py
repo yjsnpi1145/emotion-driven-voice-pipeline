@@ -31,6 +31,7 @@ _WEBUI_FILES = {
     "index.html",
     "app.js",
     "selection-state.js",
+    "service-shutdown.js",
     "stage-progress.js",
     "styles.css",
 }

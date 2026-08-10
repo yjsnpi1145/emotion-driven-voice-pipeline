@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>情绪配音工作台</title>
-    <link rel="stylesheet" href="/ui/styles.css?v=20260810b" />
+    <link rel="stylesheet" href="/ui/styles.css?v=20260810c" />
   </head>
   <body>
     <div class="app-shell">
@@ -19,6 +19,7 @@
           <span id="service-indicator" class="status-chip" data-state="loading">服务检查中</span>
           <span id="active-model-indicator" class="status-chip">未选择模型</span>
           <button id="refresh-global" class="icon-button" type="button" title="刷新当前页面" aria-label="刷新当前页面">↻</button>
+          <button id="shutdown-services" class="danger-button" type="button" title="关闭控制面和全部模型服务">关闭所有服务</button>
         </div>
       </header>
 
@@ -170,8 +171,16 @@
       </main>
     </div>
 
+    <section id="shutdown-overlay" class="shutdown-overlay" role="status" aria-live="assertive" hidden>
+      <div id="shutdown-message" class="shutdown-card" tabindex="-1">
+        <p class="eyebrow">System Offline</p>
+        <h2>所有服务已关闭</h2>
+        <p>IndexTTS2、GPT-SoVITS 和 WebUI 后端均已退出。</p>
+        <strong>所有服务已关闭，可以关闭此页面</strong>
+      </div>
+    </section>
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
     <template id="segment-row-template"><button class="segment-row" type="button"></button></template>
-    <script type="module" src="/ui/app.js?v=20260810b"></script>
+    <script type="module" src="/ui/app.js?v=20260810c"></script>
   </body>
 </html>

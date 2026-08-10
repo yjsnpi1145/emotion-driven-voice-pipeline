@@ -5,6 +5,7 @@ import {
   readWorkbenchSelection,
   writeWorkbenchSelection,
 } from "./selection-state.js";
+import { confirmAndShutdown } from "./service-shutdown.js";
 
 const state = {
   chapters: [],
@@ -35,6 +36,7 @@ const state = {
   localPaths: null,
   health: null,
   toastTimer: null,
+  serviceStopped: false,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -1246,6 +1248,57 @@ async function refreshActiveView(button) {
   }).catch((error) => report(error, true));
 }
 
+function stopClientActivity() {
+  state.events?.close();
+  state.events = null;
+  if (state.refreshTimer !== null) {
+    window.clearInterval(state.refreshTimer);
+    state.refreshTimer = null;
+  }
+  if (state.llmActivityTimer !== null) {
+    window.clearInterval(state.llmActivityTimer);
+    state.llmActivityTimer = null;
+  }
+  if (state.toastTimer !== null) {
+    window.clearTimeout(state.toastTimer);
+    state.toastTimer = null;
+  }
+}
+
+function enterShutdownState() {
+  if (state.serviceStopped) return;
+  state.serviceStopped = true;
+  stopClientActivity();
+  document.querySelectorAll("button, input, textarea, select").forEach((control) => {
+    control.disabled = true;
+  });
+  document.body.dataset.serviceState = "stopped";
+  const overlay = $("#shutdown-overlay");
+  overlay.hidden = false;
+  $("#shutdown-message").focus();
+}
+
+async function shutdownAllServices(button) {
+  const original = button.textContent;
+  try {
+    await confirmAndShutdown({
+      confirmShutdown: () => window.confirm(
+        "确定关闭所有服务吗？正在执行的配音任务会被中断，IndexTTS2、GPT-SoVITS 和 WebUI 将一起退出。",
+      ),
+      fetchImpl: window.fetch.bind(window),
+      onStarting: () => {
+        button.disabled = true;
+        button.textContent = "正在关闭…";
+      },
+      onComplete: enterShutdownState,
+    });
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = original;
+    report(sanitizeMessage(error), true);
+  }
+}
+
 $("#chapter-form").onsubmit = async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
@@ -1294,6 +1347,7 @@ $("#open-model-library").onclick = (event) => openResource("model_library", even
 $("#open-model-sources").onclick = (event) => openResource("model_sources", event.currentTarget);
 $("#refresh-system").onclick = (event) => withBusy(event.currentTarget, "刷新中…", loadSystemHealth).catch((error) => report(error, true));
 $("#refresh-global").onclick = (event) => refreshActiveView(event.currentTarget);
+$("#shutdown-services").onclick = (event) => shutdownAllServices(event.currentTarget);
 document.querySelectorAll(".tab-button").forEach((button) => {
   button.onclick = () => activateView(button.dataset.view);
 });

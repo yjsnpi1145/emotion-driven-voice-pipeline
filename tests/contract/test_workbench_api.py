@@ -19,6 +19,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
         ) as client:
             page = await client.get("/")
             script = await client.get("/ui/app.js")
+            shutdown_script = await client.get("/ui/service-shutdown.js")
             stage_script = await client.get("/ui/stage-progress.js")
             selection_script = await client.get("/ui/selection-state.js")
             stylesheet = await client.get("/ui/styles.css")
@@ -30,7 +31,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'data-theme="dark-console"' in page.text
     assert 'class="brand-mark"' not in page.text
     assert ">声</div>" not in page.text
-    assert "20260810b" in page.text
+    assert "20260810c" in page.text
     assert 'id="segment-list"' in page.text
     assert 'id="segment-editor"' in page.text
     assert 'id="chapter-form"' in page.text
@@ -64,7 +65,12 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "与原文不同时自动翻译" in page.text
     assert "IndexTTS2 始终使用中文情绪参考文本" in page.text
     assert 'id="toast-region"' in page.text
+    assert 'id="shutdown-services"' in page.text
+    assert 'id="shutdown-overlay"' in page.text
+    assert "关闭所有服务" in page.text
+    assert "所有服务已关闭，可以关闭此页面" in page.text
     assert script.status_code == 200
+    assert shutdown_script.status_code == 200
     assert stage_script.status_code == 200
     assert selection_script.status_code == 200
     assert stylesheet.status_code == 200
@@ -132,12 +138,22 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "renderSystemHealth" in script.text
     assert "activateView" in script.text
     assert "formatApiError" in script.text
+    assert 'from "./service-shutdown.js"' in script.text
+    assert "/api/v1/control/shutdown" in shutdown_script.text
+    assert "confirmAndShutdown" in script.text
+    assert "enterShutdownState" in script.text
+    assert "state.events?.close()" in script.text
+    assert "window.clearInterval(state.refreshTimer)" in script.text
+    assert "window.clearInterval(state.llmActivityTimer)" in script.text
+    assert 'document.querySelectorAll("button, input, textarea, select")' in script.text
     assert "schema_errors" in script.text
     assert "目标语言合成文本" in script.text
     assert 'method: "DELETE"' in script.text
     assert "从章节历史中删除" in script.text
     assert "chapter-delete" in script.text
     assert "chapter-delete" in stylesheet.text
+    assert ".danger-button" in stylesheet.text
+    assert ".shutdown-overlay" in stylesheet.text
     assert 'preload="metadata"' in script.text
     assert 'preload="none"' not in script.text
     assert 'player.preload = "metadata"' in script.text
