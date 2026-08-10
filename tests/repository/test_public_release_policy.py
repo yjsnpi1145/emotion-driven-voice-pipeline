@@ -39,6 +39,37 @@ def test_public_repository_has_required_governance_and_release_files() -> None:
     assert missing == []
 
 
+def test_windows_launcher_wraps_the_managed_service_lifecycle() -> None:
+    launcher_path = ROOT / "启动服务.bat"
+
+    assert launcher_path.is_file()
+    launcher = launcher_path.read_text(encoding="utf-8")
+
+    for required in (
+        "%~dp0",
+        "pwsh",
+        "scripts\\start.ps1",
+        "config\\app.example.yaml",
+        ".venv-control\\Scripts\\python.exe",
+        "http://127.0.0.1:8765/api/v1/health",
+        "VOICE_PIPELINE_NO_BROWSER",
+        "VOICE_PIPELINE_NO_PAUSE",
+        'start "" "http://127.0.0.1:8765/"',
+    ):
+        assert required in launcher
+
+    assert "D:\\TTSsystem" not in launcher
+    assert "api_v2.py" not in launcher
+    assert "workers.indextts2" not in launcher
+
+
+def test_readme_documents_the_windows_double_click_launcher() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "启动服务.bat" in readme
+    assert "双击" in readme
+
+
 def test_tracked_tree_excludes_private_runtime_and_model_artifacts() -> None:
     forbidden_suffixes = {
         ".ckpt",

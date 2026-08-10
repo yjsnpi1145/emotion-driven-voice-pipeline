@@ -101,6 +101,12 @@ uv run voice-pipeline serve --config config/app.fake.yaml
 Invoke-RestMethod http://127.0.0.1:8765/api/v1/health
 ```
 
+## Windows 一键启动真实服务
+
+完成下方真实模型安装后，可以直接双击仓库根目录的 `启动服务.bat`。它会复用现有
+PowerShell supervisor 启动控制面和按需模型服务，等待健康检查通过后自动打开 WebUI。
+如果服务已经运行，重复双击只会打开页面，不会产生第二套进程。
+
 ## 安装真实模型
 
 先阅读 [MODEL_LICENSES.md](MODEL_LICENSES.md)，然后创建本机配置：
