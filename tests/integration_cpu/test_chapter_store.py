@@ -275,6 +275,52 @@ async def test_chapter_store_recovery_marks_running_run_interrupted(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_status", ["failed", "interrupted"])
+async def test_chapter_store_atomically_resumes_recoverable_run(
+    tmp_path: Path, terminal_status: str
+) -> None:
+    database = await Database.open(_settings(tmp_path), instance_id=uuid4(), migrate=True)
+    try:
+        source = "等待修复后继续的章节。"
+        request = ChapterSynthesisRequest(
+            request_id=uuid4(),
+            title="resumable chapter",
+            source_text=source,
+            target_language="zh",
+            base_voice_path=tmp_path / "voice.wav",
+            model_profile_id=uuid4(),
+        )
+        store = ChapterStore(database, SegmentStore(database))
+        plan = await FakeDirector().create_plan(source_text=source, target_language="zh")
+        run = await store.create_queued(
+            request=request,
+            director_plan=plan,
+            model_profile_snapshot={"profile_id": str(request.model_profile_id)},
+            base_voice_sha256="a" * 64,
+        )
+        await store.mark_running(run.run_id)
+        if terminal_status == "failed":
+            await store.mark_failed(
+                run.run_id,
+                {"code": "TEST_FAILURE", "stage": "test", "message": "repair me"},
+            )
+        else:
+            await store.mark_interrupted_running()
+
+        resumed = await store.mark_resuming(run.run_id)
+
+        assert resumed.status == "running"
+        assert resumed.error is None
+        assert resumed.finished_at_utc is None
+        assert resumed.started_at_utc is not None
+        with pytest.raises(PipelineError) as exc_info:
+            await store.mark_resuming(run.run_id)
+        assert exc_info.value.code == ErrorCode.CHAPTER_STATE_CONFLICT
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
 async def test_chapter_progress_persists_job_ids_and_hides_private_snapshot(tmp_path: Path) -> None:
     database = await Database.open(_settings(tmp_path), instance_id=uuid4(), migrate=True)
     try:

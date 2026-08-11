@@ -597,12 +597,15 @@ function renderRunDetails() {
   const summary = $("#chapter-summary");
   const audio = $("#chapter-audio");
   const compose = $("#compose-chapter");
+  const resume = $("#resume-chapter");
   const exportGsv = $("#export-gsv-archive");
   if (!state.run) {
     title.textContent = "选择或创建一个章节任务";
     renderChapterSummary({ ready: 0, generating: 0, failed: 0, stale: 0, draft_pending: 0, waiting: 0 });
     audio.replaceChildren();
     compose.disabled = true;
+    resume.disabled = true;
+    resume.title = "失败或中断的章节修复后可以继续";
     exportGsv.disabled = true;
     return;
   }
@@ -625,6 +628,11 @@ function renderRunDetails() {
   }
   compose.disabled = state.segments.length === 0 || counts.generating > 0 || counts.waiting > 0;
   compose.title = compose.disabled ? "所有分块需要有可用的当前 GSV 音频后才能拼接" : "按当前 GSV 版本和停顿重新拼接";
+  const resumable = state.run.status === "failed" || state.run.status === "interrupted";
+  resume.disabled = !resumable;
+  resume.title = resumable
+    ? "保留已完成分块，从第一个未完成分块继续生成"
+    : "仅失败或中断的章节可以继续";
   const allSegmentsHaveCurrentGsv = state.segments.length > 0
     && state.segments.every((segment) => Boolean(segment.active_gsv_version_id));
   exportGsv.disabled = !allSegmentsHaveCurrentGsv;
@@ -1020,6 +1028,25 @@ async function composeChapter() {
   }
 }
 
+async function resumeChapter() {
+  if (!state.run) return;
+  if (!canReplaceEditorDraft()) return;
+  const button = $("#resume-chapter");
+  try {
+    await withBusy(button, "正在继续…", async () => {
+      const accepted = await request(`/api/v1/chapters/${state.run.run_id}/resume`, {
+        method: "POST",
+      });
+      await refreshRun();
+      report(`章节已从断点继续：${shortId(accepted.run_id)}`);
+    });
+  } catch (error) {
+    report(sanitizeMessage(error), true);
+  } finally {
+    renderRunDetails();
+  }
+}
+
 function closeEvents() {
   state.events?.close();
   state.events = null;
@@ -1353,6 +1380,7 @@ $("#chapter-form").onsubmit = async (event) => {
 };
 
 $("#compose-chapter").onclick = composeChapter;
+$("#resume-chapter").onclick = resumeChapter;
 $("#export-gsv-archive").onclick = exportChapterGsvArchive;
 $("#model-profile-form").onsubmit = importModelProfile;
 $("#llm-settings-form").onsubmit = saveLlmSettings;

@@ -365,6 +365,40 @@ class ChapterStore:
     async def mark_running(self, run_id: UUID) -> ChapterRunRecord:
         return await self._transition(run_id, from_status=("queued",), to_status="running")
 
+    async def mark_resuming(self, run_id: UUID) -> ChapterRunRecord:
+        """Atomically claim one failed/interrupted run for a single continuation."""
+        async with self._database.write_session() as session:
+            result = await session.execute(
+                update(chapter_runs)
+                .where(chapter_runs.c.run_id == str(run_id))
+                .where(chapter_runs.c.deleted_at_utc.is_(None))
+                .where(chapter_runs.c.status.in_(("failed", "interrupted")))
+                .values(
+                    status="running",
+                    error_json=None,
+                    started_at_utc=_now(),
+                    finished_at_utc=None,
+                )
+            )
+            if cast(CursorResult[Any], result).rowcount != 1:
+                status = (
+                    await session.execute(
+                        select(chapter_runs.c.status)
+                        .where(chapter_runs.c.run_id == str(run_id))
+                        .where(chapter_runs.c.deleted_at_utc.is_(None))
+                    )
+                ).scalar_one_or_none()
+                if status is None:
+                    raise KeyError(f"unknown chapter run: {run_id}")
+                raise PipelineError(
+                    ErrorCode.CHAPTER_STATE_CONFLICT,
+                    "chapter",
+                    "only a failed or interrupted chapter can be resumed",
+                    retryable=False,
+                    details={"status": str(status)},
+                )
+        return await self.get(run_id)
+
     async def mark_failed(self, run_id: UUID, error: dict[str, object]) -> ChapterRunRecord:
         return await self._transition(
             run_id,

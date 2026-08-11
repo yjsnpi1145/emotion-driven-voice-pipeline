@@ -40,6 +40,23 @@ def build_chapter_router(plane: Any) -> APIRouter:
     async def get_chapter(run_id: UUID) -> dict[str, Any]:
         return _public_run(await _get_run(plane, run_id))
 
+    @router.post("/api/v1/chapters/{run_id}/resume", status_code=202)
+    async def resume_chapter(run_id: UUID) -> dict[str, str]:
+        if not plane.accepting:
+            raise HTTPException(status_code=503, detail="control plane is not accepting work")
+        try:
+            run = await _service(plane).resume(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="chapter run not found") from exc
+        except PipelineError as exc:
+            raise HTTPException(status_code=409, detail={"error": exc.as_dict()}) from exc
+        return {
+            "run_id": str(run.run_id),
+            "request_id": str(run.request_id),
+            "status": run.status,
+            "status_url": f"/api/v1/chapters/{run.run_id}",
+        }
+
     @router.delete("/api/v1/chapters/{run_id}")
     async def delete_chapter_history(run_id: UUID) -> dict[str, str]:
         try:

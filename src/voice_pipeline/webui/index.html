@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>情绪配音工作台</title>
-    <link rel="stylesheet" href="/ui/styles.css?v=20260811a" />
+    <link rel="stylesheet" href="/ui/styles.css?v=20260811b" />
   </head>
   <body>
     <div class="app-shell">
@@ -42,6 +42,7 @@
             <div class="chapter-actions">
               <div id="chapter-audio" aria-label="当前整篇成品"></div>
               <div class="chapter-action-buttons">
+                <button id="resume-chapter" class="primary-button" type="button" disabled>修复后继续章节</button>
                 <button id="export-gsv-archive" class="secondary-button" type="button" disabled>导出全部分块 GSV</button>
                 <button id="compose-chapter" class="primary-button" type="button" disabled>重新拼接整篇</button>
               </div>
@@ -184,6 +185,6 @@
     </section>
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
     <template id="segment-row-template"><button class="segment-row" type="button"></button></template>
-    <script type="module" src="/ui/app.js?v=20260811a"></script>
+    <script type="module" src="/ui/app.js?v=20260811b"></script>
   </body>
 </html>

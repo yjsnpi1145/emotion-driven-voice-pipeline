@@ -11,7 +11,11 @@ from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.core.gpu_queue import SerialGpuQueue
 from voice_pipeline.core.pipeline import SynthesisService
 from voice_pipeline.core.segment_job_service import SegmentJobService
-from voice_pipeline.models.chapter import ChapterRunRecord, ChapterSynthesisRequest
+from voice_pipeline.models.chapter import (
+    ChapterRunRecord,
+    ChapterSegmentProgress,
+    ChapterSynthesisRequest,
+)
 from voice_pipeline.models.model_profiles import ModelProfileSnapshot, ResolvedModelProfile
 from voice_pipeline.models.persistence import (
     GsvModelSnapshot,
@@ -124,8 +128,35 @@ class ChapterService:
             self._run(run.run_id, base_voice, request.model_profile_id, plan)
         )
         self._active[run.run_id] = task
-        task.add_done_callback(lambda _: self._active.pop(run.run_id, None))
+        task.add_done_callback(lambda completed: self._forget_active_task(run.run_id, completed))
         return run
+
+    async def resume(self, run_id: UUID) -> ChapterRunRecord:
+        """Claim and continue one repaired failed/interrupted chapter in place."""
+        run = await self._chapters.get(run_id)
+        request = self._resume_request(run)
+        base_voice = self._resume_base_voice(run, request)
+        plan = DirectorPlan.model_validate(run.director_plan)
+        progress = await self._chapters.progress(run_id)
+        self._validate_resume_progress(progress)
+        claimed = await self._chapters.mark_resuming(run_id)
+        task = asyncio.create_task(
+            self._run(
+                run_id,
+                base_voice,
+                request.model_profile_id,
+                plan,
+                resume=True,
+                mark_running=False,
+            )
+        )
+        self._active[run_id] = task
+        task.add_done_callback(lambda completed: self._forget_active_task(run_id, completed))
+        return claimed
+
+    def _forget_active_task(self, run_id: UUID, completed: asyncio.Future[None]) -> None:
+        if self._active.get(run_id) is completed:
+            self._active.pop(run_id, None)
 
     async def get(self, run_id: UUID) -> ChapterRunRecord:
         return await self._chapters.get(run_id)
@@ -213,22 +244,37 @@ class ChapterService:
         base_voice: Path,
         model_profile_id: UUID,
         plan: DirectorPlan,
+        *,
+        resume: bool = False,
+        mark_running: bool = True,
     ) -> None:
         try:
-            await self._chapters.mark_running(run_id)
+            if mark_running:
+                await self._chapters.mark_running(run_id)
+            resume_progress = (
+                {item.ordinal: item for item in await self._chapters.progress(run_id)}
+                if resume
+                else {}
+            )
             for segment in await self._chapters.list_segments(run_id):
                 segment = await self._segments.get_segment(segment.segment_id)
+                durable = resume_progress.get(segment.ordinal)
+                if durable is not None and durable.gsv_state == "ready":
+                    continue
                 planned = plan.segments[segment.ordinal]
-                segment = await self._resolve_reference_text(segment, planned, base_voice)
-                reference = await self._segment_jobs.submit_reference(
-                    segment.segment_id,
-                    SegmentReferenceJobRequest(request_id=uuid4(), base_voice_path=base_voice),
-                )
-                await self._chapters.set_segment_job(
-                    run_id, segment.ordinal, "reference", reference.job_id
-                )
-                await self._notify_jobs()
-                await self._await_job(reference.job_id)
+                if durable is None or durable.reference_state != "ready":
+                    if durable is not None:
+                        self._raise_if_reference_needs_repair(durable)
+                    segment = await self._resolve_reference_text(segment, planned, base_voice)
+                    reference = await self._segment_jobs.submit_reference(
+                        segment.segment_id,
+                        SegmentReferenceJobRequest(request_id=uuid4(), base_voice_path=base_voice),
+                    )
+                    await self._chapters.set_segment_job(
+                        run_id, segment.ordinal, "reference", reference.job_id
+                    )
+                    await self._notify_jobs()
+                    await self._await_job(reference.job_id)
                 gsv = await self._segment_jobs.submit_gsv(
                     segment.segment_id,
                     SegmentGsvJobRequest(request_id=uuid4(), model_profile_id=model_profile_id),
@@ -257,6 +303,84 @@ class ChapterService:
                     "message": "chapter orchestration failed",
                 },
             )
+
+    @staticmethod
+    def _resume_request(run: ChapterRunRecord) -> ChapterSynthesisRequest:
+        raw = run.snapshot.get("request")
+        if not isinstance(raw, dict):
+            raise PipelineError(
+                ErrorCode.DATABASE_INTEGRITY_FAILED,
+                "chapter",
+                "chapter snapshot lacks a request object",
+                retryable=False,
+            )
+        try:
+            return ChapterSynthesisRequest.model_validate(raw)
+        except ValueError as exc:
+            raise PipelineError(
+                ErrorCode.DATABASE_INTEGRITY_FAILED,
+                "chapter",
+                "chapter request snapshot is invalid",
+                retryable=False,
+            ) from exc
+
+    @staticmethod
+    def _resume_base_voice(run: ChapterRunRecord, request: ChapterSynthesisRequest) -> Path:
+        stored = request.base_voice_path
+        candidate = stored.resolve()
+        if stored.is_symlink() or not candidate.is_file():
+            raise PipelineError(
+                ErrorCode.CHAPTER_STATE_CONFLICT,
+                "chapter",
+                "章节参考音色不可用，无法继续生成",
+                retryable=False,
+                details={"action_required": "restore_base_voice"},
+            )
+        if sha256_file(candidate) != run.base_voice_sha256:
+            raise PipelineError(
+                ErrorCode.CHAPTER_STATE_CONFLICT,
+                "chapter",
+                "章节参考音色已发生变化，无法继续生成",
+                retryable=False,
+                details={"action_required": "restore_base_voice"},
+            )
+        return candidate
+
+    @classmethod
+    def _validate_resume_progress(cls, progress: tuple[ChapterSegmentProgress, ...]) -> None:
+        for item in progress:
+            if item.gsv_state == "ready":
+                continue
+            if item.reference_state == "ready":
+                return
+            cls._raise_if_reference_needs_repair(item)
+            return
+
+    @staticmethod
+    def _raise_if_reference_needs_repair(progress: ChapterSegmentProgress) -> None:
+        status = progress.reference_job_status
+        if status is None and progress.reference_state == "missing":
+            return
+        ordinal = progress.ordinal + 1
+        if status in {"queued", "running"}:
+            message = f"第 {ordinal} 个分块的参考音频仍在生成，请等待完成后再继续章节"
+            action = "wait_for_reference"
+        else:
+            message = f"第 {ordinal} 个分块的参考音频尚未修好，请先重新生成参考音频"
+            action = "regenerate_reference"
+        raise PipelineError(
+            ErrorCode.CHAPTER_STATE_CONFLICT,
+            "chapter",
+            message,
+            retryable=False,
+            details={
+                "ordinal": progress.ordinal,
+                "segment_id": str(progress.segment_id),
+                "action_required": action,
+                "reference_state": progress.reference_state,
+                "reference_job_status": status,
+            },
+        )
 
     async def _await_job(self, job_id: UUID) -> None:
         while True:
