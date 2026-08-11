@@ -42,4 +42,5 @@ async def test_health_exposes_durable_storage_dispatcher_and_quality_state(fake_
     }
     assert payload["quality"]["mode"] == "fake"
     assert payload["quality"]["status"] == "ready"
+    assert payload["quality"]["asr_text_scoring_enabled"] is True
     assert re.fullmatch(r"[0-9a-f]{64}", payload["quality"]["policy_fingerprint_sha256"])

@@ -43,6 +43,11 @@ def build_router(plane: Any) -> APIRouter:
             "policy_fingerprint_sha256": quality.policy_fingerprint
             if quality is not None
             else None,
+            "asr_text_scoring_enabled": (
+                quality.asr_text_scoring_enabled
+                if quality is not None and hasattr(quality, "asr_text_scoring_enabled")
+                else True
+            ),
         }
         storage_health = await _storage_health(plane)
         job_counts = await _job_counts(plane)

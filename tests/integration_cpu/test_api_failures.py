@@ -141,6 +141,7 @@ async def test_health_reports_ready_in_fake_mode(fake_settings) -> None:
                 "mode": "fake",
                 "status": "ready",
                 "policy_fingerprint_sha256": health["quality"]["policy_fingerprint_sha256"],
+                "asr_text_scoring_enabled": True,
             }
             assert len(health["quality"]["policy_fingerprint_sha256"]) == 64
             assert health["control"]["instance_id"]

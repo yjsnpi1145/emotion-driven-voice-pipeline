@@ -18,8 +18,11 @@ from voice_pipeline.models.runtime_settings import (
     LlmConnectionTestResult,
     LlmSettingsUpdate,
     LlmSettingsView,
+    QualityScoringSettingsUpdate,
+    QualityScoringSettingsView,
 )
 from voice_pipeline.modules.llm.runtime import RuntimeDirector
+from voice_pipeline.modules.quality.runtime import RuntimeQualityGate
 
 
 def build_product_router(plane: Any) -> APIRouter:
@@ -42,6 +45,19 @@ def build_product_router(plane: Any) -> APIRouter:
             return await _director(plane).test_connection(request)
         except PipelineError as exc:
             raise HTTPException(status_code=409, detail={"error": exc.as_dict()}) from exc
+
+    @router.get("/api/v1/settings/quality", response_model=QualityScoringSettingsView)
+    async def get_quality_settings() -> QualityScoringSettingsView:
+        return _quality(plane).view()
+
+    @router.put("/api/v1/settings/quality", response_model=QualityScoringSettingsView)
+    async def update_quality_settings(
+        request: QualityScoringSettingsUpdate,
+    ) -> QualityScoringSettingsView:
+        try:
+            return await _quality(plane).update(request)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @router.get("/api/v1/local/paths", response_model=LocalPathsView)
     async def local_paths() -> LocalPathsView:
@@ -85,3 +101,10 @@ def _desktop(plane: Any) -> DesktopService:
     if service is None:
         raise HTTPException(status_code=503, detail="desktop integration is not ready")
     return cast(DesktopService, service)
+
+
+def _quality(plane: Any) -> RuntimeQualityGate:
+    quality = getattr(plane, "runtime_quality", None)
+    if not isinstance(quality, RuntimeQualityGate):
+        raise HTTPException(status_code=503, detail="runtime quality settings are not ready")
+    return quality

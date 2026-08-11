@@ -33,6 +33,7 @@ from voice_pipeline.modules.llm.runtime import RuntimeDirector
 from voice_pipeline.modules.quality.fake import DeterministicQualityAnalyzer
 from voice_pipeline.modules.quality.faster_whisper import FasterWhisperQualityAnalyzer
 from voice_pipeline.modules.quality.ports import QualityAnalyzer
+from voice_pipeline.modules.quality.runtime import RuntimeQualityGate
 from voice_pipeline.runtime.audit import EngineAuditWriter
 from voice_pipeline.storage.artifact_store import ArtifactStore
 from voice_pipeline.storage.cache_store import CacheStore
@@ -84,6 +85,7 @@ class ControlPlane:
         self.retention_executor: RetentionExecutor | None = None
         self.cache_store: CacheStore | None = None
         self.quality_analyzer: QualityAnalyzer | None = None
+        self.runtime_quality: RuntimeQualityGate | None = None
         self.last_recovery_report: Any | None = None
         self.chapter_store: ChapterStore | None = None
         self.chapter_service: ChapterService | None = None
@@ -301,13 +303,19 @@ def create_app(
             await plane.retention_executor.resume_deletions()
             await plane.chapter_service.recover()
             if settings.mode == "real":
-                plane.configure_quality(
-                    FasterWhisperQualityAnalyzer(
-                        model_path=settings.quality.model_path,
-                        model_lock_path=settings.quality.model_lock_path,
-                        policy=settings.quality.policy,
-                    )
+                selected_quality: QualityAnalyzer = FasterWhisperQualityAnalyzer(
+                    model_path=settings.quality.model_path,
+                    model_lock_path=settings.quality.model_lock_path,
+                    policy=settings.quality.policy,
                 )
+            else:
+                selected_quality = plane.service.quality_analyzer or DeterministicQualityAnalyzer()
+            plane.runtime_quality = RuntimeQualityGate(
+                selected_quality,
+                state_dir=runtime_dir / "state",
+            )
+            await plane.runtime_quality.start()
+            plane.configure_quality(plane.runtime_quality)
             await runtime.start()
             await queue.start()
             await plane.dispatcher.start()

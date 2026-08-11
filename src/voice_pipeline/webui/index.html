@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>情绪配音工作台</title>
-    <link rel="stylesheet" href="/ui/styles.css?v=20260811b" />
+    <link rel="stylesheet" href="/ui/styles.css?v=20260811c" />
   </head>
   <body>
     <div class="app-shell">
@@ -19,6 +19,11 @@
           <span id="service-indicator" class="status-chip" data-state="loading">服务检查中</span>
           <span id="active-model-indicator" class="status-chip">未选择模型</span>
           <button id="refresh-global" class="icon-button" type="button" title="刷新当前页面" aria-label="刷新当前页面">↻</button>
+          <label class="quality-toggle" title="关闭后仅跳过 ASR 文本相似度评分；时长和 VAD 检查仍启用">
+            <span class="quality-toggle-copy">ASR 文本评分</span>
+            <input id="asr-scoring-toggle" type="checkbox" role="switch" aria-label="ASR 文本评分" disabled />
+            <span class="quality-switch" aria-hidden="true"></span>
+          </label>
           <button id="shutdown-services" class="danger-button" type="button" title="关闭控制面和全部模型服务">关闭所有服务</button>
         </div>
       </header>
@@ -185,6 +190,6 @@
     </section>
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
     <template id="segment-row-template"><button class="segment-row" type="button"></button></template>
-    <script type="module" src="/ui/app.js?v=20260811b"></script>
+    <script type="module" src="/ui/app.js?v=20260811c"></script>
   </body>
 </html>

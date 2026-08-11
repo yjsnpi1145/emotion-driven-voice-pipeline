@@ -56,3 +56,12 @@ class LlmConnectionTestResult(StrictModel):
     base_url: str
     model: str
     latency_ms: int = Field(ge=0)
+
+
+class QualityScoringSettingsUpdate(StrictModel):
+    schema_version: Literal[1] = 1
+    asr_text_scoring_enabled: bool = True
+
+
+class QualityScoringSettingsView(QualityScoringSettingsUpdate):
+    source: Literal["config", "runtime"]

@@ -51,6 +51,16 @@ code { padding: .1rem .3rem; border-radius: .3rem; background: var(--input); col
 .appbar { position: sticky; top: 0; z-index: 20; display: flex; justify-content: space-between; align-items: center; gap: 1.5rem; min-height: 66px; padding: .8rem 1.5rem; border-bottom: 1px solid var(--line); background: rgb(8 13 21 / 94%); backdrop-filter: blur(16px); }
 .brand-lockup, .appbar-status, .chapter-actions, .button-row, .model-card-heading, .health-card-heading { display: flex; align-items: center; gap: .65rem; }
 .appbar-status { justify-content: flex-end; flex-wrap: wrap; }
+.quality-toggle { display: inline-flex; grid-template-columns: none; align-items: center; gap: .48rem; min-height: 2.2rem; padding: .35rem .55rem; border: 1px solid var(--line-strong); border-radius: .48rem; background: var(--panel-soft); color: #c9d5e5; cursor: pointer; font-size: .78rem; font-weight: 650; white-space: nowrap; }
+.quality-toggle:hover { border-color: #60738f; background: var(--panel-raised); }
+.quality-toggle input { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+.quality-switch { position: relative; display: inline-block; width: 2.25rem; height: 1.22rem; flex: 0 0 auto; border: 1px solid #52637b; border-radius: 999px; background: #263244; transition: border-color .15s, background .15s, opacity .15s; }
+.quality-switch::after { position: absolute; top: .15rem; left: .16rem; width: .78rem; height: .78rem; border-radius: 50%; background: #9cacc0; box-shadow: 0 1px 3px rgb(0 0 0 / 35%); content: ""; transition: transform .15s, background .15s; }
+.quality-toggle input:checked + .quality-switch { border-color: #3875dc; background: var(--accent); }
+.quality-toggle input:checked + .quality-switch::after { transform: translateX(1rem); background: #f8fbff; }
+.quality-toggle input:focus-visible + .quality-switch { outline: 3px solid rgb(79 140 255 / 34%); outline-offset: 2px; }
+.quality-toggle input:disabled + .quality-switch { opacity: .48; }
+.quality-toggle:has(input:disabled) { cursor: wait; opacity: .68; }
 .eyebrow { margin-bottom: .18rem; color: var(--accent); font-size: .68rem; font-weight: 760; letter-spacing: .09em; text-transform: uppercase; }
 .muted, .help, .status { color: var(--muted); font-size: .8rem; }
 .error { color: var(--danger) !important; }
@@ -265,6 +275,7 @@ details summary { cursor: pointer; color: #aebed1; font-size: .82rem; }
   .appbar { min-height: 58px; }
   h1 { font-size: 1.05rem; }
   #service-indicator { display: none; }
+  .quality-toggle-copy { display: none; }
   .primary-tabs { top: 58px; }
   .chapter-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .chapter-actions { flex-direction: column; }
