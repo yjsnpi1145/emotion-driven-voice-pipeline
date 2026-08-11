@@ -69,6 +69,13 @@ class ProcessSupervisor:
                 "indextts": fake_fingerprint("indextts"),
                 "gpt_sovits": fake_fingerprint("gpt_sovits"),
             }
+        set_state_change_callback = getattr(
+            self._processes,
+            "set_state_change_callback",
+            None,
+        )
+        if callable(set_state_change_callback):
+            set_state_change_callback(self._write_registry)
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -172,7 +179,10 @@ class ProcessSupervisor:
         fp = self._fingerprints
         assert fp is not None
         if identity is not None and self._processes.running_engine(engine):
-            state = "unknown" if self._tracker.is_unknown(engine) else "ready"
+            if self._ready[engine]:
+                state = "unknown" if self._tracker.is_unknown(engine) else "ready"
+            else:
+                state = "starting"
             pid = identity.pid
             create_time = identity.create_time
             source = fp[engine].source_revision

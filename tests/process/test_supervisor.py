@@ -7,6 +7,7 @@ import psutil
 import pytest
 
 from tests.unit.conftest import fake_fingerprint
+from voice_pipeline.models.schemas import EngineIdentity
 from voice_pipeline.runtime.supervisor import ProcessSupervisor
 
 
@@ -220,3 +221,73 @@ async def test_worker_reports_starting_after_process_dies(fake_processes, tmp_pa
     assert health.workers.indextts.state == "starting"
     assert health.status == "degraded"
     await supervisor.stop()
+
+
+class _GatedStartingProcesses:
+    def __init__(self, tmp_path: Path) -> None:
+        self._identity = None
+        self._running = False
+        self._callback = None
+        self.spawned = asyncio.Event()
+        self.release = asyncio.Event()
+        self._tmp_path = tmp_path
+
+    def set_state_change_callback(self, callback) -> None:
+        self._callback = callback
+
+    def running_engine(self, engine: str) -> bool:
+        return self._running and engine == "gpt_sovits"
+
+    def engine_identity(self, engine: str):
+        return self._identity if engine == "gpt_sovits" else None
+
+    async def start_engine(self, engine: str) -> None:
+        assert engine == "gpt_sovits"
+        self._running = True
+        self._identity = EngineIdentity(
+            worker="gpt_sovits",
+            pid=45210,
+            create_time=200.5,
+            python_executable=self._tmp_path / "gsv-python.exe",
+            fingerprint=fake_fingerprint("gpt_sovits"),
+        )
+        if self._callback is not None:
+            self._callback()
+        self.spawned.set()
+        await self.release.wait()
+
+    async def stop_engine(self, engine: str, *, deadline: float | None = None) -> None:
+        self._running = False
+        self._identity = None
+        if self._callback is not None:
+            self._callback()
+
+
+@pytest.mark.asyncio
+async def test_registry_publishes_starting_worker_pid_before_readiness(tmp_path: Path) -> None:
+    import json
+
+    processes = _GatedStartingProcesses(tmp_path)
+    registry = tmp_path / "processes.json"
+    supervisor = ProcessSupervisor(
+        mode="exclusive_process",
+        processes=processes,
+        fingerprints={
+            "indextts": fake_fingerprint("indextts"),
+            "gpt_sovits": fake_fingerprint("gpt_sovits"),
+        },
+        registry_path=registry,
+    )
+    await supervisor.start()
+    task = asyncio.create_task(supervisor.ensure_engine("gpt_sovits"))
+    try:
+        await asyncio.wait_for(processes.spawned.wait(), timeout=1.0)
+        payload = json.loads(registry.read_text(encoding="utf-8"))
+        worker = payload["workers"]["gpt_sovits"]
+        assert worker["state"] == "starting"
+        assert worker["pid"] == 45210
+        assert worker["create_time"] == 200.5
+    finally:
+        processes.release.set()
+        await task
+        await supervisor.stop()
