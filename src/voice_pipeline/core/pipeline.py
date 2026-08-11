@@ -47,7 +47,7 @@ from voice_pipeline.modules.cache.keys import (
     build_reference_cache_key,
 )
 from voice_pipeline.modules.quality.models import QualityReport
-from voice_pipeline.modules.quality.ports import QualityAnalyzer
+from voice_pipeline.modules.quality.ports import QualityAnalyzer, SavedQualityReportValidator
 from voice_pipeline.storage.artifact_store import ArtifactStore
 from voice_pipeline.storage.cache_store import CacheStore
 from voice_pipeline.storage.quality_cache import QualityCacheStore
@@ -241,6 +241,10 @@ class SynthesisService:
     def configure_quality(self, analyzer: QualityAnalyzer) -> None:
         self._quality_analyzer = analyzer
 
+    @property
+    def quality_analyzer(self) -> QualityAnalyzer | None:
+        return self._quality_analyzer
+
     def configure_quality_cache(self, cache: QualityCacheStore) -> None:
         self._quality_cache = cache
 
@@ -250,18 +254,27 @@ class SynthesisService:
         analyzer = self._quality_analyzer
         if analyzer is None:
             return None
+        audio_sha256 = sha256_file(audio_path)
         key = build_quality_cache_key(
-            audio_sha256=sha256_file(audio_path),
+            audio_sha256=audio_sha256,
             expected_text=expected_text,
             policy_fingerprint=analyzer.policy_fingerprint,
         )
         report = await self._quality_cache.get_valid(key) if self._quality_cache else None
+        if report is not None and report.policy_fingerprint != analyzer.policy_fingerprint:
+            report = None
         if report is None:
             report = await analyzer.analyze_reference(
                 audio_path=audio_path,
                 expected_text=expected_text,
             )
             if self._quality_cache is not None:
+                if report.policy_fingerprint != key.payload["policy_fingerprint"]:
+                    key = build_quality_cache_key(
+                        audio_sha256=audio_sha256,
+                        expected_text=expected_text,
+                        policy_fingerprint=report.policy_fingerprint,
+                    )
                 await self._quality_cache.put(key, report)
         if report.passed:
             return report
@@ -291,7 +304,12 @@ class SynthesisService:
                 "reference manifest does not contain a valid quality report",
                 retryable=False,
             ) from exc
-        if not report.passed or report.policy_fingerprint != analyzer.policy_fingerprint:
+        report_is_valid = (
+            analyzer.accepts_saved_report(report)
+            if isinstance(analyzer, SavedQualityReportValidator)
+            else report.passed and report.policy_fingerprint == analyzer.policy_fingerprint
+        )
+        if not report_is_valid:
             code = (
                 ErrorCode.QUALITY_VAD_FAILED
                 if report.failure_code == "QUALITY_VAD_FAILED"

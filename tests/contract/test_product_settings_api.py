@@ -14,6 +14,7 @@ async def test_product_settings_and_local_paths_are_safe(fake_settings) -> None:
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             initial = await client.get("/api/v1/settings/llm")
+            quality_initial = await client.get("/api/v1/settings/quality")
             updated = await client.put(
                 "/api/v1/settings/llm",
                 json={
@@ -41,8 +42,33 @@ async def test_product_settings_and_local_paths_are_safe(fake_settings) -> None:
             invalid = await client.post(
                 "/api/v1/local/open-folder", json={"resource": "arbitrary-shell-path"}
             )
+            quality_updated = await client.put(
+                "/api/v1/settings/quality",
+                json={"schema_version": 1, "asr_text_scoring_enabled": False},
+            )
+            quality_invalid = await client.put(
+                "/api/v1/settings/quality",
+                json={
+                    "schema_version": 1,
+                    "asr_text_scoring_enabled": True,
+                    "disable_vad_too": True,
+                },
+            )
+
+    restarted = create_app(fake_settings)
+    async with restarted.router.lifespan_context(restarted):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=restarted), base_url="http://test"
+        ) as client:
+            quality_restored = await client.get("/api/v1/settings/quality")
 
     assert initial.status_code == 200
+    assert quality_initial.status_code == 200
+    assert quality_initial.json() == {
+        "schema_version": 1,
+        "asr_text_scoring_enabled": True,
+        "source": "config",
+    }
     assert updated.status_code == 200
     assert updated.json()["model"] == "ui-director"
     assert updated.json()["api_key_configured"] is True
@@ -53,3 +79,12 @@ async def test_product_settings_and_local_paths_are_safe(fake_settings) -> None:
     assert paths.status_code == 200
     assert set(paths.json()) == {"model_library", "model_sources", "artifacts", "logs"}
     assert invalid.status_code == 422
+    assert quality_updated.status_code == 200
+    assert quality_updated.json() == {
+        "schema_version": 1,
+        "asr_text_scoring_enabled": False,
+        "source": "runtime",
+    }
+    assert quality_invalid.status_code == 422
+    assert quality_restored.status_code == 200
+    assert quality_restored.json() == quality_updated.json()

@@ -31,7 +31,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'data-theme="dark-console"' in page.text
     assert 'class="brand-mark"' not in page.text
     assert ">声</div>" not in page.text
-    assert "20260811b" in page.text
+    assert "20260811c" in page.text
     assert 'id="segment-list"' in page.text
     assert 'id="segment-editor"' in page.text
     assert 'id="chapter-form"' in page.text
@@ -68,6 +68,11 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "IndexTTS2 始终使用中文情绪参考文本" in page.text
     assert 'id="toast-region"' in page.text
     assert 'id="shutdown-services"' in page.text
+    assert 'id="asr-scoring-toggle"' in page.text
+    assert "ASR 文本评分" in page.text
+    assert page.text.index('id="asr-scoring-toggle"') < page.text.index(
+        'id="shutdown-services"'
+    )
     assert 'id="shutdown-overlay"' in page.text
     assert "关闭所有服务" in page.text
     assert "所有服务已关闭，可以关闭此页面" in page.text
@@ -137,6 +142,12 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert '[data-state="failed"]' in stylesheet.text
     assert "/api/v1/settings/llm" in script.text
     assert "/api/v1/settings/llm/test" in script.text
+    assert "/api/v1/settings/quality" in script.text
+    assert "loadQualitySettings" in script.text
+    assert "saveQualitySettings" in script.text
+    assert "asr_text_scoring_enabled" in script.text
+    assert "时长和 VAD 检查仍启用" in script.text
+    assert "loadQualitySettings()" in script.text
     assert "/api/v1/llm/activity" in script.text
     assert "renderLlmActivity" in script.text
     assert "750" in script.text
@@ -162,6 +173,8 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "chapter-delete" in script.text
     assert "chapter-delete" in stylesheet.text
     assert ".danger-button" in stylesheet.text
+    assert ".quality-toggle" in stylesheet.text
+    assert ".quality-switch" in stylesheet.text
     assert ".shutdown-overlay" in stylesheet.text
     assert 'preload="metadata"' in script.text
     assert 'preload="none"' not in script.text

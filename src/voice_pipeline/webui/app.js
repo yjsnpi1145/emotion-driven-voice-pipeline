@@ -29,6 +29,8 @@ const state = {
   creationProgress: null,
   activeView: "workbench",
   llmSettings: null,
+  qualitySettings: null,
+  qualitySettingsLoading: false,
   llmActivity: { active: false, active_operation: null, active_since_utc: null, events: [] },
   llmActivityTimer: null,
   llmActivityLoading: false,
@@ -1221,6 +1223,54 @@ async function testLlmSettings(button) {
   }).catch((error) => report(error, true));
 }
 
+function renderQualitySettings(settings) {
+  const toggle = $("#asr-scoring-toggle");
+  if (!toggle) return;
+  toggle.checked = Boolean(settings?.asr_text_scoring_enabled);
+  toggle.disabled = !settings || state.qualitySettingsLoading || state.serviceStopped;
+  toggle.setAttribute("aria-checked", String(toggle.checked));
+  toggle.title = toggle.checked
+    ? "ASR 文本评分已开启；文本不匹配会使参考音频质量检查失败"
+    : "ASR 文本评分已关闭；时长和 VAD 检查仍启用";
+}
+
+async function loadQualitySettings() {
+  state.qualitySettingsLoading = true;
+  renderQualitySettings(state.qualitySettings);
+  try {
+    state.qualitySettings = await request("/api/v1/settings/quality");
+  } finally {
+    state.qualitySettingsLoading = false;
+    renderQualitySettings(state.qualitySettings);
+  }
+}
+
+async function saveQualitySettings(event) {
+  const toggle = event.currentTarget;
+  const previous = state.qualitySettings;
+  const enabled = toggle.checked;
+  state.qualitySettingsLoading = true;
+  toggle.disabled = true;
+  try {
+    state.qualitySettings = await request("/api/v1/settings/quality", {
+      method: "PUT",
+      body: JSON.stringify({
+        schema_version: 1,
+        asr_text_scoring_enabled: enabled,
+      }),
+    });
+    report(enabled
+      ? "ASR 文本评分已开启"
+      : "ASR 文本评分已关闭；时长和 VAD 检查仍启用");
+  } catch (error) {
+    state.qualitySettings = previous;
+    report(sanitizeMessage(error), true);
+  } finally {
+    state.qualitySettingsLoading = false;
+    renderQualitySettings(state.qualitySettings);
+  }
+}
+
 function healthStateLabel(value) {
   const labels = {
     ready: "正常",
@@ -1285,11 +1335,11 @@ async function loadSystemHealth() {
 
 async function refreshActiveView(button) {
   await withBusy(button, "刷新中…", async () => {
-    if (state.activeView === "models") await Promise.all([loadProfiles(), loadLocalPaths()]);
-    else if (state.activeView === "llm") await loadLlmSettings();
-    else if (state.activeView === "system") await loadSystemHealth();
+    if (state.activeView === "models") await Promise.all([loadProfiles(), loadLocalPaths(), loadQualitySettings()]);
+    else if (state.activeView === "llm") await Promise.all([loadLlmSettings(), loadQualitySettings()]);
+    else if (state.activeView === "system") await Promise.all([loadSystemHealth(), loadQualitySettings()]);
     else {
-      await Promise.all([loadProfiles(), loadChapters(), loadSystemHealth()]);
+      await Promise.all([loadProfiles(), loadChapters(), loadSystemHealth(), loadQualitySettings()]);
       if (state.run) await refreshRun();
     }
     showToast("已刷新");
@@ -1397,6 +1447,7 @@ $("#open-model-library").onclick = (event) => openResource("model_library", even
 $("#open-model-sources").onclick = (event) => openResource("model_sources", event.currentTarget);
 $("#refresh-system").onclick = (event) => withBusy(event.currentTarget, "刷新中…", loadSystemHealth).catch((error) => report(error, true));
 $("#refresh-global").onclick = (event) => refreshActiveView(event.currentTarget);
+$("#asr-scoring-toggle").onchange = saveQualitySettings;
 $("#shutdown-services").onclick = (event) => shutdownAllServices(event.currentTarget);
 document.querySelectorAll(".tab-button").forEach((button) => {
   button.onclick = () => activateView(button.dataset.view);
@@ -1413,7 +1464,7 @@ async function initialize() {
   try {
     const savedSelection = readPersistedSelection();
     activateView("workbench");
-    await Promise.all([loadProfiles(), loadChapters(), loadLocalPaths(), loadSystemHealth()]);
+    await Promise.all([loadProfiles(), loadChapters(), loadLocalPaths(), loadSystemHealth(), loadQualitySettings()]);
     const initialRunId = chooseInitialRunId(state.chapters, savedSelection.runId);
     if (initialRunId) {
       await selectRun(initialRunId, {
