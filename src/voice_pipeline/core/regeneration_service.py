@@ -11,8 +11,10 @@ from voice_pipeline.models.persistence import (
     PersistentJobRecord,
     SegmentGsvJobRequest,
     SegmentReferenceJobRequest,
+    SegmentReferenceRegenerationRequest,
 )
 from voice_pipeline.models.schemas import ExecutionContext
+from voice_pipeline.modules.audio.wav_probe import sha256_file
 from voice_pipeline.storage.chapter_store import ChapterStore
 from voice_pipeline.storage.job_store import SqliteJobStore
 from voice_pipeline.storage.segment_store import SegmentStore
@@ -41,9 +43,17 @@ class SegmentRegenerationService:
         self._active: dict[UUID, asyncio.Task[None]] = {}
 
     async def submit_reference(
-        self, segment_id: UUID, request: SegmentReferenceJobRequest
+        self, segment_id: UUID, request: SegmentReferenceRegenerationRequest
     ) -> ExecutionContext:
-        context = await self._segment_jobs.submit_reference(segment_id, request)
+        base_voice = await self._resolve_base_voice(segment_id, request.base_voice_path)
+        context = await self._segment_jobs.submit_reference(
+            segment_id,
+            SegmentReferenceJobRequest(
+                request_id=request.request_id,
+                base_voice_path=base_voice,
+                activate_on_success=request.activate_on_success,
+            ),
+        )
         await self._chapters.set_segment_job_by_segment(segment_id, "reference", context.job_id)
         await self._notify_jobs()
         return context
@@ -59,12 +69,15 @@ class SegmentRegenerationService:
         segment_id: UUID,
         *,
         request_id: UUID,
-        base_voice_path: Path,
+        base_voice_path: Path | None,
         model_profile_id: UUID | None,
     ) -> ExecutionContext:
         reference = await self.submit_reference(
             segment_id,
-            SegmentReferenceJobRequest(request_id=request_id, base_voice_path=base_voice_path),
+            SegmentReferenceRegenerationRequest(
+                request_id=request_id,
+                base_voice_path=base_voice_path,
+            ),
         )
         task = asyncio.create_task(
             self._finish_both(segment_id, reference.job_id, model_profile_id),
@@ -73,6 +86,38 @@ class SegmentRegenerationService:
         self._active[reference.job_id] = task
         task.add_done_callback(lambda _: self._active.pop(reference.job_id, None))
         return reference
+
+    async def _resolve_base_voice(self, segment_id: UUID, override: Path | None) -> Path:
+        if override is not None:
+            return override
+        try:
+            stored_path, frozen_sha256 = await self._chapters.base_voice_for_segment(segment_id)
+        except KeyError as exc:
+            raise PipelineError(
+                ErrorCode.INVALID_INPUT,
+                "regeneration",
+                "segment has no chapter base voice; select an override base voice",
+                retryable=False,
+                details={"segment_id": str(segment_id)},
+            ) from exc
+        candidate = stored_path.resolve()
+        if stored_path.is_symlink() or not candidate.is_absolute() or not candidate.is_file():
+            raise PipelineError(
+                ErrorCode.INVALID_INPUT,
+                "regeneration",
+                "chapter base voice is unavailable; select an override base voice",
+                retryable=False,
+                details={"segment_id": str(segment_id)},
+            )
+        if sha256_file(candidate) != frozen_sha256:
+            raise PipelineError(
+                ErrorCode.INVALID_INPUT,
+                "regeneration",
+                "chapter base voice has changed; select an override base voice",
+                retryable=False,
+                details={"segment_id": str(segment_id)},
+            )
+        return candidate
 
     async def stop(self, *, deadline: float) -> None:
         tasks = tuple(self._active.values())

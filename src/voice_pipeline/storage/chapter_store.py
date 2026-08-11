@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
@@ -137,6 +138,51 @@ class ChapterStore:
         if row is None:
             raise KeyError(f"unknown chapter run: {run_id}")
         return _record(dict(row))
+
+    async def base_voice_for_segment(self, segment_id: UUID) -> tuple[Path, str]:
+        async with self._database.read_session() as session:
+            row = (
+                (
+                    await session.execute(
+                        select(chapter_runs.c.snapshot_json, chapter_runs.c.base_voice_sha256)
+                        .select_from(
+                            chapter_run_segments.join(
+                                chapter_runs,
+                                chapter_run_segments.c.run_id == chapter_runs.c.run_id,
+                            )
+                        )
+                        .where(chapter_run_segments.c.segment_id == str(segment_id))
+                        .order_by(chapter_runs.c.created_at_utc.desc())
+                        .limit(1)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            raise KeyError(f"segment does not belong to a chapter: {segment_id}")
+        try:
+            snapshot = json.loads(str(row["snapshot_json"]))
+            request = snapshot["request"]
+            if not isinstance(request, Mapping):
+                raise TypeError("chapter request snapshot is not an object")
+            raw_path = request["base_voice_path"]
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                raise TypeError("chapter base voice path is missing")
+            frozen_sha256 = str(row["base_voice_sha256"])
+            if len(frozen_sha256) != 64 or any(
+                character not in "0123456789abcdef" for character in frozen_sha256
+            ):
+                raise ValueError("chapter base voice digest is invalid")
+            return Path(raw_path), frozen_sha256
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise PipelineError(
+                ErrorCode.DATABASE_INTEGRITY_FAILED,
+                "regeneration",
+                "chapter base voice snapshot is invalid",
+                retryable=False,
+                details={"segment_id": str(segment_id)},
+            ) from exc
 
     async def list_runs(self, *, limit: int = 100) -> list[ChapterRunRecord]:
         """Return recent chapter runs without exposing their private snapshots."""

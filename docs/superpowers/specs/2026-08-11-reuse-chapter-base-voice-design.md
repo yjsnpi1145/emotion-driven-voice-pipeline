@@ -11,7 +11,7 @@
 ## 2. 数据流
 
 1. WebUI 对局部参考音色使用可选输入框，默认留空；
-2. API 的 `SegmentReferenceJobRequest.base_voice_path` 和
+2. 工作台 API 的 `SegmentReferenceRegenerationRequest.base_voice_path` 和
    `SegmentBothRegenerationRequest.base_voice_path` 改为可选；
 3. `SegmentRegenerationService` 在提交参考任务前解析实际路径；
 4. 若存在显式覆盖，直接使用覆盖路径；
