@@ -18,6 +18,7 @@ Set-Location $RepoRoot
 $RunFile = Join-Path $RepoRoot 'runtime\run\processes.json'
 $LogDir = Join-Path $RepoRoot 'runtime\logs'
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+. (Join-Path $PSScriptRoot 'process-registry.ps1')
 
 $ConfigAbs = (Resolve-Path -LiteralPath $Config).Path
 if (-not $PythonExecutable) {
@@ -33,35 +34,21 @@ if (-not (Test-Path -LiteralPath $PythonExecutable -PathType Leaf)) {
   exit 1
 }
 
-# Reject a second instance if the run file references a live control process.
-$stalePids = @()
+# Reject a second instance if the run file references the same live control
+# process.  If the control process is gone, preserve whether recorded model
+# workers are still alive; the Python runtime safely reconciles exact-match
+# orphan listeners before the next worker launch.
 if (Test-Path -LiteralPath $RunFile -PathType Leaf) {
   $run = Get-Content -LiteralPath $RunFile -Raw | ConvertFrom-Json
-  $livePid = [int]$run.control.pid
-  $createTime = [double]$run.control.create_time
-  if ($livePid -gt 0) {
-    try {
-      $proc = Get-Process -Id $livePid -ErrorAction Stop
-      if ([math]::Abs(($proc.StartTime.ToUniversalTime() - [datetime]::new(1970,1,1,0,0,0,[datetimekind]::Utc)).TotalSeconds - $createTime) -lt 1.0) {
-        Write-Error "control plane already running (pid $livePid)"
-        exit 2
-      }
-    } catch {
-      $stalePids += $livePid
-    }
-  }
-}
-# Stale run file: only archive after confirming all recorded PIDs are dead.
-if ($stalePids.Count -gt 0) {
-  $allDead = $true
-  foreach ($stalePid in $stalePids) {
-    if (Get-Process -Id $stalePid -ErrorAction SilentlyContinue) { $allDead = $false }
-  }
-  if ($allDead) {
-    Rename-Item -LiteralPath $RunFile -NewName ("processes.stale." + (Get-Date -Format 'yyyyMMddHHmmss') + ".json") -ErrorAction SilentlyContinue
-  } else {
-    Write-Error 'stale run file contains live processes'
+  if (Test-RecordedProcessIdentity -Record $run.control) {
+    $liveControlPid = [int]$run.control.pid
+    Write-Error "control plane already running (pid $liveControlPid)"
     exit 2
+  }
+  $archive = Move-StaleProcessRegistry -RunFile $RunFile -RunPayload $run
+  if ($archive.classification -eq 'orphaned') {
+    $workerList = ($archive.live_worker_pids -join ', ')
+    Write-Warning "stale control registry contains live model worker PID(s): $workerList; ownership preserved for safe startup reconciliation"
   }
 }
 

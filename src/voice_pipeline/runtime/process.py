@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -12,6 +13,11 @@ import psutil
 from voice_pipeline.core.config import AppSettings
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.models.schemas import EngineFingerprint, EngineIdentity, WorkerName
+from voice_pipeline.runtime.port_recovery import (
+    PortRecoverySpec,
+    reconcile_loopback_port,
+    terminate_process_tree,
+)
 
 
 class ManagedProcess:
@@ -66,32 +72,10 @@ class ManagedProcess:
     def is_alive(self) -> bool:
         return self._process is not None and self._process.poll() is None
 
-    def terminate_tree(self, *, timeout: float) -> None:
+    def terminate_tree(self, *, timeout: float) -> bool:
         if self._process is None:
-            return
-        pid = self._process.pid
-        try:
-            parent = psutil.Process(pid)
-            children = parent.children(recursive=True)
-            for child in children:
-                try:
-                    child.terminate()
-                except psutil.NoSuchProcess:
-                    pass
-            try:
-                parent.terminate()
-            except psutil.NoSuchProcess:
-                pass
-            targets = children + [parent]
-            _, alive = psutil.wait_procs(targets, timeout=timeout)
-            for proc in alive:
-                try:
-                    proc.kill()
-                except psutil.NoSuchProcess:
-                    pass
-            psutil.wait_procs(alive, timeout=timeout)
-        except psutil.NoSuchProcess:
-            pass
+            return True
+        return terminate_process_tree(self._process.pid, self._create_time, timeout)
 
 
 class RealWorkerProcessManager:
@@ -115,6 +99,16 @@ class RealWorkerProcessManager:
         self._startup_timeout_seconds = startup_timeout_seconds
         self._managed: dict[WorkerName, ManagedProcess] = {}
         self._identity: dict[WorkerName, EngineIdentity] = {}
+        self._state_change_callback: Callable[[], None] | None = None
+
+    def set_state_change_callback(self, callback: Callable[[], None]) -> None:
+        """Publish worker ownership changes to the durable PID registry."""
+
+        self._state_change_callback = callback
+
+    def _notify_state_change(self) -> None:
+        if self._state_change_callback is not None:
+            self._state_change_callback()
 
     def running_engine(self, engine: WorkerName) -> bool:
         proc = self._managed.get(engine)
@@ -132,6 +126,8 @@ class RealWorkerProcessManager:
             args, cwd = self._gsv_args()
             env = self._gsv_environment()
             python = self._settings.engines.gpt_sovits.python_executable
+        launch_spec = self._launch_spec(engine, args, python)
+        await asyncio.to_thread(reconcile_loopback_port, launch_spec, timeout=5.0)
         log_path = self._logs_root / f"{engine}.stdout.log"
         err_path = self._logs_root / f"{engine}.stderr.log"
         proc = ManagedProcess(
@@ -144,12 +140,6 @@ class RealWorkerProcessManager:
         )
         proc.start()
         self._managed[engine] = proc
-        try:
-            await self._wait_ready(engine, proc)
-        except Exception:
-            proc.terminate_tree(timeout=5.0)
-            self._managed.pop(engine, None)
-            raise
         identity = EngineIdentity(
             worker=engine,
             pid=proc.pid or 0,
@@ -158,6 +148,29 @@ class RealWorkerProcessManager:
             fingerprint=self._fingerprints[engine],
         )
         self._identity[engine] = identity
+        self._notify_state_change()
+        try:
+            await self._wait_ready(engine, proc)
+        except BaseException as exc:
+            if proc.terminate_tree(timeout=5.0):
+                self._forget_process(engine, proc)
+            elif isinstance(exc, Exception):
+                raise PipelineError(
+                    ErrorCode.ENGINE_UNAVAILABLE,
+                    "runtime",
+                    f"{engine} failed to start and its process tree could not be stopped",
+                    retryable=False,
+                    details={"engine": engine, "pid": proc.pid},
+                    poison_queue=True,
+                ) from exc
+            raise
+
+    def _forget_process(self, engine: WorkerName, proc: ManagedProcess) -> None:
+        if self._managed.get(engine) is not proc:
+            return
+        self._managed.pop(engine, None)
+        self._identity.pop(engine, None)
+        self._notify_state_change()
 
     async def _wait_ready(self, engine: WorkerName, proc: ManagedProcess) -> None:
         import httpx
@@ -219,8 +232,7 @@ class RealWorkerProcessManager:
         return parsed.port or 9880
 
     async def stop_engine(self, engine: WorkerName, *, deadline: float | None = None) -> None:
-        proc = self._managed.pop(engine, None)
-        self._identity.pop(engine, None)
+        proc = self._managed.get(engine)
         if proc is None:
             return
         loop = asyncio.get_running_loop()
@@ -230,6 +242,20 @@ class RealWorkerProcessManager:
         if proc.is_alive():
             remaining = max(0.0, deadline - loop.time())
             proc.terminate_tree(timeout=remaining)
+        if proc.is_alive():
+            identity = self._identity.get(engine)
+            raise PipelineError(
+                ErrorCode.ENGINE_UNAVAILABLE,
+                "runtime",
+                f"{engine} process tree could not be stopped",
+                retryable=False,
+                details={
+                    "engine": engine,
+                    "pid": identity.pid if identity is not None else proc.pid,
+                },
+                poison_queue=True,
+            )
+        self._forget_process(engine, proc)
 
     async def _graceful_stop(self, engine: WorkerName) -> None:
         import httpx
@@ -248,6 +274,22 @@ class RealWorkerProcessManager:
         if engine == "indextts":
             return self._settings.engines.indextts.base_url
         return self._settings.engines.gpt_sovits.base_url
+
+    def _launch_spec(
+        self,
+        engine: WorkerName,
+        args: list[str],
+        python: Path,
+    ) -> PortRecoverySpec:
+        parsed = urlparse(self._engine_base_url(engine))
+        default_port = 9871 if engine == "indextts" else 9880
+        return PortRecoverySpec(
+            engine=engine,
+            host=parsed.hostname or "127.0.0.1",
+            port=parsed.port or default_port,
+            python_executable=python,
+            expected_command=tuple(args),
+        )
 
     def _index_args(self) -> tuple[list[str], Path]:
         python = self._settings.engines.indextts.python_executable
