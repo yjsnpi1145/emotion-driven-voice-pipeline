@@ -112,7 +112,7 @@ class ChapterService:
         )
         validate_director_plan(request.source_text, plan)
         run = await self._chapters.create_queued(
-            request=request,
+            request=request.model_copy(update={"base_voice_path": base_voice}),
             director_plan=plan,
             model_profile_snapshot=GsvModelSnapshot(
                 profile=profile_snapshot,

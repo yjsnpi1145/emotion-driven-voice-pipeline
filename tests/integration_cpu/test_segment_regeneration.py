@@ -43,7 +43,7 @@ async def _wait(client: httpx.AsyncClient, path: str) -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_explicit_regeneration_keeps_or_replaces_only_the_selected_artifact(
+async def test_regeneration_reuses_chapter_voice_and_replaces_only_selected_artifact(
     fake_settings, tmp_path: Path
 ) -> None:
     fake_settings.model_library.models_root = tmp_path / "library"
@@ -97,9 +97,14 @@ async def test_explicit_regeneration_keeps_or_replaces_only_the_selected_artifac
             )
             reference = await client.post(
                 f"/api/v1/segments/{segment_id}/regenerate-reference",
-                json={"request_id": str(uuid4()), "base_voice_path": str(base_voice.resolve())},
+                json={"request_id": str(uuid4())},
             )
             assert reference.status_code == 202
+            frozen_reference = await client.get(reference.json()["status_url"])
+            assert frozen_reference.status_code == 200
+            assert frozen_reference.json()["request_snapshot"]["base_voice_path"] == str(
+                base_voice.resolve()
+            )
             tracked_reference = (await client.get(f"/api/v1/chapters/{run_id}/progress")).json()[
                 "segments"
             ][0]
@@ -119,7 +124,6 @@ async def test_explicit_regeneration_keeps_or_replaces_only_the_selected_artifac
                 f"/api/v1/segments/{segment_id}/regenerate-both",
                 json={
                     "request_id": str(uuid4()),
-                    "base_voice_path": str(base_voice.resolve()),
                     "model_profile_id": profile_id,
                 },
             )
@@ -147,3 +151,24 @@ async def test_explicit_regeneration_keeps_or_replaces_only_the_selected_artifac
                 await asyncio.sleep(0.01)
             else:
                 raise AssertionError("both regeneration did not activate a new GSV version")
+
+            write_tone(base_voice, 6.0)
+            stale_fallback = await client.post(
+                f"/api/v1/segments/{segment_id}/regenerate-reference",
+                json={"request_id": str(uuid4())},
+            )
+            assert stale_fallback.status_code == 422
+            assert stale_fallback.json()["error"]["code"] == "INVALID_INPUT"
+            assert "override base voice" in stale_fallback.json()["error"]["message"]
+
+            explicit_override = await client.post(
+                f"/api/v1/segments/{segment_id}/regenerate-reference",
+                json={
+                    "request_id": str(uuid4()),
+                    "base_voice_path": str(base_voice.resolve()),
+                },
+            )
+            assert explicit_override.status_code == 202
+            assert (
+                await _wait(client, explicit_override.json()["status_url"])
+            )["status"] == "succeeded"

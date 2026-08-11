@@ -763,7 +763,7 @@ function renderEditor() {
     </section>
     <div class="button-row"><button id="save-segment">保存草稿</button><span class="help">保存后仅更新草稿和状态。</span></div>
     <section class="audio-grid" aria-label="当前音频">${audioControl("当前参考", progress.active_ref_version_id)}${audioControl("当前 GSV", progress.active_gsv_version_id)}</section>
-    <section class="command-grid" aria-label="局部重生成"><h3>局部重新生成</h3><p id="command-hint" class="help">仅重新生成 GSV 时将固定使用当前参考版本：${frozenReference}。</p><label>重新生成参考所用音色路径 <input id="regeneration-base-voice" placeholder="仅在参考生成时发送给本地控制面"></label>
+    <section class="command-grid" aria-label="局部重生成"><h3>局部重新生成</h3><p id="command-hint" class="help">仅重新生成 GSV 时将固定使用当前参考版本：${frozenReference}。</p><label>可选覆盖音色路径 <input id="regeneration-base-voice" placeholder="留空则复用章节总参考音色"></label>
       <div class="button-row"><button type="button" id="regenerate-reference">重新生成参考音频</button>
       <button type="button" id="regenerate-gsv" ${progress.active_ref_version_id ? "" : "disabled"}>重新生成 GSV</button>
       <button type="button" id="regenerate-both">重新生成两者</button></div></section>
@@ -923,11 +923,7 @@ async function regenerate(segment, kind) {
   const path = `/api/v1/segments/${segment.segment_id}${regenerationPaths[kind]}`;
   const body = { request_id: crypto.randomUUID() };
   if (kind !== "reference") body.model_profile_id = profile;
-  if (kind !== "gsv") body.base_voice_path = baseVoice;
-  if (kind !== "gsv" && !baseVoice) {
-    setStatus("请先填写重新生成参考所用音色路径", true);
-    return;
-  }
+  if (kind !== "gsv" && baseVoice) body.base_voice_path = baseVoice;
   try {
     const accepted = await request(path, { method: "POST", body: JSON.stringify(body) });
     state.pendingKinds.set(segment.segment_id, kind);

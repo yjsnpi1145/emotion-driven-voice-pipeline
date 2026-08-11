@@ -135,6 +135,12 @@ class SegmentReferenceJobRequest(StrictModel):
     activate_on_success: bool = True
 
 
+class SegmentReferenceRegenerationRequest(StrictModel):
+    request_id: UUID
+    base_voice_path: Path | None = None
+    activate_on_success: bool = True
+
+
 class SegmentGsvJobRequest(StrictModel):
     request_id: UUID
     activate_on_success: bool = True
@@ -143,7 +149,7 @@ class SegmentGsvJobRequest(StrictModel):
 
 class SegmentBothRegenerationRequest(StrictModel):
     request_id: UUID
-    base_voice_path: Path
+    base_voice_path: Path | None = None
     model_profile_id: UUID | None = None
 
 

@@ -90,6 +90,8 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "/regenerate-reference" in script.text
     assert "/regenerate-gsv" in script.text
     assert "/regenerate-both" in script.text
+    assert "留空则复用章节总参考音色" in script.text
+    assert "请先填写重新生成参考所用音色路径" not in script.text
     assert "/history" in script.text
     assert "/compose" in script.text
     assert "/api/v1/model-profiles/import" in script.text

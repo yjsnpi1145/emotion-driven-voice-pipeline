@@ -20,7 +20,7 @@ from voice_pipeline.models.persistence import (
     SegmentBothRegenerationRequest,
     SegmentGsvJobRequest,
     SegmentInputsPatch,
-    SegmentReferenceJobRequest,
+    SegmentReferenceRegenerationRequest,
 )
 from voice_pipeline.storage.chapter_store import ChapterStore
 from voice_pipeline.storage.segment_store import SegmentStore
@@ -79,7 +79,7 @@ def build_workbench_router(plane: Any) -> APIRouter:
 
     @router.post("/api/v1/segments/{segment_id}/regenerate-reference", status_code=202)
     async def regenerate_reference(
-        segment_id: UUID, request: SegmentReferenceJobRequest
+        segment_id: UUID, request: SegmentReferenceRegenerationRequest
     ) -> dict[str, str]:
         try:
             context = await _regeneration(plane).submit_reference(segment_id, request)
