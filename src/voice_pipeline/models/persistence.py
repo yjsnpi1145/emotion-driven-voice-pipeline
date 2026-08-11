@@ -15,6 +15,7 @@ from voice_pipeline.models.schemas import (
     EngineFingerprint,
     LanguageCode,
     NonBlankText,
+    PreservedNonBlankText,
     StrictModel,
 )
 
@@ -233,7 +234,7 @@ class CreateSegmentRequest(StrictModel):
     ordinal: int = Field(ge=0)
     source_start: int = Field(ge=0)
     source_end: int = Field(gt=0)
-    source_text: NonBlankText
+    source_text: PreservedNonBlankText
     synthesis_text: NonBlankText
     llm_emotion_vector: EmotionVector
     ref_text_cn: ChineseReferenceText
@@ -254,7 +255,7 @@ class SegmentRecord(StrictModel):
     ordinal: int = Field(ge=0)
     source_start: int = Field(ge=0)
     source_end: int = Field(gt=0)
-    source_text: NonBlankText
+    source_text: PreservedNonBlankText
     synthesis_text: NonBlankText
     target_language: LanguageCode
     llm_emotion_vector: EmotionVector

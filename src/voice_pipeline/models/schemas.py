@@ -33,6 +33,15 @@ def _validate_non_blank_text(value: str) -> str:
 NonBlankText = Annotated[str, AfterValidator(_validate_non_blank_text)]
 
 
+def _validate_preserved_non_blank_text(value: str) -> str:
+    if not value.strip():
+        raise ValueError("text must not be blank")
+    return value
+
+
+PreservedNonBlankText = Annotated[str, AfterValidator(_validate_preserved_non_blank_text)]
+
+
 def _validate_chinese_reference_text(value: str) -> str:
     stripped = _validate_non_blank_text(value)
     if not any(
