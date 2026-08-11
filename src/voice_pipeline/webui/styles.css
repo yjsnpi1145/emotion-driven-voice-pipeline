@@ -82,9 +82,10 @@ code { padding: .1rem .3rem; border-radius: .3rem; background: var(--input); col
 .chapter-summary > div { display: grid; gap: .06rem; padding: .5rem .6rem; border: 1px solid var(--line); border-radius: .48rem; background: var(--panel-soft); }
 .chapter-summary strong { font-size: 1rem; }
 .chapter-summary span { color: var(--muted); font-size: .7rem; }
-.chapter-actions { justify-content: flex-end; }
-.chapter-actions > div { min-width: 13rem; color: var(--muted); font-size: .78rem; }
+.chapter-actions { display: grid; justify-content: stretch; }
+.chapter-actions > div { min-width: 0; color: var(--muted); font-size: .78rem; }
 .chapter-actions label { font-size: .75rem; }
+.chapter-action-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
 
 .workbench { display: grid; grid-template-columns: minmax(17rem, .82fr) minmax(20rem, 1fr) minmax(30rem, 1.65fr); gap: .8rem; min-height: 34rem; height: calc(100vh - 13.5rem); }
 .workbench > .panel { min-height: 0; overflow: auto; }

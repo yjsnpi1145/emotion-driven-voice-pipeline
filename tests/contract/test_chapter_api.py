@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import json
+import zipfile
 from pathlib import Path
 from uuid import uuid4
 
@@ -70,8 +73,21 @@ async def test_chapter_routes_submit_status_audio_and_timeline_without_path_leak
                     break
                 await asyncio.sleep(0.01)
             payload = status.json()
+            progress = await client.get(f"/api/v1/chapters/{run_id}/progress")
             audio = await client.get(f"/api/v1/chapters/{run_id}/audio")
             timeline = await client.get(f"/api/v1/chapters/{run_id}/timeline")
+            archive = await client.get(f"/api/v1/chapters/{run_id}/export/gsv")
+            active_gsv_ids = [
+                item["active_gsv_version_id"] for item in progress.json()["segments"]
+            ]
+            first_version = await app.state.plane.version_store.get_version(
+                active_gsv_ids[0]
+            )
+            first_blob = (
+                app.state.plane.artifact_store.root / first_version.blob_relative_path
+            )
+            first_blob.write_bytes(b"corrupt")
+            corrupt_archive = await client.get(f"/api/v1/chapters/{run_id}/export/gsv")
             deleted = await client.delete(f"/api/v1/chapters/{run_id}")
             missing = await client.get(f"/api/v1/chapters/{run_id}")
 
@@ -80,6 +96,26 @@ async def test_chapter_routes_submit_status_audio_and_timeline_without_path_leak
     assert audio.status_code == 200
     assert timeline.status_code == 200
     assert len(timeline.json()["segments"]) == 2
+    assert archive.status_code == 200
+    assert archive.headers["content-type"].startswith("application/zip")
+    assert "gsv-segments.zip" in archive.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(archive.content)) as bundle:
+        assert bundle.namelist() == ["001.wav", "002.wav", "manifest.json"]
+        assert bundle.read("001.wav")[:4] == b"RIFF"
+        assert bundle.read("002.wav")[:4] == b"RIFF"
+        manifest = json.loads(bundle.read("manifest.json"))
+    assert manifest["schema_version"] == 1
+    assert manifest["run_id"] == run_id
+    assert manifest["title"] == "chapter"
+    assert [item["ordinal"] for item in manifest["segments"]] == [0, 1]
+    assert [item["version_id"] for item in manifest["segments"]] == active_gsv_ids
+    assert str(base_voice) not in json.dumps(manifest, ensure_ascii=False)
+    assert str(app.state.plane.artifact_store.root) not in json.dumps(
+        manifest, ensure_ascii=False
+    )
+    assert not list((app.state.plane.artifact_store.root / "exports").glob("*.zip"))
+    assert corrupt_archive.status_code == 409
+    assert corrupt_archive.json()["error"]["code"] == "ARTIFACT_CORRUPT"
     assert deleted.status_code == 200
     assert deleted.json() == {"status": "deleted", "run_id": run_id}
     assert missing.status_code == 404
@@ -155,6 +191,9 @@ async def test_chapter_submit_returns_before_reference_duration_probe_finishes(
             assert returned_before_probe
             assert submitted.status_code == 202
             run_id = submitted.json()["run_id"]
+            incomplete_archive = await client.get(
+                f"/api/v1/chapters/{run_id}/export/gsv"
+            )
             await asyncio.wait_for(index.started.wait(), timeout=1.0)
             for _ in range(300):
                 status = await client.get(f"/api/v1/chapters/{run_id}")
@@ -164,3 +203,6 @@ async def test_chapter_submit_returns_before_reference_duration_probe_finishes(
 
     assert status.json()["status"] == "succeeded"
     assert index.calls == 1
+    assert incomplete_archive.status_code == 409
+    assert incomplete_archive.json()["error"]["code"] == "CHAPTER_STATE_CONFLICT"
+    assert incomplete_archive.json()["error"]["details"]["missing_ordinals"] == [0]
