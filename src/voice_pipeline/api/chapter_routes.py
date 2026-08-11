@@ -7,7 +7,9 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.background import BackgroundTask
 
+from voice_pipeline.core.chapter_export import ChapterGsvArchiveBuilder
 from voice_pipeline.core.chapter_service import ChapterService
 from voice_pipeline.core.errors import PipelineError
 from voice_pipeline.models.chapter import ChapterRunRecord, ChapterSynthesisRequest
@@ -69,6 +71,26 @@ def build_chapter_router(plane: Any) -> APIRouter:
         except (OSError, json.JSONDecodeError) as exc:
             raise HTTPException(status_code=409, detail="chapter timeline is corrupt") from exc
         return JSONResponse(payload)
+
+    @router.get("/api/v1/chapters/{run_id}/export/gsv")
+    async def export_chapter_gsv(run_id: UUID) -> FileResponse:
+        builder = ChapterGsvArchiveBuilder(
+            chapters=cast(ChapterStore, plane.chapter_store),
+            versions=plane.version_store,
+            artifacts=cast(ArtifactStore, plane.artifact_store),
+        )
+        try:
+            archive = await builder.build(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="chapter run not found") from exc
+        except PipelineError as exc:
+            raise HTTPException(status_code=409, detail={"error": exc.as_dict()}) from exc
+        return FileResponse(
+            archive.path,
+            media_type="application/zip",
+            filename=archive.download_name,
+            background=BackgroundTask(archive.cleanup),
+        )
 
     return router
 

@@ -597,11 +597,13 @@ function renderRunDetails() {
   const summary = $("#chapter-summary");
   const audio = $("#chapter-audio");
   const compose = $("#compose-chapter");
+  const exportGsv = $("#export-gsv-archive");
   if (!state.run) {
     title.textContent = "选择或创建一个章节任务";
     renderChapterSummary({ ready: 0, generating: 0, failed: 0, stale: 0, draft_pending: 0, waiting: 0 });
     audio.replaceChildren();
     compose.disabled = true;
+    exportGsv.disabled = true;
     return;
   }
   title.textContent = state.run.title;
@@ -623,6 +625,29 @@ function renderRunDetails() {
   }
   compose.disabled = state.segments.length === 0 || counts.generating > 0 || counts.waiting > 0;
   compose.title = compose.disabled ? "所有分块需要有可用的当前 GSV 音频后才能拼接" : "按当前 GSV 版本和停顿重新拼接";
+  const allSegmentsHaveCurrentGsv = state.segments.length > 0
+    && state.segments.every((segment) => Boolean(segment.active_gsv_version_id));
+  exportGsv.disabled = !allSegmentsHaveCurrentGsv;
+  exportGsv.title = allSegmentsHaveCurrentGsv
+    ? "将每个分块的当前 GSV 版本按顺序打包为 ZIP"
+    : "所有分块都需要有可用的当前 GSV 音频后才能导出";
+}
+
+function exportChapterGsvArchive() {
+  const complete = state.run && state.segments.length > 0
+    && state.segments.every((segment) => Boolean(segment.active_gsv_version_id));
+  if (!complete) {
+    report("所有分块都需要有可用的当前 GSV 音频后才能导出", true);
+    return;
+  }
+  const download = document.createElement("a");
+  download.href = `/api/v1/chapters/${state.run.run_id}/export/gsv`;
+  download.download = "";
+  download.hidden = true;
+  document.body.append(download);
+  download.click();
+  download.remove();
+  report("正在打包并下载每段当前 GSV 版本");
 }
 
 function renderChapterProgress() {
@@ -1328,6 +1353,7 @@ $("#chapter-form").onsubmit = async (event) => {
 };
 
 $("#compose-chapter").onclick = composeChapter;
+$("#export-gsv-archive").onclick = exportChapterGsvArchive;
 $("#model-profile-form").onsubmit = importModelProfile;
 $("#llm-settings-form").onsubmit = saveLlmSettings;
 $("#test-llm").onclick = (event) => testLlmSettings(event.currentTarget);

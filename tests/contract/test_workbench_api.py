@@ -31,7 +31,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'data-theme="dark-console"' in page.text
     assert 'class="brand-mark"' not in page.text
     assert ">声</div>" not in page.text
-    assert "20260810c" in page.text
+    assert "20260811a" in page.text
     assert 'id="segment-list"' in page.text
     assert 'id="segment-editor"' in page.text
     assert 'id="chapter-form"' in page.text
@@ -46,6 +46,8 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     )
     assert page.text.index('id="chapter-progress"') < page.text.index("<h3>章节历史</h3>")
     assert 'id="chapter-audio"' in page.text
+    assert 'id="export-gsv-archive"' in page.text
+    assert "导出全部分块 GSV" in page.text
     assert 'id="segment-state-filter"' in page.text
     assert 'id="model-profile-form"' in page.text
     assert 'id="model-profile-list"' in page.text
@@ -94,6 +96,9 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "请先填写重新生成参考所用音色路径" not in script.text
     assert "/history" in script.text
     assert "/compose" in script.text
+    assert "/export/gsv" in script.text
+    assert "active_gsv_version_id" in script.text
+    assert "exportChapterGsvArchive" in script.text
     assert "/api/v1/model-profiles/import" in script.text
     assert "/model-profiles/${profileId}/activate" in script.text
     assert "renderVirtualRows" in script.text
