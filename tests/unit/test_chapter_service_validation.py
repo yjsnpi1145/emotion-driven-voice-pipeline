@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from pathlib import Path
 from uuid import uuid4
@@ -100,3 +101,19 @@ async def test_chapter_rejects_invalid_director_coverage_before_gpu_probe(tmp_pa
 
     assert exc_info.value.code == ErrorCode.LLM_INVALID_RESPONSE
     assert queue.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_stale_done_callback_does_not_forget_new_resume_task() -> None:
+    service = ChapterService.__new__(ChapterService)
+    service._active = {}
+    run_id = uuid4()
+    old_task = asyncio.create_task(asyncio.sleep(0))
+    new_task = asyncio.create_task(asyncio.sleep(60))
+    service._active[run_id] = new_task
+    try:
+        service._forget_active_task(run_id, old_task)
+        assert service._active[run_id] is new_task
+    finally:
+        new_task.cancel()
+        await asyncio.gather(old_task, new_task, return_exceptions=True)

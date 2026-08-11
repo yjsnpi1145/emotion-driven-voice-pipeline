@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from tests.integration_cpu.conftest import write_tone
-from tests.integration_cpu.test_chapter_pipeline import _import_profile
+from tests.integration_cpu.test_chapter_pipeline import FailSecondQualityAnalyzer, _import_profile
 from voice_pipeline.api.app import create_app
 
 
@@ -77,15 +77,9 @@ async def test_chapter_routes_submit_status_audio_and_timeline_without_path_leak
             audio = await client.get(f"/api/v1/chapters/{run_id}/audio")
             timeline = await client.get(f"/api/v1/chapters/{run_id}/timeline")
             archive = await client.get(f"/api/v1/chapters/{run_id}/export/gsv")
-            active_gsv_ids = [
-                item["active_gsv_version_id"] for item in progress.json()["segments"]
-            ]
-            first_version = await app.state.plane.version_store.get_version(
-                active_gsv_ids[0]
-            )
-            first_blob = (
-                app.state.plane.artifact_store.root / first_version.blob_relative_path
-            )
+            active_gsv_ids = [item["active_gsv_version_id"] for item in progress.json()["segments"]]
+            first_version = await app.state.plane.version_store.get_version(active_gsv_ids[0])
+            first_blob = app.state.plane.artifact_store.root / first_version.blob_relative_path
             first_blob.write_bytes(b"corrupt")
             corrupt_archive = await client.get(f"/api/v1/chapters/{run_id}/export/gsv")
             deleted = await client.delete(f"/api/v1/chapters/{run_id}")
@@ -110,9 +104,7 @@ async def test_chapter_routes_submit_status_audio_and_timeline_without_path_leak
     assert [item["ordinal"] for item in manifest["segments"]] == [0, 1]
     assert [item["version_id"] for item in manifest["segments"]] == active_gsv_ids
     assert str(base_voice) not in json.dumps(manifest, ensure_ascii=False)
-    assert str(app.state.plane.artifact_store.root) not in json.dumps(
-        manifest, ensure_ascii=False
-    )
+    assert str(app.state.plane.artifact_store.root) not in json.dumps(manifest, ensure_ascii=False)
     assert not list((app.state.plane.artifact_store.root / "exports").glob("*.zip"))
     assert corrupt_archive.status_code == 409
     assert corrupt_archive.json()["error"]["code"] == "ARTIFACT_CORRUPT"
@@ -191,9 +183,7 @@ async def test_chapter_submit_returns_before_reference_duration_probe_finishes(
             assert returned_before_probe
             assert submitted.status_code == 202
             run_id = submitted.json()["run_id"]
-            incomplete_archive = await client.get(
-                f"/api/v1/chapters/{run_id}/export/gsv"
-            )
+            incomplete_archive = await client.get(f"/api/v1/chapters/{run_id}/export/gsv")
             await asyncio.wait_for(index.started.wait(), timeout=1.0)
             for _ in range(300):
                 status = await client.get(f"/api/v1/chapters/{run_id}")
@@ -206,3 +196,90 @@ async def test_chapter_submit_returns_before_reference_duration_probe_finishes(
     assert incomplete_archive.status_code == 409
     assert incomplete_archive.json()["error"]["code"] == "CHAPTER_STATE_CONFLICT"
     assert incomplete_archive.json()["error"]["details"]["missing_ordinals"] == [0]
+
+
+@pytest.mark.asyncio
+async def test_chapter_resume_requires_repaired_reference_then_returns_accepted(
+    fake_settings, tmp_path: Path
+) -> None:
+    fake_settings.model_library.models_root = tmp_path / "library"
+    fake_settings.model_library.allowed_import_roots = [tmp_path / "models"]
+    base_voice = tmp_path / "base.wav"
+    write_tone(base_voice, 5.0)
+    original_base_voice = base_voice.read_bytes()
+    quality = FailSecondQualityAnalyzer()
+    app = create_app(fake_settings)
+    app.state.plane.configure_quality(quality)
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            profile_id = await _import_profile(client, tmp_path)
+            submitted = await client.post(
+                "/api/v1/chapters",
+                json={
+                    "request_id": str(uuid4()),
+                    "title": "resume contract",
+                    "source_text": "第一句。第二句。",
+                    "target_language": "ja",
+                    "base_voice_path": str(base_voice),
+                    "model_profile_id": profile_id,
+                },
+            )
+            run_id = submitted.json()["run_id"]
+            for _ in range(400):
+                failed = await client.get(f"/api/v1/chapters/{run_id}")
+                if failed.json()["status"] == "failed":
+                    break
+                await asyncio.sleep(0.01)
+            progress = (await client.get(f"/api/v1/chapters/{run_id}/progress")).json()
+            blocker = progress["segments"][1]
+            calls_before_conflict = app.state.plane.index.calls
+
+            write_tone(base_voice, 4.5)
+            changed_voice = await client.post(f"/api/v1/chapters/{run_id}/resume")
+            assert changed_voice.status_code == 409
+            assert changed_voice.json()["error"]["details"] == {
+                "action_required": "restore_base_voice"
+            }
+            base_voice.write_bytes(original_base_voice)
+
+            blocked = await client.post(f"/api/v1/chapters/{run_id}/resume")
+
+            assert blocked.status_code == 409
+            assert blocked.json()["error"]["code"] == "CHAPTER_STATE_CONFLICT"
+            assert blocked.json()["error"]["details"] == {
+                "ordinal": 1,
+                "segment_id": blocker["segment_id"],
+                "action_required": "regenerate_reference",
+                "reference_state": "missing",
+                "reference_job_status": "failed",
+            }
+            assert app.state.plane.index.calls == calls_before_conflict
+            repair = await client.post(
+                f"/api/v1/segments/{blocker['segment_id']}/regenerate-reference",
+                json={"request_id": str(uuid4())},
+            )
+            assert repair.status_code == 202
+            for _ in range(400):
+                repair_status = await client.get(repair.json()["status_url"])
+                if repair_status.json()["status"] in {"succeeded", "failed"}:
+                    break
+                await asyncio.sleep(0.01)
+            assert repair_status.json()["status"] == "succeeded"
+
+            accepted = await client.post(f"/api/v1/chapters/{run_id}/resume")
+            duplicate = await client.post(f"/api/v1/chapters/{run_id}/resume")
+
+            assert accepted.status_code == 202
+            assert accepted.json()["run_id"] == run_id
+            assert accepted.json()["status"] == "running"
+            assert accepted.json()["status_url"] == f"/api/v1/chapters/{run_id}"
+            assert duplicate.status_code == 409
+            for _ in range(400):
+                completed = await client.get(f"/api/v1/chapters/{run_id}")
+                if completed.json()["status"] in {"succeeded", "failed", "interrupted"}:
+                    break
+                await asyncio.sleep(0.01)
+            assert completed.json()["status"] == "succeeded"

@@ -31,7 +31,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'data-theme="dark-console"' in page.text
     assert 'class="brand-mark"' not in page.text
     assert ">声</div>" not in page.text
-    assert "20260811a" in page.text
+    assert "20260811b" in page.text
     assert 'id="segment-list"' in page.text
     assert 'id="segment-editor"' in page.text
     assert 'id="chapter-form"' in page.text
@@ -41,13 +41,13 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'id="llm-activity-console"' in page.text
     assert 'id="llm-activity-status"' in page.text
     assert 'id="llm-activity-log"' in page.text
-    assert page.text.index('id="llm-activity-console"') < page.text.index(
-        'id="chapter-progress"'
-    )
+    assert page.text.index('id="llm-activity-console"') < page.text.index('id="chapter-progress"')
     assert page.text.index('id="chapter-progress"') < page.text.index("<h3>章节历史</h3>")
     assert 'id="chapter-audio"' in page.text
     assert 'id="export-gsv-archive"' in page.text
     assert "导出全部分块 GSV" in page.text
+    assert 'id="resume-chapter"' in page.text
+    assert "修复后继续章节" in page.text
     assert 'id="segment-state-filter"' in page.text
     assert 'id="model-profile-form"' in page.text
     assert 'id="model-profile-list"' in page.text
@@ -96,9 +96,13 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "请先填写重新生成参考所用音色路径" not in script.text
     assert "/history" in script.text
     assert "/compose" in script.text
+    assert "/resume`" in script.text
     assert "/export/gsv" in script.text
     assert "active_gsv_version_id" in script.text
     assert "exportChapterGsvArchive" in script.text
+    assert "resumeChapter" in script.text
+    assert 'state.run.status === "failed"' in script.text
+    assert 'state.run.status === "interrupted"' in script.text
     assert "/api/v1/model-profiles/import" in script.text
     assert "/model-profiles/${profileId}/activate" in script.text
     assert "renderVirtualRows" in script.text
@@ -115,12 +119,10 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "creationProgress" in script.text
     select_run_source = script.text.split(
         "async function selectRun(runId, { preferredSegmentId = null } = {})", 1
-    )[1].split(
-        "async function refreshRun()", 1
-    )[0]
+    )[1].split("async function refreshRun()", 1)[0]
     assert "state.creationProgress = null" in select_run_source
     assert 'setAttribute("role", "progressbar")' in script.text
-    assert 'aria-valuenow' in script.text
+    assert "aria-valuenow" in script.text
     assert "文本规划" in stage_script.text
     assert "参考音频" in stage_script.text
     assert "GSV 合成" in stage_script.text
