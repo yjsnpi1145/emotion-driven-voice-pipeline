@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import unicodedata
-from typing import Literal
+from typing import Literal, cast
 
+from opencc import OpenCC
 from rapidfuzz.fuzz import ratio
 
 from voice_pipeline.modules.quality.models import QualityMetrics, QualityPolicy, QualityReport
 
+_TRADITIONAL_TO_SIMPLIFIED = OpenCC("t2s")
+
 
 def normalize_reference_text(value: str) -> str:
-    return "".join(
+    filtered = "".join(
         char for char in unicodedata.normalize("NFKC", value).casefold() if char.isalnum()
     )
+    return cast(str, _TRADITIONAL_TO_SIMPLIFIED.convert(filtered))
 
 
 def evaluate_quality(

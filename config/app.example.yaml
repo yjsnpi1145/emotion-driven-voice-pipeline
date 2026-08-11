@@ -31,7 +31,7 @@ quality:
     min_similarity: 0.60
     short_text_max_normalized_length: 3
     short_text_min_similarity: 0.75
-    normalizer_version: 1
+    normalizer_version: 2
 storage:
   database_path: state/pipeline.sqlite3
   artifact_root: artifacts

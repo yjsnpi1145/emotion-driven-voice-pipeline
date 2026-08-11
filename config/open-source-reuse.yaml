@@ -318,6 +318,19 @@ modules:
     wrapper_boundary: quality/text.py defines only project thresholds and token normalization.
     lock_reference: uv.lock (rapidfuzz==3.14.5)
 
+  - module_id: opencc
+    introduced_in_batch: 5
+    need: Canonical Simplified/Traditional Chinese normalization before ASR text scoring
+    disposition: reuse
+    candidates:
+      - repository: https://github.com/BYVoid/OpenCC
+        spdx_license: Apache-2.0
+        pin: 1.4.1
+    selected: OpenCC
+    decision_reason: Reuses the official conversion dictionaries and CPython 3.11 Windows wheel instead of maintaining a partial character map.
+    wrapper_boundary: quality/text.py converts filtered Chinese text to Simplified Chinese before RapidFuzz scoring.
+    lock_reference: uv.lock (opencc==1.4.1)
+
   - module_id: sqlmodel
     introduced_in_batch: 2
     need: Combined Pydantic and ORM candidate
