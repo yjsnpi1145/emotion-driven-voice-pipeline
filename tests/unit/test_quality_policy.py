@@ -10,6 +10,7 @@ from voice_pipeline.modules.quality.faster_whisper import FasterWhisperQualityAn
 from voice_pipeline.modules.quality.models import QualityMetrics, QualityPolicy
 from voice_pipeline.modules.quality.ports import QualityAnalyzer
 from voice_pipeline.modules.quality.text import (
+    evaluate_quality,
     evaluate_quality_metrics,
     normalize_reference_text,
 )
@@ -17,6 +18,19 @@ from voice_pipeline.modules.quality.text import (
 
 def test_normalize_reference_text_is_unicode_deterministic() -> None:
     assert normalize_reference_text(" Ａ，我 还活着！\r\n") == "a我还活着"
+
+
+def test_quality_accepts_equivalent_simplified_and_traditional_chinese() -> None:
+    report = evaluate_quality(
+        total_seconds=5.6076,
+        speech_seconds=5.6076,
+        expected_text="明明我应该很生气，可被你这样托着，我却一句话都说不出来……",
+        transcript="明明我應該很生氣可被你這樣拖著我卻一句話都說不出來",
+        policy=QualityPolicy(),
+    )
+
+    assert report.passed is True
+    assert report.normalized_text_similarity >= 0.60
 
 
 @pytest.mark.parametrize(

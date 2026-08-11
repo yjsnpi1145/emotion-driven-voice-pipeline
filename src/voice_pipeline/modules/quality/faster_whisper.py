@@ -68,6 +68,7 @@ class FasterWhisperQualityAnalyzer:
                 "schema_version": 1,
                 "policy": self._policy.model_dump(mode="json"),
                 "faster_whisper": version("faster-whisper"),
+                "opencc": version("OpenCC"),
                 "rapidfuzz": version("RapidFuzz"),
                 "model_files": self._locked_model_files or self._model_files(),
                 "asr": {

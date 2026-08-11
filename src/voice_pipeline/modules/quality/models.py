@@ -18,7 +18,7 @@ class QualityPolicy(StrictModel):
     min_similarity: float = 0.60
     short_text_max_normalized_length: int = Field(default=3, ge=0)
     short_text_min_similarity: float = 0.75
-    normalizer_version: Literal[1] = 1
+    normalizer_version: Literal[2] = 2
 
     def fingerprint(self) -> str:
         payload = self.model_dump(mode="json")

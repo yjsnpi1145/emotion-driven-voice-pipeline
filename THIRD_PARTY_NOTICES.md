@@ -28,6 +28,7 @@ declared by the direct runtime projects at the time of this release.
 | huggingface-hub | https://github.com/huggingface/huggingface_hub | Apache-2.0 |
 | HTTPX | https://github.com/encode/httpx | BSD-3-Clause |
 | NumPy | https://github.com/numpy/numpy | BSD-3-Clause and bundled component licenses |
+| OpenCC | https://github.com/BYVoid/OpenCC | Apache-2.0 |
 | portalocker | https://github.com/wolph/portalocker | BSD-3-Clause |
 | psutil | https://github.com/giampaolo/psutil | BSD-3-Clause |
 | Pydantic | https://github.com/pydantic/pydantic | MIT |
@@ -42,4 +43,3 @@ declared by the direct runtime projects at the time of this release.
 Transitive dependencies retain their own notices and license metadata inside their installed
 distributions. `config/open-source-reuse.yaml` records the project's reuse decisions and
 version-lock references.
-
