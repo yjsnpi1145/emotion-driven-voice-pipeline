@@ -110,6 +110,67 @@ async def test_chapter_store_keeps_source_translation_and_chinese_reference_sepa
 
 
 @pytest.mark.asyncio
+async def test_chapter_store_preserves_exact_source_slices_with_boundary_whitespace(
+    tmp_path: Path,
+) -> None:
+    database = await Database.open(_settings(tmp_path), instance_id=uuid4(), migrate=True)
+    try:
+        source = "第一句。\n  第二句。"
+        split = source.index("第", 1)
+        request = ChapterSynthesisRequest(
+            request_id=uuid4(),
+            title="chapter with whitespace boundaries",
+            source_text=source,
+            target_language="ja",
+            base_voice_path=tmp_path / "voice.wav",
+            model_profile_id=uuid4(),
+        )
+        plan = DirectorPlan(
+            source_text_sha256=hashlib.sha256(source.encode("utf-8")).hexdigest(),
+            segments=(
+                DirectedSegment(
+                    ordinal=0,
+                    source_start=0,
+                    source_end=split,
+                    emotion_description="平静、克制",
+                    emotion_vector=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3),
+                    synthesis_text="最初の文です。",
+                    ref_text_cn="这是第一句。",
+                    pause_after_ms=500,
+                    speed_factor=1.0,
+                    seed=1234,
+                ),
+                DirectedSegment(
+                    ordinal=1,
+                    source_start=split,
+                    source_end=len(source),
+                    emotion_description="平静、克制",
+                    emotion_vector=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3),
+                    synthesis_text="二番目の文です。",
+                    ref_text_cn="这是第二句。",
+                    pause_after_ms=500,
+                    speed_factor=1.0,
+                    seed=1234,
+                ),
+            ),
+        )
+        store = ChapterStore(database, SegmentStore(database))
+
+        run = await store.create_queued(
+            request=request,
+            director_plan=plan,
+            model_profile_snapshot={"profile_id": str(request.model_profile_id)},
+            base_voice_sha256="a" * 64,
+        )
+
+        segments = await store.list_segments(run.run_id)
+        assert [item.source_text for item in segments] == [source[:split], source[split:]]
+        assert "".join(item.source_text for item in segments) == source
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
 async def test_chapter_history_soft_delete_hides_terminal_run_but_preserves_segments(
     tmp_path: Path,
 ) -> None:

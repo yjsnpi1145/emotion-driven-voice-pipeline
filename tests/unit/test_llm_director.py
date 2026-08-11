@@ -6,7 +6,11 @@ import pytest
 
 from voice_pipeline.core.errors import PipelineError
 from voice_pipeline.modules.llm.director import validate_director_plan
-from voice_pipeline.modules.llm.models import DirectedSegment, DirectorPlan
+from voice_pipeline.modules.llm.models import (
+    DirectedSegment,
+    DirectorPlan,
+    MaterializedDirectedSegment,
+)
 
 
 def _segment(
@@ -50,6 +54,33 @@ def test_validate_director_plan_uses_original_unicode_source_slices() -> None:
         "日本語の訳文。",
         "三つ目。",
     ]
+
+
+def test_validate_director_plan_preserves_whitespace_at_source_boundaries() -> None:
+    source = "第一句。\n  第二句。"
+    split = source.index("第", 1)
+    plan = DirectorPlan(
+        source_text_sha256=hashlib.sha256(source.encode("utf-8")).hexdigest(),
+        segments=(
+            _segment(0, split, ordinal=0),
+            _segment(split, len(source), ordinal=1),
+        ),
+    )
+
+    materialized = validate_director_plan(source, plan)
+
+    assert [item.source_text for item in materialized] == [
+        source[:split],
+        source[split:],
+    ]
+    assert materialized[0].source_text.endswith("\n  ")
+
+
+def test_materialized_segment_still_rejects_blank_source_text() -> None:
+    segment = _segment(0, 1, ordinal=0)
+
+    with pytest.raises(ValueError, match="must not be blank"):
+        MaterializedDirectedSegment(**segment.model_dump(), source_text=" \n\t")
 
 
 @pytest.mark.parametrize("invalid_reference", ["これは参考です。", "English reference only."])

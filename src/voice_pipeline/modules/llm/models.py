@@ -8,6 +8,7 @@ from voice_pipeline.models.schemas import (
     ChineseReferenceText,
     EmotionVector,
     NonBlankText,
+    PreservedNonBlankText,
     StrictModel,
 )
 
@@ -31,7 +32,7 @@ class DirectorPlan(StrictModel):
 
 
 class MaterializedDirectedSegment(DirectedSegment):
-    source_text: NonBlankText
+    source_text: PreservedNonBlankText
 
 
 class ReferenceTextCorrection(StrictModel):
