@@ -139,10 +139,11 @@ class ControlPlane:
         director_generation = getattr(self, "director_generation", None)
         if director_generation is not None:
             await director_generation.stop(deadline=deadline)
-        for task in tuple(self.director_tasks):
+        director_tasks = getattr(self, "director_tasks", set())
+        for task in tuple(director_tasks):
             task.cancel()
-        if self.director_tasks:
-            await asyncio.gather(*self.director_tasks, return_exceptions=True)
+        if director_tasks:
+            await asyncio.gather(*director_tasks, return_exceptions=True)
         await self.queue.stop(deadline=deadline, grace_seconds=0.5, abort_active=abort_active)
         registry = getattr(self, "registry", None)
         fail_unfinished = getattr(registry, "fail_unfinished", None)
@@ -340,6 +341,7 @@ def create_app(
             ).reconcile()
             await plane.retention_executor.resume_deletions()
             await plane.chapter_service.recover()
+            await plane.director_store.recover_interrupted_commands()
             await plane.director_generation.recover()
             if settings.mode == "real":
                 selected_quality: QualityAnalyzer = FasterWhisperQualityAnalyzer(

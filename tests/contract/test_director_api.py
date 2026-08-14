@@ -182,7 +182,7 @@ async def test_director_generation_uses_role_presets_and_completes(fake_settings
                     "name": "测试演员",
                     "base_voice_path": str(base_voice),
                     "model_profile_id": profile_id,
-                    "default_speed": 1.0,
+                    "default_speed": 1.25,
                 },
             )
             assert preset.status_code == 201
@@ -207,6 +207,17 @@ async def test_director_generation_uses_role_presets_and_completes(fake_settings
             assert submitted.status_code == 202
             project = await _wait_status(client, project["project_id"], "succeeded", limit=500)
             assert project["status"] == "succeeded"
+            generated_rows = await app.state.plane.director_store.list_utterances(
+                project["project_id"]
+            )
+            generated_segments = [
+                await app.state.plane.segment_store.get_segment(row.segment_id)
+                for row in generated_rows
+                if row.speak_enabled and row.segment_id is not None
+            ]
+            assert {segment.speed_factor for segment in generated_segments} == {1.25}
+            assert "relative_path" not in str(project)
+            assert project["audio_url"].endswith("/audio")
             progress = await client.get(
                 f"/api/v1/director-projects/{project['project_id']}/progress"
             )

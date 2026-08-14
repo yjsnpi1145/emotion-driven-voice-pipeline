@@ -4,7 +4,6 @@ import json
 import subprocess
 from pathlib import Path
 
-
 MODULE = Path(__file__).parents[2] / "src" / "voice_pipeline" / "webui" / "director-dnd.js"
 
 

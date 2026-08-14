@@ -91,6 +91,24 @@ class DirectorGenerationService:
             if preset.status != "ready":
                 raise _preset_blocker("spoken role preset is unavailable", utterance)
             preset_by_role[role.role_id] = preset
+        adjusted_utterances: list[DirectorUtteranceRecord] = []
+        for utterance in utterances:
+            role_id = utterance.role_id
+            resolved_preset = preset_by_role.get(role_id) if role_id is not None else None
+            if resolved_preset is None:
+                raise _preset_blocker("spoken utterance has no usable role preset", utterance)
+            adjusted_utterances.append(
+                utterance.model_copy(
+                    update={
+                        "speed_factor": (
+                            resolved_preset.default_speed
+                            if utterance.speed_factor == 1.0
+                            else utterance.speed_factor
+                        )
+                    }
+                )
+            )
+        utterances = adjusted_utterances
         snapshot = {
             "schema_version": 1,
             "project": project.model_dump(mode="json"),
@@ -126,9 +144,7 @@ class DirectorGenerationService:
             return None, []
         return generation, await self._directors.list_generation_items(generation.generation_id)
 
-    async def resume(
-        self, project_id: UUID, *, expected_revision: int
-    ) -> DirectorGenerationRecord:
+    async def resume(self, project_id: UUID, *, expected_revision: int) -> DirectorGenerationRecord:
         project = await self._directors.get_project(project_id)
         if project.revision != expected_revision:
             raise PipelineError(
@@ -152,8 +168,7 @@ class DirectorGenerationService:
             return generation
         snapshot_project, utterances, preset_by_role = _snapshot_inputs(generation)
         current_utterances = {
-            item.utterance_id: item
-            for item in await self._directors.list_utterances(project_id)
+            item.utterance_id: item for item in await self._directors.list_utterances(project_id)
         }
         for item in await self._directors.list_generation_items(generation.generation_id):
             current = current_utterances[item.utterance_id]
@@ -213,8 +228,7 @@ class DirectorGenerationService:
             )
         _, utterances, _ = _snapshot_inputs(generation)
         current = {
-            item.utterance_id: item
-            for item in await self._directors.list_utterances(project_id)
+            item.utterance_id: item for item in await self._directors.list_utterances(project_id)
         }
         materialized: dict[UUID, UUID] = {}
         for utterance in utterances:

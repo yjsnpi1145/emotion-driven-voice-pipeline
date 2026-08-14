@@ -5,9 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-MODULE = (
-    Path(__file__).parents[2] / "src" / "voice_pipeline" / "webui" / "stage-progress.js"
-)
+MODULE = Path(__file__).parents[2] / "src" / "voice_pipeline" / "webui" / "stage-progress.js"
 
 
 def _derive(

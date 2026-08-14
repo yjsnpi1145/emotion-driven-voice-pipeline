@@ -17,6 +17,7 @@ from voice_pipeline.models.director import (
     BulkDirectorUtterancePatch,
     CreateDirectorProjectRequest,
     CreateRolePresetRequest,
+    DirectorProjectRecord,
     DirectorRolePatch,
     DirectorUtterancePatch,
     ExpectedProjectRevision,
@@ -37,16 +38,16 @@ def build_director_router(plane: Any) -> APIRouter:
 
     @router.post("/api/v1/director-projects", status_code=201)
     async def create_project(request: CreateDirectorProjectRequest) -> dict[str, Any]:
-        return _dump(await _store(plane).create_project(request))
+        return _public_project(await _store(plane).create_project(request))
 
     @router.get("/api/v1/director-projects")
     async def list_projects() -> list[dict[str, Any]]:
-        return [_dump(item) for item in await _store(plane).list_projects()]
+        return [_public_project(item) for item in await _store(plane).list_projects()]
 
     @router.get("/api/v1/director-projects/{project_id}")
     async def get_project(project_id: UUID) -> dict[str, Any]:
         try:
-            return _dump(await _store(plane).get_project(project_id))
+            return _public_project(await _store(plane).get_project(project_id))
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="director project not found") from exc
 
@@ -211,7 +212,7 @@ def build_director_router(plane: Any) -> APIRouter:
     @router.patch("/api/v1/director-projects/{project_id}/narration")
     async def set_narration(project_id: UUID, request: NarrationSettingRequest) -> dict[str, Any]:
         try:
-            return _dump(
+            return _public_project(
                 await _store(plane).set_narration_enabled(
                     project_id,
                     expected_revision=request.expected_revision,
@@ -226,7 +227,7 @@ def build_director_router(plane: Any) -> APIRouter:
     @router.post("/api/v1/director-projects/{project_id}/confirm-roles")
     async def confirm_roles(project_id: UUID, request: ExpectedProjectRevision) -> dict[str, Any]:
         try:
-            return _dump(
+            return _public_project(
                 await _store(plane).confirm_role_review(
                     project_id, expected_revision=request.expected_revision
                 )
@@ -257,7 +258,7 @@ def build_director_router(plane: Any) -> APIRouter:
         project_id: UUID, request: ExpectedProjectRevision
     ) -> dict[str, Any]:
         try:
-            return _dump(
+            return _public_project(
                 await _store(plane).confirm_translation(
                     project_id, expected_revision=request.expected_revision
                 )
@@ -360,9 +361,7 @@ def build_director_router(plane: Any) -> APIRouter:
             "items": [_dump(item) for item in items],
         }
 
-    @router.post(
-        "/api/v1/director-projects/{project_id}/resume-generation", status_code=202
-    )
+    @router.post("/api/v1/director-projects/{project_id}/resume-generation", status_code=202)
     async def resume_generation(
         project_id: UUID, request: ExpectedProjectRevision
     ) -> dict[str, Any]:
@@ -377,9 +376,7 @@ def build_director_router(plane: Any) -> APIRouter:
         return _public_generation(generation)
 
     @router.post("/api/v1/director-projects/{project_id}/recompose", status_code=202)
-    async def recompose(
-        project_id: UUID, request: ExpectedProjectRevision
-    ) -> dict[str, Any]:
+    async def recompose(project_id: UUID, request: ExpectedProjectRevision) -> dict[str, Any]:
         try:
             generation = await _generation(plane).recompose(
                 project_id, expected_revision=request.expected_revision
@@ -509,6 +506,19 @@ def _background_error(error: BaseException) -> dict[str, object]:
 def _public_preset(record: RolePresetRecord) -> dict[str, Any]:
     payload = record.model_dump(mode="json", exclude={"base_voice_relative_path"})
     payload["audio_url"] = f"/api/v1/role-presets/{record.preset_id}/audio"
+    return payload
+
+
+def _public_project(record: DirectorProjectRecord) -> dict[str, Any]:
+    payload = record.model_dump(
+        mode="json",
+        exclude={"final_relative_path", "timeline"},
+    )
+    payload["audio_url"] = (
+        f"/api/v1/director-projects/{record.project_id}/audio"
+        if record.status == "succeeded"
+        else None
+    )
     return payload
 
 

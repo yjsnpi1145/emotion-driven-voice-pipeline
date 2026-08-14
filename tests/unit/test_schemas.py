@@ -76,9 +76,7 @@ def test_reference_job_request_rejects_invalid_vectors(vector: list[float], tmp_
 
 
 @pytest.mark.parametrize("invalid_reference", ["これは参考です。", "English reference only."])
-def test_reference_job_rejects_non_chinese_reference_text(
-    invalid_reference: str, tmp_path
-) -> None:
+def test_reference_job_rejects_non_chinese_reference_text(invalid_reference: str, tmp_path) -> None:
     with pytest.raises(ValidationError):
         ReferenceJobRequest(
             request_id=REQUEST_ID,

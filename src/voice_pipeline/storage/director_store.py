@@ -108,6 +108,7 @@ class DirectorStore:
     async def health_counts(self) -> dict[str, int]:
         """Return path-free operational counts for the control-plane health payload."""
         async with self._database.read_session() as session:
+
             async def project_count(statuses: Sequence[str]) -> int:
                 value = await session.scalar(
                     select(func.count())
@@ -175,6 +176,52 @@ class DirectorStore:
                 details={"error": error},
             )
         return True
+
+    async def recover_interrupted_commands(self) -> tuple[UUID, ...]:
+        """Make LLM stages left active by a previous process visibly retryable."""
+        error = {
+            "code": "DIRECTOR_COMMAND_INTERRUPTED",
+            "stage": "director",
+            "message": "director command was interrupted by a service restart",
+            "retryable": True,
+            "details": {},
+        }
+        recovered: list[UUID] = []
+        async with self._database.write_session() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(
+                            director_projects.c.project_id,
+                            director_projects.c.revision,
+                            director_projects.c.status,
+                        ).where(
+                            director_projects.c.deleted_at_utc.is_(None),
+                            director_projects.c.status.in_(["analyzing", "translating"]),
+                            director_projects.c.last_error_json.is_(None),
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            for row in rows:
+                project_id = UUID(str(row["project_id"]))
+                recovered.append(project_id)
+                await session.execute(
+                    update(director_projects)
+                    .where(director_projects.c.project_id == str(project_id))
+                    .values(last_error_json=_json(error), updated_at_utc=_now())
+                )
+                await _append_event(
+                    session,
+                    project_id,
+                    operation=f"{row['status']}_interrupted",
+                    before_revision=int(row["revision"]),
+                    after_revision=int(row["revision"]),
+                    details={"error": error},
+                )
+        return tuple(recovered)
 
     async def load_analysis_chunk(
         self, project_id: UUID, chunk: ScriptChunk
@@ -816,13 +863,17 @@ class DirectorStore:
             if str(project["status"]) != "role_review":
                 raise _state_conflict(str(project["status"]), "split role")
             source = (
-                await session.execute(
-                    select(director_roles).where(
-                        director_roles.c.role_id == str(source_role_id),
-                        director_roles.c.project_id == str(project_id),
+                (
+                    await session.execute(
+                        select(director_roles).where(
+                            director_roles.c.role_id == str(source_role_id),
+                            director_roles.c.project_id == str(project_id),
+                        )
                     )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if source is None:
                 raise KeyError("unknown director role")
             duplicate = await session.scalar(

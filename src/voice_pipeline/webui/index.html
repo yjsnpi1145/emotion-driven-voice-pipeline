@@ -172,7 +172,7 @@
                 <div id="director-role-list" class="director-role-list"></div>
               </section>
               <section class="director-timeline-zone">
-                <div class="panel-heading"><div><p class="eyebrow">Timeline</p><h3>语句时间线</h3></div><div class="button-row"><button id="director-merge-selected" type="button" class="secondary-button" disabled>合并相邻语句</button><button id="director-clear-selection" type="button" class="secondary-button" disabled>清除选择</button></div></div>
+                <div class="panel-heading"><div><p class="eyebrow">Timeline</p><h3>语句时间线</h3></div><div class="button-row"><select id="director-utterance-filter" aria-label="筛选语句"><option value="all">全部语句</option><option value="needs_confirmation">只看待确认</option><option value="spoken">只看配音项</option><option value="dialogue">只看对白</option><option value="narration">只看旁白</option></select><button id="director-merge-selected" type="button" class="secondary-button" disabled>合并相邻语句</button><button id="director-clear-selection" type="button" class="secondary-button" disabled>清除选择</button></div></div>
                 <div id="director-utterance-list" class="director-utterance-list"><div class="empty-state compact"><p>创建项目并分析后，在这里校对角色与翻译。</p></div></div>
               </section>
               <section id="director-generation-progress" class="director-generation-progress"></section>

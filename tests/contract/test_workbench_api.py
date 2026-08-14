@@ -62,6 +62,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'id="director-project-form"' in page.text
     assert 'id="director-preset-form"' in page.text
     assert 'id="director-utterance-list"' in page.text
+    assert 'id="director-utterance-filter"' in page.text
     assert 'name="max_parallel_requests"' in page.text
     assert 'id="system-health-grid"' in page.text
     assert 'id="open-model-library"' in page.text
@@ -77,9 +78,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'id="shutdown-services"' in page.text
     assert 'id="asr-scoring-toggle"' in page.text
     assert "ASR 文本评分" in page.text
-    assert page.text.index('id="asr-scoring-toggle"') < page.text.index(
-        'id="shutdown-services"'
-    )
+    assert page.text.index('id="asr-scoring-toggle"') < page.text.index('id="shutdown-services"')
     assert 'id="shutdown-overlay"' in page.text
     assert "关闭所有服务" in page.text
     assert "所有服务已关闭，可以关闭此页面" in page.text

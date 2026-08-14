@@ -38,6 +38,7 @@ const kindLabels = {
   narration: "旁白",
   stage_direction: "舞台说明",
 };
+const emotionLabels = ["愉悦", "愤怒", "悲伤", "恐惧", "厌恶", "忧郁", "惊讶", "平静"];
 
 const stageOrder = [
   ["analysis", "分析剧本", ["draft", "analyzing"]],
@@ -217,6 +218,12 @@ function actionButton(label, handler, kind = "primary-button") {
   button.textContent = label;
   button.onclick = () => busy(button, "处理中…", handler).catch((error) => notify(error, true));
   return button;
+}
+
+function labeledControl(label, control) {
+  const wrapper = document.createElement("label");
+  wrapper.append(document.createTextNode(label), control);
+  return wrapper;
 }
 
 function renderActions() {
@@ -460,20 +467,53 @@ function translatedEditor(utterance) {
   pause.max = "30000";
   pause.step = "50";
   pause.value = draft?.pause_after_ms ?? utterance.pause_after_ms;
+  const emotionBox = document.createElement("fieldset");
+  emotionBox.className = "director-emotion-vector";
+  const legend = document.createElement("legend");
+  legend.textContent = "八维情绪向量（LLM 基准，可微调）";
+  emotionBox.append(legend);
+  const emotionValues = draft?.emotion_vector ?? utterance.emotion_vector ?? Array(8).fill(0);
+  const emotionInputs = emotionLabels.map((label, index) => {
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "0";
+    input.max = "1";
+    input.step = "0.01";
+    input.value = emotionValues[index] ?? 0;
+    emotionBox.append(labeledControl(label, input));
+    return input;
+  });
+  const updateEmotionTotal = () => {
+    const total = emotionInputs.reduce((sum, input) => sum + Number(input.value || 0), 0);
+    legend.textContent = `八维情绪向量（LLM 基准，可微调）· 合计 ${total.toFixed(2)} / 0.80`;
+    emotionBox.dataset.valid = String(total <= 0.800001);
+  };
+  updateEmotionTotal();
   const save = document.createElement("button");
   save.type = "submit";
   save.className = "secondary-button";
   save.textContent = "保存译文";
-  form.append(target, reference, speed, pause, save);
+  form.append(
+    labeledControl("目标语言文本", target),
+    labeledControl("中文情绪参考", reference),
+    labeledControl("语速（1.0 使用预设默认）", speed),
+    labeledControl("句后停顿（ms）", pause),
+    emotionBox,
+    save,
+  );
   const rememberDraft = () => {
+    updateEmotionTotal();
     directorState.dirtyTranslations.set(utterance.utterance_id, {
       synthesis_text: target.value,
       ref_text_cn: reference.value,
       speed_factor: speed.value,
       pause_after_ms: pause.value,
+      emotion_vector: emotionInputs.map((input) => input.value),
     });
   };
-  for (const control of [target, reference, speed, pause]) control.oninput = rememberDraft;
+  for (const control of [target, reference, speed, pause, ...emotionInputs]) {
+    control.oninput = rememberDraft;
+  }
   form.onsubmit = async (event) => {
     event.preventDefault();
     await busy(save, "保存中…", async () => {
@@ -485,6 +525,7 @@ function translatedEditor(utterance) {
           ref_text_cn: reference.value,
           speed_factor: Number(speed.value),
           pause_after_ms: Number(pause.value),
+          emotion_vector: emotionInputs.map((input) => Number(input.value)),
         }),
       });
       directorState.dirtyTranslations.delete(utterance.utterance_id);
@@ -499,7 +540,14 @@ function renderUtterances() {
   const root = $("#director-utterance-list");
   const fragment = document.createDocumentFragment();
   const editableTranslation = directorState.project.status === "translation_review";
-  for (const utterance of directorState.utterances) {
+  const filter = $("#director-utterance-filter").value;
+  const visible = directorState.utterances.filter((utterance) => {
+    if (filter === "needs_confirmation") return utterance.speak_enabled && !utterance.role_confirmed;
+    if (filter === "spoken") return utterance.speak_enabled;
+    if (filter === "dialogue" || filter === "narration") return utterance.kind === filter;
+    return true;
+  });
+  for (const utterance of visible) {
     const card = document.createElement("article");
     card.className = "director-utterance-card";
     card.dataset.kind = utterance.kind;
@@ -572,7 +620,7 @@ function renderUtterances() {
     if (editableTranslation && utterance.speak_enabled) card.append(translatedEditor(utterance));
     fragment.append(card);
   }
-  if (!directorState.utterances.length) {
+  if (!visible.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state compact";
     empty.textContent = directorState.project.status === "analyzing" ? "LLM 正在分析剧本…" : "尚无语句";
@@ -812,6 +860,7 @@ $("#director-clear-selection").onclick = () => {
   renderRoles();
   renderUtterances();
 };
+$("#director-utterance-filter").onchange = renderUtterances;
 $("#director-refresh").onclick = (event) => busy(
   event.currentTarget, "刷新中…", refreshCurrent,
 ).catch((error) => notify(error, true));

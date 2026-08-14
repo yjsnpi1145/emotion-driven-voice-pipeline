@@ -63,9 +63,7 @@ async def test_runtime_quality_gate_disables_only_text_scoring_and_persists(
     assert strict.failure_code == "QUALITY_TEXT_MISMATCH"
     assert strict.policy_fingerprint == underlying.policy_fingerprint
 
-    disabled_view = await gate.update(
-        QualityScoringSettingsUpdate(asr_text_scoring_enabled=False)
-    )
+    disabled_view = await gate.update(QualityScoringSettingsUpdate(asr_text_scoring_enabled=False))
     relaxed = await gate.analyze_reference(
         audio_path=tmp_path / "unused.wav", expected_text="这是预期文本"
     )

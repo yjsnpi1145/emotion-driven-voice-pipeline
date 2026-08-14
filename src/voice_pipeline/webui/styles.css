@@ -245,6 +245,9 @@ details summary { cursor: pointer; color: #aebed1; font-size: .82rem; }
 .director-inline-button { min-height: 2.28rem; padding: .45rem .65rem; }
 .director-translation-editor { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: .45rem; }
 .director-translation-editor textarea { min-height: 5rem; resize: vertical; }
+.director-emotion-vector { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .45rem; margin: 0; padding: .65rem; border: 1px solid var(--line); border-radius: .48rem; }
+.director-emotion-vector legend { padding: 0 .35rem; color: var(--muted); font-size: .75rem; }
+.director-emotion-vector[data-valid="false"] { border-color: #a85b3a; }
 .director-generation-progress { display: grid; gap: .55rem; }
 .director-generation-track { display: flex; gap: 2px; overflow: hidden; height: .5rem; border-radius: 99px; background: var(--input); }
 .director-generation-track > span { flex: 1; min-width: 2px; height: 100%; background: #455369; }
@@ -328,7 +331,7 @@ details summary { cursor: pointer; color: #aebed1; font-size: .82rem; }
   .director-project-panel, .director-preset-panel { position: static; max-height: none; }
   .director-workspace { min-height: 0; }
   .director-stage-rail { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .director-utterance-controls, .director-translation-editor { grid-template-columns: 1fr; }
+  .director-utterance-controls, .director-translation-editor, .director-emotion-vector { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 560px) {

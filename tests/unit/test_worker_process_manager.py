@@ -100,9 +100,7 @@ async def test_failed_stop_keeps_worker_owned_and_reports_poisoned_failure(tmp_p
     manager._graceful_stop = no_graceful_stop  # type: ignore[method-assign]
 
     with pytest.raises(PipelineError) as exc_info:
-        await manager.stop_engine(
-            "gpt_sovits", deadline=asyncio.get_running_loop().time() + 0.1
-        )
+        await manager.stop_engine("gpt_sovits", deadline=asyncio.get_running_loop().time() + 0.1)
 
     assert exc_info.value.code == ErrorCode.ENGINE_UNAVAILABLE
     assert exc_info.value.poison_queue is True

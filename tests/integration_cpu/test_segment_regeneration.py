@@ -169,6 +169,6 @@ async def test_regeneration_reuses_chapter_voice_and_replaces_only_selected_arti
                 },
             )
             assert explicit_override.status_code == 202
-            assert (
-                await _wait(client, explicit_override.json()["status_url"])
-            )["status"] == "succeeded"
+            assert (await _wait(client, explicit_override.json()["status_url"]))[
+                "status"
+            ] == "succeeded"
