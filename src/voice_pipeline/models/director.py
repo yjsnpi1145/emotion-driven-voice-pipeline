@@ -98,6 +98,7 @@ class CreateDirectorUtterance(StrictModel):
     kind: UtteranceKind
     speak_enabled: bool
     role_id: UUID | None = None
+    role_name: str | None = None
     role_confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     role_confirmed: bool = True
 
