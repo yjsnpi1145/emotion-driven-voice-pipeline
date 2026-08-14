@@ -139,7 +139,7 @@ class ControlPlane:
         director_generation = getattr(self, "director_generation", None)
         if director_generation is not None:
             await director_generation.stop(deadline=deadline)
-        director_tasks = getattr(self, "director_tasks", set())
+        director_tasks: set[asyncio.Task[object]] = getattr(self, "director_tasks", set())
         for task in tuple(director_tasks):
             task.cancel()
         if director_tasks:
