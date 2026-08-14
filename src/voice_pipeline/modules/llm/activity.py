@@ -10,7 +10,14 @@ from pydantic import Field
 
 from voice_pipeline.models.schemas import StrictModel
 
-LlmOperation = Literal["chapter_plan", "reference_correction", "connection_test"]
+LlmOperation = Literal[
+    "chapter_plan",
+    "reference_correction",
+    "connection_test",
+    "script_analysis",
+    "cast_reconciliation",
+    "script_translation",
+]
 LlmActivityKind = Literal[
     "started",
     "request_sent",

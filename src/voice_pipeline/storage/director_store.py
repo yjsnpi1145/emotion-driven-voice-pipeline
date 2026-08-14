@@ -19,10 +19,15 @@ from voice_pipeline.models.director import (
     DirectorRoleRecord,
     DirectorUtteranceRecord,
 )
-from voice_pipeline.models.director_llm import TranslationResultItem
+from voice_pipeline.models.director_llm import (
+    ChunkAnalysisResult,
+    ScriptChunk,
+    TranslationResultItem,
+)
 from voice_pipeline.models.schemas import EmotionVector
 from voice_pipeline.storage.database import Database
 from voice_pipeline.storage.orm import (
+    director_analysis_chunks,
     director_edit_events,
     director_projects,
     director_roles,
@@ -101,11 +106,88 @@ class DirectorStore:
         await self._update_project_state(
             project_id,
             expected_revision=expected_revision,
-            allowed={"draft", "role_review"},
+            allowed={"draft", "analyzing", "role_review"},
             status="analyzing",
             event="analysis_started",
         )
         return await self.get_project(project_id)
+
+    async def load_analysis_chunk(
+        self, project_id: UUID, chunk: ScriptChunk
+    ) -> ChunkAnalysisResult | None:
+        chunk_id = _stored_chunk_id(project_id, chunk.chunk_id)
+        async with self._database.read_session() as session:
+            row = (
+                (
+                    await session.execute(
+                        select(
+                            director_analysis_chunks.c.source_sha256,
+                            director_analysis_chunks.c.status,
+                            director_analysis_chunks.c.result_json,
+                        ).where(director_analysis_chunks.c.chunk_id == chunk_id)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if (
+            row is None
+            or str(row["status"]) != "succeeded"
+            or str(row["source_sha256"]) != _sha256(chunk.source_text)
+            or row["result_json"] is None
+        ):
+            return None
+        return ChunkAnalysisResult.model_validate_json(str(row["result_json"]))
+
+    async def save_analysis_chunk(
+        self,
+        project_id: UUID,
+        *,
+        ordinal: int,
+        chunk: ScriptChunk,
+        result: ChunkAnalysisResult,
+        llm_fingerprint: str,
+    ) -> None:
+        chunk_id = _stored_chunk_id(project_id, chunk.chunk_id)
+        async with self._database.write_session() as session:
+            existing = (
+                await session.execute(
+                    select(director_analysis_chunks.c.chunk_id).where(
+                        director_analysis_chunks.c.chunk_id == chunk_id
+                    )
+                )
+            ).scalar_one_or_none()
+            values = {
+                "project_id": str(project_id),
+                "ordinal": ordinal,
+                "source_start": chunk.source_start,
+                "source_end": chunk.source_end,
+                "source_sha256": _sha256(chunk.source_text),
+                "llm_fingerprint": llm_fingerprint,
+                "prompt_version": "director-analysis-v1",
+                "schema_version": 1,
+                "status": "succeeded",
+                "result_json": result.model_dump_json(),
+                "error_json": None,
+                "updated_at_utc": _now(),
+            }
+            if existing is None:
+                await session.execute(
+                    insert(director_analysis_chunks).values(
+                        chunk_id=chunk_id,
+                        attempt=1,
+                        **values,
+                    )
+                )
+            else:
+                await session.execute(
+                    update(director_analysis_chunks)
+                    .where(director_analysis_chunks.c.chunk_id == chunk_id)
+                    .values(
+                        attempt=director_analysis_chunks.c.attempt + 1,
+                        **values,
+                    )
+                )
 
     async def publish_analysis(
         self,
@@ -1072,6 +1154,10 @@ def _state_conflict(status: str, operation: str) -> PipelineError:
 
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _stored_chunk_id(project_id: UUID, chunk_id: str) -> str:
+    return hashlib.sha256(f"{project_id}:{chunk_id}".encode()).hexdigest()
 
 
 def _json(value: object) -> str:

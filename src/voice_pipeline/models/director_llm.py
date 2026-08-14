@@ -36,6 +36,12 @@ class AnalyzedUtterance(StrictModel):
     role_confidence: float = Field(ge=0.0, le=1.0)
     speak_enabled: bool
 
+    @model_validator(mode="after")
+    def validate_range(self) -> AnalyzedUtterance:
+        if self.source_end <= self.source_start:
+            raise ValueError("utterance range must move forward")
+        return self
+
 
 class ChunkAnalysisResult(StrictModel):
     utterances: tuple[AnalyzedUtterance, ...]

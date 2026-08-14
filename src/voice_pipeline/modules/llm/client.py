@@ -14,6 +14,14 @@ from pydantic import BaseModel, ValidationError
 
 from voice_pipeline.core.config import LlmSettings
 from voice_pipeline.core.errors import ErrorCode, PipelineError
+from voice_pipeline.models.director_llm import (
+    AnalyzedUtterance,
+    CastReconciliationResult,
+    ChunkAnalysisResult,
+    ScriptChunk,
+    ScriptTranslationResult,
+    TranslationInput,
+)
 from voice_pipeline.models.schemas import LanguageCode
 from voice_pipeline.modules.llm.activity import (
     LlmActivityKind,
@@ -159,6 +167,78 @@ class OpenAiDirectorClient:
         )
         return _validate_payload(ReferenceTextCorrection, content).ref_text_cn
 
+    async def analyze_script_chunk(
+        self,
+        *,
+        chunk: ScriptChunk,
+        activity_id: UUID | None = None,
+    ) -> ChunkAnalysisResult:
+        content = await self._post_json(
+            _schema_messages(
+                ChunkAnalysisResult,
+                instruction=(
+                    "Split the supplied source chunk into exact contiguous ranges. Preserve every "
+                    "character exactly, including whitespace. Classify each range as dialogue, "
+                    "narration, or stage_direction. Infer a temporary speaker name and aliases for "
+                    "dialogue. Narration uses no temporary role. Stage directions are normally not "
+                    "spoken. All indices are absolute Python string indices."
+                ),
+                payload=chunk.model_dump(mode="json"),
+            ),
+            operation_id=activity_id or uuid4(),
+            operation="script_analysis",
+        )
+        return _validate_payload(ChunkAnalysisResult, content)
+
+    async def reconcile_cast(
+        self,
+        *,
+        utterances: tuple[AnalyzedUtterance, ...],
+        activity_id: UUID | None = None,
+    ) -> CastReconciliationResult:
+        content = await self._post_json(
+            _schema_messages(
+                CastReconciliationResult,
+                instruction=(
+                    "Create one canonical cast. Include a narrator role when narration exists. "
+                    "Merge only aliases that clearly identify the same character. Return one "
+                    "assignment for every utterance index; uncertain identities use kind unknown "
+                    "or confidence below 0.8 so the user must review them."
+                ),
+                payload={"utterances": [item.model_dump(mode="json") for item in utterances]},
+            ),
+            operation_id=activity_id or uuid4(),
+            operation="cast_reconciliation",
+        )
+        return _validate_payload(CastReconciliationResult, content)
+
+    async def translate_utterances(
+        self,
+        *,
+        target_language: LanguageCode,
+        utterances: tuple[TranslationInput, ...],
+        activity_id: UUID | None = None,
+    ) -> ScriptTranslationResult:
+        content = await self._post_json(
+            _schema_messages(
+                ScriptTranslationResult,
+                instruction=(
+                    f"Translate each source_text into target language {target_language} without "
+                    "summary or omission. ref_text_cn must always be natural Simplified Chinese, "
+                    "even for non-Chinese source and target text. Preserve utterance_id and "
+                    "revision. "
+                    "Emotion vectors contain exactly eight values, each in 0..1, with total <= 0.8."
+                ),
+                payload={
+                    "target_language": target_language,
+                    "utterances": [item.model_dump(mode="json") for item in utterances],
+                },
+            ),
+            operation_id=activity_id or uuid4(),
+            operation="script_translation",
+        )
+        return _validate_payload(ScriptTranslationResult, content)
+
     async def test_connection(self, *, activity_id: UUID | None = None) -> int:
         started = perf_counter()
         content = await self._post_json(
@@ -237,8 +317,7 @@ class OpenAiDirectorClient:
                     operation=operation,
                     kind="retrying",
                     message=(
-                        f"模型返回 HTTP {response.status_code}，"
-                        f"{_delay_for(attempt):.2f} 秒后重试"
+                        f"模型返回 HTTP {response.status_code}，{_delay_for(attempt):.2f} 秒后重试"
                     ),
                 )
                 await asyncio.sleep(_delay_for(attempt))
@@ -333,6 +412,30 @@ def _decode_content(content: object) -> dict[str, object]:
 
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def _schema_messages(
+    model: type[BaseModel], *, instruction: str, payload: dict[str, object]
+) -> list[dict[str, str]]:
+    schema = json.dumps(
+        model.model_json_schema(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return [
+        {
+            "role": "system",
+            "content": (
+                "Return exactly one JSON object and no markdown. The response must validate "
+                f"against this JSON Schema: {schema}\n{instruction}"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        },
+    ]
 
 
 def _validate_payload(model: type[T], payload: dict[str, object]) -> T:
