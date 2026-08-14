@@ -176,6 +176,24 @@ class BindRolePresetRequest(StrictModel):
     preset_id: UUID
 
 
+class DirectorRolePatch(StrictModel):
+    expected_revision: int = Field(ge=0)
+    canonical_name: NonBlankText | None = None
+    aliases: tuple[str, ...] | None = None
+
+
+class MergeDirectorRolesRequest(StrictModel):
+    project_id: UUID
+    expected_project_revision: int = Field(ge=0)
+    source_role_ids: tuple[UUID, ...] = Field(min_length=1)
+    target_role_id: UUID
+
+
+class NarrationSettingRequest(StrictModel):
+    expected_revision: int = Field(ge=0)
+    enabled: bool
+
+
 class CreateRolePresetRequest(StrictModel):
     name: NonBlankText
     base_voice_path: Path
