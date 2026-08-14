@@ -32,6 +32,7 @@ from voice_pipeline.storage.orm import (
     director_projects,
     director_roles,
     director_utterances,
+    role_presets,
 )
 
 
@@ -916,6 +917,85 @@ class DirectorStore:
             event="translation_confirmed",
         )
         return await self.get_project(project_id)
+
+    async def bind_role_preset(
+        self,
+        role_id: UUID,
+        *,
+        expected_revision: int,
+        preset_id: UUID,
+    ) -> DirectorRoleRecord:
+        async with self._database.write_session() as session:
+            row = (
+                (
+                    await session.execute(
+                        select(director_roles).where(director_roles.c.role_id == str(role_id))
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise KeyError(f"unknown director role: {role_id}")
+            if int(row["revision"]) != expected_revision:
+                raise _version_conflict()
+            ready_preset = (
+                await session.execute(
+                    select(role_presets.c.preset_id)
+                    .where(role_presets.c.preset_id == str(preset_id))
+                    .where(role_presets.c.status == "ready")
+                )
+            ).scalar_one_or_none()
+            if ready_preset is None:
+                raise PipelineError(
+                    ErrorCode.ROLE_PRESET_UNAVAILABLE,
+                    "director",
+                    "selected role preset is not ready",
+                    retryable=False,
+                )
+            project_id = UUID(str(row["project_id"]))
+            await session.execute(
+                update(director_roles)
+                .where(director_roles.c.role_id == str(role_id))
+                .values(preset_id=str(preset_id), revision=director_roles.c.revision + 1)
+            )
+            missing = int(
+                (
+                    await session.execute(
+                        select(func.count(func.distinct(director_utterances.c.role_id)))
+                        .select_from(
+                            director_utterances.outerjoin(
+                                director_roles,
+                                director_utterances.c.role_id == director_roles.c.role_id,
+                            )
+                        )
+                        .where(director_utterances.c.project_id == str(project_id))
+                        .where(director_utterances.c.speak_enabled == 1)
+                        .where(director_roles.c.preset_id.is_(None))
+                    )
+                ).scalar_one()
+            )
+            await session.execute(
+                update(director_projects)
+                .where(director_projects.c.project_id == str(project_id))
+                .values(
+                    status="ready" if missing == 0 else "voice_mapping",
+                    revision=director_projects.c.revision + 1,
+                    mapping_revision=director_projects.c.mapping_revision + 1,
+                    updated_at_utc=_now(),
+                )
+            )
+            await _append_event(
+                session,
+                project_id,
+                operation="role_preset_bound",
+                object_id=role_id,
+                before_revision=expected_revision,
+                after_revision=expected_revision + 1,
+                details={"preset_id": str(preset_id)},
+            )
+        roles = await self.list_roles(project_id)
+        return next(item for item in roles if item.role_id == role_id)
 
     async def delete_project(self, project_id: UUID, *, expected_revision: int) -> None:
         async with self._database.write_session() as session:
