@@ -128,6 +128,10 @@ class DirectorUtteranceRecord(StrictModel):
     pause_after_ms: int = Field(default=0, ge=0, le=30_000)
     seed: int = 1234
     revision: int = Field(ge=0)
+    task_id: UUID | None = None
+    segment_id: UUID | None = None
+    reference_version_id: UUID | None = None
+    gsv_version_id: UUID | None = None
 
     @model_validator(mode="after")
     def validate_range(self) -> DirectorUtteranceRecord:

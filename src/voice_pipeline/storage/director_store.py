@@ -15,6 +15,8 @@ from voice_pipeline.models.director import (
     CreateDirectorProjectRequest,
     CreateDirectorRole,
     CreateDirectorUtterance,
+    DirectorGenerationItemRecord,
+    DirectorGenerationRecord,
     DirectorProjectRecord,
     DirectorRoleRecord,
     DirectorUtteranceRecord,
@@ -29,6 +31,8 @@ from voice_pipeline.storage.database import Database
 from voice_pipeline.storage.orm import (
     director_analysis_chunks,
     director_edit_events,
+    director_generation_items,
+    director_generations,
     director_projects,
     director_roles,
     director_utterances,
@@ -997,6 +1001,265 @@ class DirectorStore:
         roles = await self.list_roles(project_id)
         return next(item for item in roles if item.role_id == role_id)
 
+    async def prepare_generation(
+        self,
+        project_id: UUID,
+        *,
+        expected_revision: int,
+        snapshot: dict[str, object],
+        items: Sequence[tuple[UUID, int, UUID]],
+    ) -> DirectorGenerationRecord:
+        async with self._database.write_session() as session:
+            existing = (
+                (
+                    await session.execute(
+                        select(director_generations).where(
+                            director_generations.c.project_id == str(project_id),
+                            director_generations.c.project_revision == expected_revision,
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if existing is not None:
+                return _generation(dict(existing))
+            project = await _locked_project(session, project_id)
+            _require_revision(project, expected_revision)
+            if str(project["status"]) != "ready":
+                raise _state_conflict(str(project["status"]), "start generation")
+            generation_id = uuid4()
+            now = _now()
+            await session.execute(
+                insert(director_generations).values(
+                    generation_id=str(generation_id),
+                    project_id=str(project_id),
+                    project_revision=expected_revision,
+                    status="queued",
+                    snapshot_json=_json(snapshot),
+                    final_relative_path=None,
+                    timeline_json=None,
+                    error_json=None,
+                    created_at_utc=now,
+                    started_at_utc=None,
+                    finished_at_utc=None,
+                )
+            )
+            if items:
+                await session.execute(
+                    insert(director_generation_items),
+                    [
+                        {
+                            "generation_id": str(generation_id),
+                            "utterance_id": str(utterance_id),
+                            "ordinal": ordinal,
+                            "model_profile_id": str(profile_id),
+                            "status": "queued",
+                            "reference_job_id": None,
+                            "gsv_job_id": None,
+                            "error_json": None,
+                        }
+                        for utterance_id, ordinal, profile_id in items
+                    ],
+                )
+            await session.execute(
+                update(director_projects)
+                .where(director_projects.c.project_id == str(project_id))
+                .values(
+                    status="generating",
+                    revision=expected_revision + 1,
+                    generation_revision=director_projects.c.generation_revision + 1,
+                    current_generation_id=str(generation_id),
+                    updated_at_utc=now,
+                )
+            )
+            await _append_event(
+                session,
+                project_id,
+                operation="generation_prepared",
+                before_revision=expected_revision,
+                after_revision=expected_revision + 1,
+                details={"generation_id": str(generation_id), "items": len(items)},
+            )
+        return await self.get_generation(generation_id)
+
+    async def get_generation(self, generation_id: UUID) -> DirectorGenerationRecord:
+        async with self._database.read_session() as session:
+            row = (
+                (
+                    await session.execute(
+                        select(director_generations).where(
+                            director_generations.c.generation_id == str(generation_id)
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            raise KeyError(f"unknown director generation: {generation_id}")
+        return _generation(dict(row))
+
+    async def current_generation(self, project_id: UUID) -> DirectorGenerationRecord | None:
+        project = await self.get_project(project_id)
+        if project.current_generation_id is None:
+            return None
+        return await self.get_generation(project.current_generation_id)
+
+    async def list_generation_items(
+        self, generation_id: UUID
+    ) -> list[DirectorGenerationItemRecord]:
+        await self.get_generation(generation_id)
+        async with self._database.read_session() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(director_generation_items)
+                        .where(director_generation_items.c.generation_id == str(generation_id))
+                        .order_by(director_generation_items.c.ordinal)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [_generation_item(dict(row)) for row in rows]
+
+    async def mark_generation_running(self, generation_id: UUID) -> None:
+        async with self._database.write_session() as session:
+            await session.execute(
+                update(director_generations)
+                .where(director_generations.c.generation_id == str(generation_id))
+                .where(director_generations.c.status.in_(["queued", "interrupted"]))
+                .values(status="running", started_at_utc=_now(), error_json=None)
+            )
+
+    async def set_generation_item(
+        self,
+        generation_id: UUID,
+        utterance_id: UUID,
+        *,
+        status: str,
+        reference_job_id: UUID | None = None,
+        gsv_job_id: UUID | None = None,
+        error: dict[str, object] | None = None,
+    ) -> None:
+        values: dict[str, object | None] = {
+            "status": status,
+            "error_json": _json(error) if error is not None else None,
+        }
+        if reference_job_id is not None:
+            values["reference_job_id"] = str(reference_job_id)
+        if gsv_job_id is not None:
+            values["gsv_job_id"] = str(gsv_job_id)
+        async with self._database.write_session() as session:
+            result = await session.execute(
+                update(director_generation_items)
+                .where(director_generation_items.c.generation_id == str(generation_id))
+                .where(director_generation_items.c.utterance_id == str(utterance_id))
+                .values(**values)
+            )
+            if cast(CursorResult[Any], result).rowcount != 1:
+                raise KeyError("unknown director generation item")
+
+    async def attach_materialized_segment(
+        self, utterance_id: UUID, *, task_id: UUID, segment_id: UUID
+    ) -> None:
+        async with self._database.write_session() as session:
+            result = await session.execute(
+                update(director_utterances)
+                .where(director_utterances.c.utterance_id == str(utterance_id))
+                .values(task_id=str(task_id), segment_id=str(segment_id))
+            )
+            if cast(CursorResult[Any], result).rowcount != 1:
+                raise KeyError(f"unknown director utterance: {utterance_id}")
+
+    async def attach_utterance_versions(
+        self,
+        utterance_id: UUID,
+        *,
+        reference_version_id: UUID | None = None,
+        gsv_version_id: UUID | None = None,
+    ) -> None:
+        values: dict[str, object] = {}
+        if reference_version_id is not None:
+            values["reference_version_id"] = str(reference_version_id)
+        if gsv_version_id is not None:
+            values["gsv_version_id"] = str(gsv_version_id)
+        if not values:
+            return
+        async with self._database.write_session() as session:
+            result = await session.execute(
+                update(director_utterances)
+                .where(director_utterances.c.utterance_id == str(utterance_id))
+                .values(**values)
+            )
+            if cast(CursorResult[Any], result).rowcount != 1:
+                raise KeyError(f"unknown director utterance: {utterance_id}")
+
+    async def finish_generation(
+        self,
+        generation_id: UUID,
+        *,
+        succeeded: bool,
+        final_relative_path: str | None = None,
+        timeline: dict[str, object] | None = None,
+        error: dict[str, object] | None = None,
+    ) -> DirectorGenerationRecord:
+        generation = await self.get_generation(generation_id)
+        status = "succeeded" if succeeded else "generation_incomplete"
+        now = _now()
+        async with self._database.write_session() as session:
+            await session.execute(
+                update(director_generations)
+                .where(director_generations.c.generation_id == str(generation_id))
+                .values(
+                    status=status,
+                    final_relative_path=final_relative_path,
+                    timeline_json=_json(timeline) if timeline is not None else None,
+                    error_json=_json(error) if error is not None else None,
+                    finished_at_utc=now,
+                )
+            )
+            await session.execute(
+                update(director_projects)
+                .where(director_projects.c.project_id == str(generation.project_id))
+                .values(
+                    status=status,
+                    final_relative_path=final_relative_path,
+                    timeline_json=_json(timeline) if timeline is not None else None,
+                    last_error_json=_json(error) if error is not None else None,
+                    updated_at_utc=now,
+                )
+            )
+        return await self.get_generation(generation_id)
+
+    async def mark_running_generations_interrupted(self) -> tuple[UUID, ...]:
+        async with self._database.write_session() as session:
+            ids = [
+                UUID(str(value))
+                for value in (
+                    await session.execute(
+                        select(director_generations.c.generation_id).where(
+                            director_generations.c.status.in_(["queued", "running"])
+                        )
+                    )
+                ).scalars()
+            ]
+            if ids:
+                await session.execute(
+                    update(director_generations)
+                    .where(director_generations.c.generation_id.in_([str(item) for item in ids]))
+                    .values(status="interrupted", finished_at_utc=_now())
+                )
+                await session.execute(
+                    update(director_projects)
+                    .where(
+                        director_projects.c.current_generation_id.in_([str(item) for item in ids])
+                    )
+                    .values(status="generation_incomplete", updated_at_utc=_now())
+                )
+        return tuple(ids)
+
     async def delete_project(self, project_id: UUID, *, expected_revision: int) -> None:
         async with self._database.write_session() as session:
             result = await session.execute(
@@ -1202,6 +1465,55 @@ def _utterance(row: dict[str, Any]) -> DirectorUtteranceRecord:
         pause_after_ms=int(row["pause_after_ms"]),
         seed=int(row["seed"]),
         revision=int(row["revision"]),
+        task_id=UUID(str(row["task_id"])) if row.get("task_id") else None,
+        segment_id=UUID(str(row["segment_id"])) if row.get("segment_id") else None,
+        reference_version_id=(
+            UUID(str(row["reference_version_id"])) if row.get("reference_version_id") else None
+        ),
+        gsv_version_id=(UUID(str(row["gsv_version_id"])) if row.get("gsv_version_id") else None),
+    )
+
+
+def _generation(row: dict[str, Any]) -> DirectorGenerationRecord:
+    def payload(name: str) -> dict[str, Any] | None:
+        raw = row.get(name)
+        return json.loads(str(raw)) if raw is not None else None
+
+    return DirectorGenerationRecord(
+        generation_id=UUID(str(row["generation_id"])),
+        project_id=UUID(str(row["project_id"])),
+        project_revision=int(row["project_revision"]),
+        status=str(row["status"]),  # type: ignore[arg-type]
+        snapshot=json.loads(str(row["snapshot_json"])),
+        final_relative_path=cast(str | None, row.get("final_relative_path")),
+        timeline=payload("timeline_json"),
+        error=payload("error_json"),
+        created_at_utc=datetime.fromisoformat(str(row["created_at_utc"])),
+        started_at_utc=(
+            datetime.fromisoformat(str(row["started_at_utc"]))
+            if row.get("started_at_utc")
+            else None
+        ),
+        finished_at_utc=(
+            datetime.fromisoformat(str(row["finished_at_utc"]))
+            if row.get("finished_at_utc")
+            else None
+        ),
+    )
+
+
+def _generation_item(row: dict[str, Any]) -> DirectorGenerationItemRecord:
+    return DirectorGenerationItemRecord(
+        generation_id=UUID(str(row["generation_id"])),
+        utterance_id=UUID(str(row["utterance_id"])),
+        ordinal=int(row["ordinal"]),
+        model_profile_id=UUID(str(row["model_profile_id"])),
+        status=str(row["status"]),  # type: ignore[arg-type]
+        reference_job_id=(
+            UUID(str(row["reference_job_id"])) if row.get("reference_job_id") else None
+        ),
+        gsv_job_id=UUID(str(row["gsv_job_id"])) if row.get("gsv_job_id") else None,
+        error=(json.loads(str(row["error_json"])) if row.get("error_json") else None),
     )
 
 

@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from voice_pipeline.core.director_analysis import ScriptAnalysisService
+from voice_pipeline.core.director_generation import DirectorGenerationService
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.core.role_preset_service import RolePresetService
 from voice_pipeline.models.director import (
@@ -306,6 +307,58 @@ def build_director_router(plane: Any) -> APIRouter:
             raise HTTPException(status_code=409, detail="role preset audio is corrupt")
         return FileResponse(path, media_type="audio/wav")
 
+    @router.post("/api/v1/director-projects/{project_id}/start-generation", status_code=202)
+    async def start_generation(
+        project_id: UUID, request: ExpectedProjectRevision
+    ) -> dict[str, str]:
+        try:
+            generation = await _generation(plane).start(
+                project_id, expected_revision=request.expected_revision
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="director project not found") from exc
+        except PipelineError as exc:
+            raise _pipeline_error(exc) from exc
+        return {
+            "project_id": str(project_id),
+            "generation_id": str(generation.generation_id),
+            "status": generation.status,
+            "status_url": f"/api/v1/director-projects/{project_id}/progress",
+        }
+
+    @router.get("/api/v1/director-projects/{project_id}/progress")
+    async def generation_progress(project_id: UUID) -> dict[str, Any]:
+        try:
+            generation, items = await _generation(plane).get_for_project(project_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="director project not found") from exc
+        return {
+            "generation": _dump(generation) if generation is not None else None,
+            "items": [_dump(item) for item in items],
+        }
+
+    @router.get("/api/v1/director-projects/{project_id}/audio")
+    async def generation_audio(project_id: UUID) -> FileResponse:
+        try:
+            generation, _ = await _generation(plane).get_for_project(project_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="director project not found") from exc
+        if (
+            generation is None
+            or generation.status != "succeeded"
+            or generation.final_relative_path is None
+        ):
+            raise HTTPException(status_code=409, detail="director audio is not ready")
+        root = plane.artifact_store.root.resolve()
+        path = (root / generation.final_relative_path).resolve()
+        try:
+            path.relative_to((root / "directors").resolve())
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail="director audio path is invalid") from exc
+        if not path.is_file() or path.is_symlink():
+            raise HTTPException(status_code=409, detail="director audio is unavailable")
+        return FileResponse(path, media_type="audio/wav")
+
     return router
 
 
@@ -328,6 +381,13 @@ def _presets(plane: Any) -> RolePresetService:
     if value is None:
         raise HTTPException(status_code=503, detail="role presets are not ready")
     return cast(RolePresetService, value)
+
+
+def _generation(plane: Any) -> DirectorGenerationService:
+    value = getattr(plane, "director_generation", None)
+    if value is None:
+        raise HTTPException(status_code=503, detail="director generation is not ready")
+    return cast(DirectorGenerationService, value)
 
 
 async def _require_project_revision(plane: Any, project_id: UUID, revision: int) -> None:

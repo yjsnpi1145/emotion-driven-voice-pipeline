@@ -23,6 +23,7 @@ from voice_pipeline.core.chapter_service import ChapterService
 from voice_pipeline.core.config import AppSettings
 from voice_pipeline.core.desktop_service import DesktopService
 from voice_pipeline.core.director_analysis import ScriptAnalysisService
+from voice_pipeline.core.director_generation import DirectorGenerationService
 from voice_pipeline.core.dispatcher import DurableJobDispatcher
 from voice_pipeline.core.gpu_queue import SerialGpuQueue
 from voice_pipeline.core.job_executor import JobExecutor
@@ -99,6 +100,7 @@ class ControlPlane:
         self.regeneration: SegmentRegenerationService | None = None
         self.director_store: DirectorStore | None = None
         self.director_analysis: ScriptAnalysisService | None = None
+        self.director_generation: DirectorGenerationService | None = None
         self.role_presets: RolePresetService | None = None
         self.director_tasks: set[asyncio.Task[object]] = set()
 
@@ -134,6 +136,9 @@ class ControlPlane:
         regeneration = getattr(self, "regeneration", None)
         if regeneration is not None:
             await regeneration.stop(deadline=deadline)
+        director_generation = getattr(self, "director_generation", None)
+        if director_generation is not None:
+            await director_generation.stop(deadline=deadline)
         for task in tuple(self.director_tasks):
             task.cancel()
         if self.director_tasks:
@@ -319,12 +324,23 @@ def create_app(
             segment_jobs=plane.segment_jobs,
             notify_jobs=lambda: _notify_dispatcher(plane),
         )
+        plane.director_generation = DirectorGenerationService(
+            directors=plane.director_store,
+            presets=plane.role_presets,
+            segments=plane.segment_store,
+            jobs=plane.registry,
+            segment_jobs=plane.segment_jobs,
+            versions=plane.version_store,
+            artifacts=plane.artifact_store,
+            notify_jobs=lambda: _notify_dispatcher(plane),
+        )
         try:
             plane.last_recovery_report = await StorageRecovery(
                 database, plane.artifact_store
             ).reconcile()
             await plane.retention_executor.resume_deletions()
             await plane.chapter_service.recover()
+            await plane.director_generation.recover()
             if settings.mode == "real":
                 selected_quality: QualityAnalyzer = FasterWhisperQualityAnalyzer(
                     model_path=settings.quality.model_path,
