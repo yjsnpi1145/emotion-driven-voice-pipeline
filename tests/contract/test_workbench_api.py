@@ -19,6 +19,8 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
         ) as client:
             page = await client.get("/")
             script = await client.get("/ui/app.js")
+            director_script = await client.get("/ui/director.js")
+            director_dnd_script = await client.get("/ui/director-dnd.js")
             shutdown_script = await client.get("/ui/service-shutdown.js")
             stage_script = await client.get("/ui/stage-progress.js")
             selection_script = await client.get("/ui/selection-state.js")
@@ -31,7 +33,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'data-theme="dark-console"' in page.text
     assert 'class="brand-mark"' not in page.text
     assert ">声</div>" not in page.text
-    assert "20260811c" in page.text
+    assert "20260814a" in page.text
     assert 'id="segment-list"' in page.text
     assert 'id="segment-editor"' in page.text
     assert 'id="chapter-form"' in page.text
@@ -52,10 +54,15 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'id="model-profile-form"' in page.text
     assert 'id="model-profile-list"' in page.text
     assert 'data-view="workbench"' in page.text
+    assert 'data-view="director"' in page.text
     assert 'data-view="models"' in page.text
     assert 'data-view="llm"' in page.text
     assert 'data-view="system"' in page.text
     assert 'id="llm-settings-form"' in page.text
+    assert 'id="director-project-form"' in page.text
+    assert 'id="director-preset-form"' in page.text
+    assert 'id="director-utterance-list"' in page.text
+    assert 'name="max_parallel_requests"' in page.text
     assert 'id="system-health-grid"' in page.text
     assert 'id="open-model-library"' in page.text
     assert 'id="pick-gpt-weight"' in page.text
@@ -77,6 +84,8 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "关闭所有服务" in page.text
     assert "所有服务已关闭，可以关闭此页面" in page.text
     assert script.status_code == 200
+    assert director_script.status_code == 200
+    assert director_dnd_script.status_code == 200
     assert shutdown_script.status_code == 200
     assert stage_script.status_code == 200
     assert selection_script.status_code == 200
@@ -142,6 +151,21 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert '[data-state="failed"]' in stylesheet.text
     assert "/api/v1/settings/llm" in script.text
     assert "/api/v1/settings/llm/test" in script.text
+    assert "max_parallel_requests" in script.text
+    assert 'requested === "director"' in script.text
+    assert 'state.activeView === "director"' in script.text
+    assert "/api/v1/director-projects" in director_script.text
+    assert "/analyze" in director_script.text
+    assert "/translate" in director_script.text
+    assert "/start-generation" in director_script.text
+    assert "/api/v1/director-roles/split" in director_script.text
+    assert "/api/v1/director-roles/merge" in director_script.text
+    assert "/resume-generation" in director_script.text
+    assert "/recompose" in director_script.text
+    assert 'from "./director-dnd.js"' in director_script.text
+    assert "dirtyTranslations" in director_script.text
+    assert "stopDirectorActivity" in director_script.text
+    assert "buildAssignmentPatch" in director_dnd_script.text
     assert "/api/v1/settings/quality" in script.text
     assert "loadQualitySettings" in script.text
     assert "saveQualitySettings" in script.text
@@ -176,6 +200,8 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert ".quality-toggle" in stylesheet.text
     assert ".quality-switch" in stylesheet.text
     assert ".shutdown-overlay" in stylesheet.text
+    assert ".director-layout" in stylesheet.text
+    assert ".director-utterance-card" in stylesheet.text
     assert 'preload="metadata"' in script.text
     assert 'preload="none"' not in script.text
     assert 'player.preload = "metadata"' in script.text

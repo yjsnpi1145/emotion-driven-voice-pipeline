@@ -55,6 +55,9 @@ const llmOperationLabels = {
   chapter_plan: "章节规划",
   reference_correction: "参考修正",
   connection_test: "连接测试",
+  script_analysis: "剧本分析",
+  cast_reconciliation: "角色归并",
+  script_translation: "台词翻译",
 };
 
 function readPersistedSelection() {
@@ -1109,6 +1112,8 @@ function activateView(view) {
     Promise.all([loadProfiles(), loadLocalPaths()]).catch((error) => report(error, true));
   } else if (requested === "llm") {
     loadLlmSettings().catch((error) => report(error, true));
+  } else if (requested === "director") {
+    window.directorWorkbench?.refresh().catch((error) => report(error, true));
   } else if (requested === "system") {
     loadSystemHealth().catch((error) => report(error, true));
   } else {
@@ -1165,6 +1170,7 @@ function llmSettingsPayload() {
     timeout_seconds: Number(data.get("timeout_seconds")),
     max_retries: Number(data.get("max_retries")),
     max_reference_corrections: Number(data.get("max_reference_corrections")),
+    max_parallel_requests: Number(data.get("max_parallel_requests")),
     clear_api_key: data.get("clear_api_key") === "on",
   };
   const key = String(data.get("api_key") || "").trim();
@@ -1174,7 +1180,7 @@ function llmSettingsPayload() {
 
 function renderLlmSettings(settings) {
   const form = $("#llm-settings-form");
-  for (const name of ["mode", "base_url", "model", "timeout_seconds", "max_retries", "max_reference_corrections"]) {
+  for (const name of ["mode", "base_url", "model", "timeout_seconds", "max_retries", "max_reference_corrections", "max_parallel_requests"]) {
     form.elements[name].value = settings[name];
   }
   form.elements.api_key.value = "";
@@ -1189,6 +1195,7 @@ function renderLlmSettings(settings) {
     ["模型", settings.model],
     ["密钥", settings.api_key_configured ? "已安全保存" : "未保存"],
     ["超时与重试", `${settings.timeout_seconds} 秒 · ${settings.max_retries} 次`],
+    ["并行分析", `${settings.max_parallel_requests} 个请求`],
     ["配置来源", settings.source === "runtime" ? "WebUI 本地配置" : "启动配置"],
   ];
   $("#llm-summary").innerHTML = rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
@@ -1337,6 +1344,7 @@ async function refreshActiveView(button) {
   await withBusy(button, "刷新中…", async () => {
     if (state.activeView === "models") await Promise.all([loadProfiles(), loadLocalPaths(), loadQualitySettings()]);
     else if (state.activeView === "llm") await Promise.all([loadLlmSettings(), loadQualitySettings()]);
+    else if (state.activeView === "director") await window.directorWorkbench?.refresh();
     else if (state.activeView === "system") await Promise.all([loadSystemHealth(), loadQualitySettings()]);
     else {
       await Promise.all([loadProfiles(), loadChapters(), loadSystemHealth(), loadQualitySettings()]);
@@ -1347,6 +1355,7 @@ async function refreshActiveView(button) {
 }
 
 function stopClientActivity() {
+  window.directorWorkbench?.stop();
   state.events?.close();
   state.events = null;
   if (state.refreshTimer !== null) {
