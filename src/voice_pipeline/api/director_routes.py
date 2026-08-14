@@ -24,6 +24,7 @@ from voice_pipeline.models.director import (
     MergeDirectorUtterancesRequest,
     NarrationSettingRequest,
     RolePresetRecord,
+    SplitDirectorRoleRequest,
     SplitDirectorUtteranceRequest,
     UpdateRolePresetRequest,
 )
@@ -67,6 +68,9 @@ def build_director_router(plane: Any) -> APIRouter:
         _spawn(
             plane,
             _analysis(plane).analyze(project_id, expected_revision=request.expected_revision),
+            project_id=project_id,
+            operation="analysis",
+            expected_status="analyzing",
         )
         return {
             "project_id": str(project_id),
@@ -111,6 +115,22 @@ def build_director_router(plane: Any) -> APIRouter:
                 request.project_id,
                 source_role_ids=request.source_role_ids,
                 target_role_id=request.target_role_id,
+                expected_project_revision=request.expected_project_revision,
+            )
+            return [_dump(item) for item in records]
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="director role not found") from exc
+        except PipelineError as exc:
+            raise _pipeline_error(exc) from exc
+
+    @router.post("/api/v1/director-roles/split")
+    async def split_role(request: SplitDirectorRoleRequest) -> list[dict[str, Any]]:
+        try:
+            records = await _store(plane).split_role(
+                request.project_id,
+                source_role_id=request.source_role_id,
+                utterance_ids=request.utterance_ids,
+                canonical_name=request.canonical_name,
                 expected_project_revision=request.expected_project_revision,
             )
             return [_dump(item) for item in records]
@@ -222,6 +242,9 @@ def build_director_router(plane: Any) -> APIRouter:
         _spawn(
             plane,
             _analysis(plane).translate(project_id, expected_revision=request.expected_revision),
+            project_id=project_id,
+            operation="translation",
+            expected_status="translating",
         )
         return {
             "project_id": str(project_id),
@@ -333,9 +356,39 @@ def build_director_router(plane: Any) -> APIRouter:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="director project not found") from exc
         return {
-            "generation": _dump(generation) if generation is not None else None,
+            "generation": _public_generation(generation) if generation is not None else None,
             "items": [_dump(item) for item in items],
         }
+
+    @router.post(
+        "/api/v1/director-projects/{project_id}/resume-generation", status_code=202
+    )
+    async def resume_generation(
+        project_id: UUID, request: ExpectedProjectRevision
+    ) -> dict[str, Any]:
+        try:
+            generation = await _generation(plane).resume(
+                project_id, expected_revision=request.expected_revision
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="director project not found") from exc
+        except PipelineError as exc:
+            raise _pipeline_error(exc) from exc
+        return _public_generation(generation)
+
+    @router.post("/api/v1/director-projects/{project_id}/recompose", status_code=202)
+    async def recompose(
+        project_id: UUID, request: ExpectedProjectRevision
+    ) -> dict[str, Any]:
+        try:
+            generation = await _generation(plane).recompose(
+                project_id, expected_revision=request.expected_revision
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="director project not found") from exc
+        except PipelineError as exc:
+            raise _pipeline_error(exc) from exc
+        return _public_generation(generation)
 
     @router.get("/api/v1/director-projects/{project_id}/audio")
     async def generation_audio(project_id: UUID) -> FileResponse:
@@ -406,8 +459,28 @@ async def _require_project_revision(plane: Any, project_id: UUID, revision: int)
         )
 
 
-def _spawn(plane: Any, coroutine: Coroutine[Any, Any, object]) -> None:
-    task = asyncio.create_task(coroutine)
+def _spawn(
+    plane: Any,
+    coroutine: Coroutine[Any, Any, object],
+    *,
+    project_id: UUID,
+    operation: str,
+    expected_status: str,
+) -> None:
+    async def run() -> None:
+        try:
+            await coroutine
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            await _store(plane).record_command_failure(
+                project_id,
+                expected_status=expected_status,
+                operation=operation,
+                error=_background_error(exc),
+            )
+
+    task = asyncio.create_task(run())
     tasks: set[asyncio.Task[object]] = plane.director_tasks
     tasks.add(task)
 
@@ -421,10 +494,35 @@ def _spawn(plane: Any, coroutine: Coroutine[Any, Any, object]) -> None:
     task.add_done_callback(done)
 
 
+def _background_error(error: BaseException) -> dict[str, object]:
+    if isinstance(error, PipelineError):
+        return cast(dict[str, object], error.as_dict())
+    return {
+        "code": "INTERNAL_ERROR",
+        "stage": "director",
+        "message": "director background command failed",
+        "retryable": True,
+        "details": {},
+    }
+
+
 def _public_preset(record: RolePresetRecord) -> dict[str, Any]:
     payload = record.model_dump(mode="json", exclude={"base_voice_relative_path"})
     payload["audio_url"] = f"/api/v1/role-presets/{record.preset_id}/audio"
     return payload
+
+
+def _public_generation(record: Any) -> dict[str, Any]:
+    payload = record.model_dump(
+        mode="json",
+        exclude={"snapshot", "final_relative_path", "timeline"},
+    )
+    payload["audio_url"] = (
+        f"/api/v1/director-projects/{record.project_id}/audio"
+        if record.status == "succeeded"
+        else None
+    )
+    return cast(dict[str, Any], payload)
 
 
 def _dump(record: Any) -> dict[str, Any]:

@@ -150,6 +150,50 @@ async def test_narration_toggle_preserves_source_rows(store: DirectorStore):
 
 
 @pytest.mark.asyncio
+async def test_split_role_creates_character_and_reassigns_selected_rows(store: DirectorStore):
+    source = "甲：第一句。甲：第二句。"
+    project = await store.create_project(project_request(source))
+    project = await store.publish_analysis(
+        project.project_id,
+        expected_revision=project.revision,
+        roles=(CreateDirectorRole(canonical_name="甲", kind="character"),),
+        utterances=(
+            CreateDirectorUtterance(
+                ordinal=0,
+                source_start=0,
+                source_end=6,
+                source_text=source[:6],
+                kind="dialogue",
+                speak_enabled=True,
+                role_name="甲",
+            ),
+            CreateDirectorUtterance(
+                ordinal=1,
+                source_start=6,
+                source_end=len(source),
+                source_text=source[6:],
+                kind="dialogue",
+                speak_enabled=True,
+                role_name="甲",
+            ),
+        ),
+    )
+    role = (await store.list_roles(project.project_id))[0]
+    rows = await store.list_utterances(project.project_id)
+    roles = await store.split_role(
+        project.project_id,
+        source_role_id=role.role_id,
+        utterance_ids=(rows[1].utterance_id,),
+        canonical_name="乙",
+        expected_project_revision=project.revision,
+    )
+    assert {item.canonical_name for item in roles} == {"甲", "乙"}
+    reassigned = await store.list_utterances(project.project_id)
+    names = {item.role_id: item.canonical_name for item in roles}
+    assert [names[item.role_id] for item in reassigned] == ["甲", "乙"]
+
+
+@pytest.mark.asyncio
 async def test_review_and_translation_are_explicit_gates(store: DirectorStore):
     source = "甲：你好。"
     project = await store.create_project(project_request(source))

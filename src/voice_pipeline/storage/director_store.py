@@ -105,6 +105,35 @@ class DirectorStore:
             )
         return [_project(dict(row)) for row in rows]
 
+    async def health_counts(self) -> dict[str, int]:
+        """Return path-free operational counts for the control-plane health payload."""
+        async with self._database.read_session() as session:
+            async def project_count(statuses: Sequence[str]) -> int:
+                value = await session.scalar(
+                    select(func.count())
+                    .select_from(director_projects)
+                    .where(director_projects.c.deleted_at_utc.is_(None))
+                    .where(director_projects.c.status.in_(list(statuses)))
+                )
+                return int(value or 0)
+
+            active_analysis = await project_count(("analyzing", "translating"))
+            active_generation = await project_count(("generating",))
+            projects_needing_review = await project_count(
+                ("role_review", "translation_review", "voice_mapping", "generation_incomplete")
+            )
+            unavailable = await session.scalar(
+                select(func.count())
+                .select_from(role_presets)
+                .where(role_presets.c.status.not_in(["ready", "archived"]))
+            )
+        return {
+            "active_analysis": active_analysis,
+            "active_generation": active_generation,
+            "projects_needing_review": projects_needing_review,
+            "unavailable_role_presets": int(unavailable or 0),
+        }
+
     async def begin_analysis(
         self, project_id: UUID, *, expected_revision: int
     ) -> DirectorProjectRecord:
@@ -116,6 +145,36 @@ class DirectorStore:
             event="analysis_started",
         )
         return await self.get_project(project_id)
+
+    async def record_command_failure(
+        self,
+        project_id: UUID,
+        *,
+        expected_status: str,
+        operation: str,
+        error: dict[str, object],
+    ) -> bool:
+        """Persist a background-command failure without overwriting later edits."""
+        async with self._database.write_session() as session:
+            row = await _locked_project(session, project_id)
+            if str(row["status"]) != expected_status:
+                return False
+            revision = int(row["revision"])
+            await session.execute(
+                update(director_projects)
+                .where(director_projects.c.project_id == str(project_id))
+                .where(director_projects.c.status == expected_status)
+                .values(last_error_json=_json(error), updated_at_utc=_now())
+            )
+            await _append_event(
+                session,
+                project_id,
+                operation=f"{operation}_failed",
+                before_revision=revision,
+                after_revision=revision,
+                details={"error": error},
+            )
+        return True
 
     async def load_analysis_chunk(
         self, project_id: UUID, chunk: ScriptChunk
@@ -734,6 +793,120 @@ class DirectorStore:
             )
         return await self.list_utterances(project_id)
 
+    async def split_role(
+        self,
+        project_id: UUID,
+        *,
+        source_role_id: UUID,
+        utterance_ids: Sequence[UUID],
+        canonical_name: str,
+        expected_project_revision: int,
+    ) -> list[DirectorRoleRecord]:
+        selected = {str(item) for item in utterance_ids}
+        if not selected or not canonical_name.strip():
+            raise PipelineError(
+                ErrorCode.INVALID_INPUT,
+                "director",
+                "role split requires selected utterances and a new name",
+                retryable=False,
+            )
+        async with self._database.write_session() as session:
+            project = await _locked_project(session, project_id)
+            _require_revision(project, expected_project_revision)
+            if str(project["status"]) != "role_review":
+                raise _state_conflict(str(project["status"]), "split role")
+            source = (
+                await session.execute(
+                    select(director_roles).where(
+                        director_roles.c.role_id == str(source_role_id),
+                        director_roles.c.project_id == str(project_id),
+                    )
+                )
+            ).mappings().one_or_none()
+            if source is None:
+                raise KeyError("unknown director role")
+            duplicate = await session.scalar(
+                select(director_roles.c.role_id).where(
+                    director_roles.c.project_id == str(project_id),
+                    director_roles.c.canonical_name == canonical_name.strip(),
+                )
+            )
+            if duplicate is not None:
+                raise PipelineError(
+                    ErrorCode.INVALID_INPUT,
+                    "director",
+                    "director role name already exists",
+                    retryable=False,
+                )
+            rows = (
+                (
+                    await session.execute(
+                        select(
+                            director_utterances.c.utterance_id,
+                            director_utterances.c.role_id,
+                        ).where(
+                            director_utterances.c.project_id == str(project_id),
+                            director_utterances.c.utterance_id.in_(selected),
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if len(rows) != len(selected) or any(
+                str(row["role_id"]) != str(source_role_id) for row in rows
+            ):
+                raise PipelineError(
+                    ErrorCode.INVALID_INPUT,
+                    "director",
+                    "selected utterances do not all belong to the source role",
+                    retryable=False,
+                )
+            new_role_id = uuid4()
+            await session.execute(
+                insert(director_roles).values(
+                    role_id=str(new_role_id),
+                    project_id=str(project_id),
+                    canonical_name=canonical_name.strip(),
+                    kind="character",
+                    aliases_json="[]",
+                    confidence=1.0,
+                    preset_id=None,
+                    revision=0,
+                )
+            )
+            await session.execute(
+                update(director_utterances)
+                .where(director_utterances.c.utterance_id.in_(selected))
+                .values(
+                    role_id=str(new_role_id),
+                    role_confirmed=1,
+                    revision=director_utterances.c.revision + 1,
+                )
+            )
+            await session.execute(
+                update(director_projects)
+                .where(director_projects.c.project_id == str(project_id))
+                .values(
+                    revision=expected_project_revision + 1,
+                    role_revision=director_projects.c.role_revision + 1,
+                    updated_at_utc=_now(),
+                )
+            )
+            await _append_event(
+                session,
+                project_id,
+                operation="role_split",
+                before_revision=expected_project_revision,
+                after_revision=expected_project_revision + 1,
+                details={
+                    "source_role_id": str(source_role_id),
+                    "new_role_id": str(new_role_id),
+                    "utterance_ids": sorted(selected),
+                },
+            )
+        return await self.list_roles(project_id)
+
     async def merge_roles(
         self,
         project_id: UUID,
@@ -1133,6 +1306,87 @@ class DirectorStore:
                 .values(status="running", started_at_utc=_now(), error_json=None)
             )
 
+    async def reopen_generation(
+        self,
+        project_id: UUID,
+        generation_id: UUID,
+        *,
+        expected_revision: int,
+    ) -> DirectorGenerationRecord:
+        """Atomically make an incomplete/interrupted generation runnable again."""
+        async with self._database.write_session() as session:
+            project = await _locked_project(session, project_id)
+            _require_revision(project, expected_revision)
+            if str(project.get("current_generation_id")) != str(generation_id):
+                raise _state_conflict(str(project["status"]), "resume an older generation")
+            generation = (
+                (
+                    await session.execute(
+                        select(director_generations).where(
+                            director_generations.c.generation_id == str(generation_id)
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if generation is None:
+                raise KeyError(f"unknown director generation: {generation_id}")
+            if str(generation["status"]) not in {"generation_incomplete", "interrupted"}:
+                raise _state_conflict(str(generation["status"]), "resume generation")
+            now = _now()
+            await session.execute(
+                update(director_generations)
+                .where(director_generations.c.generation_id == str(generation_id))
+                .values(status="queued", error_json=None, finished_at_utc=None)
+            )
+            await session.execute(
+                update(director_projects)
+                .where(director_projects.c.project_id == str(project_id))
+                .values(
+                    status="generating",
+                    revision=expected_revision + 1,
+                    last_error_json=None,
+                    updated_at_utc=now,
+                )
+            )
+            await _append_event(
+                session,
+                project_id,
+                operation="generation_resumed",
+                before_revision=expected_revision,
+                after_revision=expected_revision + 1,
+                details={"generation_id": str(generation_id)},
+            )
+        return await self.get_generation(generation_id)
+
+    async def mark_generation_interrupted(
+        self, generation_id: UUID, *, error: dict[str, object]
+    ) -> None:
+        generation = await self.get_generation(generation_id)
+        now = _now()
+        async with self._database.write_session() as session:
+            await session.execute(
+                update(director_generations)
+                .where(director_generations.c.generation_id == str(generation_id))
+                .where(director_generations.c.status.in_(["queued", "running"]))
+                .values(
+                    status="interrupted",
+                    error_json=_json(error),
+                    finished_at_utc=now,
+                )
+            )
+            await session.execute(
+                update(director_projects)
+                .where(director_projects.c.project_id == str(generation.project_id))
+                .where(director_projects.c.current_generation_id == str(generation_id))
+                .values(
+                    status="generation_incomplete",
+                    last_error_json=_json(error),
+                    updated_at_utc=now,
+                )
+            )
+
     async def set_generation_item(
         self,
         generation_id: UUID,
@@ -1289,7 +1543,12 @@ class DirectorStore:
             await session.execute(
                 update(director_projects)
                 .where(director_projects.c.project_id == str(project_id))
-                .values(status=status, revision=expected_revision + 1, updated_at_utc=_now())
+                .values(
+                    status=status,
+                    revision=expected_revision + 1,
+                    last_error_json=None,
+                    updated_at_utc=_now(),
+                )
             )
             await _append_event(
                 session,

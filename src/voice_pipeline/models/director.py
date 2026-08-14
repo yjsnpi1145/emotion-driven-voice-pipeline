@@ -193,6 +193,14 @@ class MergeDirectorRolesRequest(StrictModel):
     target_role_id: UUID
 
 
+class SplitDirectorRoleRequest(StrictModel):
+    project_id: UUID
+    expected_project_revision: int = Field(ge=0)
+    source_role_id: UUID
+    utterance_ids: tuple[UUID, ...] = Field(min_length=1)
+    canonical_name: NonBlankText
+
+
 class NarrationSettingRequest(StrictModel):
     expected_revision: int = Field(ge=0)
     enabled: bool

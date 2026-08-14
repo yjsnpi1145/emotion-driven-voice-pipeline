@@ -8,6 +8,21 @@ import pytest
 from tests.integration_cpu.conftest import write_tone
 from tests.integration_cpu.test_chapter_pipeline import _import_profile
 from voice_pipeline.api.app import create_app
+from voice_pipeline.core.errors import ErrorCode, PipelineError
+
+
+class _FailingAnalysis:
+    def __init__(self, store) -> None:
+        self._store = store
+
+    async def analyze(self, project_id, *, expected_revision):
+        await self._store.begin_analysis(project_id, expected_revision=expected_revision)
+        raise PipelineError(
+            ErrorCode.LLM_UNAVAILABLE,
+            "llm",
+            "director analysis fixture failed",
+            retryable=True,
+        )
 
 
 @pytest.mark.asyncio
@@ -70,6 +85,50 @@ async def test_director_api_stages_analysis_review_and_translation(fake_settings
                     break
                 await asyncio.sleep(0.01)
             assert project["status"] == "translation_review"
+            health = await client.get("/api/v1/health")
+            assert health.status_code == 200
+            assert health.json()["director"] == {
+                "active_analysis": 0,
+                "active_generation": 0,
+                "projects_needing_review": 1,
+                "unavailable_role_presets": 0,
+            }
+
+
+@pytest.mark.asyncio
+async def test_director_background_failure_is_persisted_for_retry(fake_settings) -> None:
+    app = create_app(fake_settings)
+    async with app.router.lifespan_context(app):
+        app.state.plane.director_analysis = _FailingAnalysis(app.state.plane.director_store)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            project = (
+                await client.post(
+                    "/api/v1/director-projects",
+                    json={
+                        "title": "失败可见",
+                        "source_text": "旁白。",
+                        "source_language": "zh",
+                        "target_language": "ja",
+                    },
+                )
+            ).json()
+            response = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}/analyze",
+                json={"expected_revision": project["revision"]},
+            )
+            assert response.status_code == 202
+            for _ in range(100):
+                project = (
+                    await client.get(f"/api/v1/director-projects/{project['project_id']}")
+                ).json()
+                if project["last_error"] is not None:
+                    break
+                await asyncio.sleep(0.01)
+            assert project["status"] == "analyzing"
+            assert project["last_error"]["code"] == "LLM_UNAVAILABLE"
+            assert project["last_error"]["retryable"] is True
 
 
 @pytest.mark.asyncio
@@ -148,6 +207,44 @@ async def test_director_generation_uses_role_presets_and_completes(fake_settings
             assert submitted.status_code == 202
             project = await _wait_status(client, project["project_id"], "succeeded", limit=500)
             assert project["status"] == "succeeded"
+            progress = await client.get(
+                f"/api/v1/director-projects/{project['project_id']}/progress"
+            )
+            assert progress.status_code == 200
+            assert "snapshot" not in progress.json()["generation"]
+            assert "relative_path" not in progress.text
+            generation = await app.state.plane.director_store.current_generation(
+                project["project_id"]
+            )
+            assert generation is not None
+            items = await app.state.plane.director_store.list_generation_items(
+                generation.generation_id
+            )
+            await app.state.plane.director_store.set_generation_item(
+                generation.generation_id,
+                items[0].utterance_id,
+                status="failed",
+                error={"code": "TEST_FAILURE"},
+            )
+            await app.state.plane.director_store.finish_generation(
+                generation.generation_id,
+                succeeded=False,
+                error={"code": "TEST_FAILURE"},
+            )
+            project = (
+                await client.get(f"/api/v1/director-projects/{project['project_id']}")
+            ).json()
+            resumed = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}/resume-generation",
+                json={"expected_revision": project["revision"]},
+            )
+            assert resumed.status_code == 202
+            project = await _wait_status(client, project["project_id"], "succeeded", limit=500)
+            recomposed = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}/recompose",
+                json={"expected_revision": project["revision"]},
+            )
+            assert recomposed.status_code == 202, recomposed.text
             audio = await client.get(f"/api/v1/director-projects/{project['project_id']}/audio")
             assert audio.status_code == 200
             assert audio.content.startswith(b"RIFF")

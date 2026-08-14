@@ -13,6 +13,7 @@ from voice_pipeline.models.director import (
     DirectorGenerationItemRecord,
     DirectorGenerationRecord,
     DirectorProjectRecord,
+    DirectorRoleRecord,
     DirectorUtteranceRecord,
     RolePresetRecord,
 )
@@ -125,6 +126,127 @@ class DirectorGenerationService:
             return None, []
         return generation, await self._directors.list_generation_items(generation.generation_id)
 
+    async def resume(
+        self, project_id: UUID, *, expected_revision: int
+    ) -> DirectorGenerationRecord:
+        project = await self._directors.get_project(project_id)
+        if project.revision != expected_revision:
+            raise PipelineError(
+                ErrorCode.VERSION_CONFLICT,
+                "director_generation",
+                "director data changed; refresh before resuming",
+                retryable=False,
+            )
+        generation = await self._directors.current_generation(project_id)
+        if generation is None:
+            raise PipelineError(
+                ErrorCode.DIRECTOR_STATE_CONFLICT,
+                "director_generation",
+                "project has no generation to resume",
+                retryable=False,
+            )
+        active = self._active.get(generation.generation_id)
+        if active is not None and not active.done():
+            return generation
+        if generation.status == "succeeded":
+            return generation
+        snapshot_project, utterances, preset_by_role = _snapshot_inputs(generation)
+        current_utterances = {
+            item.utterance_id: item
+            for item in await self._directors.list_utterances(project_id)
+        }
+        for item in await self._directors.list_generation_items(generation.generation_id):
+            current = current_utterances[item.utterance_id]
+            if current.segment_id is not None:
+                segment = await self._segments.get_segment(current.segment_id)
+                if segment.active_gsv_version_id is not None:
+                    await self._directors.attach_utterance_versions(
+                        item.utterance_id,
+                        gsv_version_id=segment.active_gsv_version_id,
+                    )
+                    status = "ready"
+                elif segment.active_ref_version_id is not None:
+                    await self._directors.attach_utterance_versions(
+                        item.utterance_id,
+                        reference_version_id=segment.active_ref_version_id,
+                    )
+                    status = "reference_ready"
+                else:
+                    status = "queued"
+            else:
+                status = "queued"
+            await self._directors.set_generation_item(
+                generation.generation_id,
+                item.utterance_id,
+                status=status,
+            )
+        generation = await self._directors.reopen_generation(
+            project_id,
+            generation.generation_id,
+            expected_revision=expected_revision,
+        )
+        task = asyncio.create_task(
+            self._run(generation.generation_id, snapshot_project, utterances, preset_by_role)
+        )
+        self._active[generation.generation_id] = task
+        task.add_done_callback(lambda completed: self._forget(generation.generation_id, completed))
+        return generation
+
+    async def recompose(
+        self, project_id: UUID, *, expected_revision: int
+    ) -> DirectorGenerationRecord:
+        project = await self._directors.get_project(project_id)
+        if project.revision != expected_revision:
+            raise PipelineError(
+                ErrorCode.VERSION_CONFLICT,
+                "director_generation",
+                "director data changed; refresh before recomposing",
+                retryable=False,
+            )
+        generation = await self._directors.current_generation(project_id)
+        if generation is None:
+            raise PipelineError(
+                ErrorCode.DIRECTOR_STATE_CONFLICT,
+                "director_generation",
+                "project has no generation to compose",
+                retryable=False,
+            )
+        _, utterances, _ = _snapshot_inputs(generation)
+        current = {
+            item.utterance_id: item
+            for item in await self._directors.list_utterances(project_id)
+        }
+        materialized: dict[UUID, UUID] = {}
+        for utterance in utterances:
+            record = current[utterance.utterance_id]
+            if record.segment_id is None:
+                raise PipelineError(
+                    ErrorCode.VERSION_NOT_READY,
+                    "director_generation",
+                    "a spoken utterance has not been materialized",
+                    retryable=False,
+                )
+            segment = await self._segments.get_segment(record.segment_id)
+            if segment.active_gsv_version_id is None:
+                raise PipelineError(
+                    ErrorCode.VERSION_NOT_READY,
+                    "director_generation",
+                    "a spoken utterance has no ready GSV version",
+                    retryable=False,
+                )
+            materialized[utterance.utterance_id] = record.segment_id
+            await self._directors.attach_utterance_versions(
+                utterance.utterance_id,
+                gsv_version_id=segment.active_gsv_version_id,
+            )
+            await self._directors.set_generation_item(
+                generation.generation_id,
+                utterance.utterance_id,
+                status="ready",
+            )
+        await self._compose(generation.generation_id, materialized, utterances)
+        return await self._directors.get_generation(generation.generation_id)
+
     async def recover(self) -> tuple[UUID, ...]:
         return await self._directors.mark_running_generations_interrupted()
 
@@ -212,7 +334,8 @@ class DirectorGenerationService:
                 item = refreshed[utterance.utterance_id]
                 if item.status == "reference_ready":
                     groups[item.model_profile_id].append(utterance)
-            for model_profile_id, group in groups.items():
+            for model_profile_id in sorted(groups, key=str):
+                group = groups[model_profile_id]
                 for utterance in group:
                     segment_id = materialized[utterance.utterance_id]
                     try:
@@ -272,9 +395,8 @@ class DirectorGenerationService:
                 return
             await self._compose(generation_id, materialized, utterances)
         except asyncio.CancelledError:
-            await self._directors.finish_generation(
+            await self._directors.mark_generation_interrupted(
                 generation_id,
-                succeeded=False,
                 error={
                     "code": "JOB_CANCELLED",
                     "stage": "director_generation",
@@ -388,6 +510,8 @@ class DirectorGenerationService:
                 )
             )
         output_dir = self._artifacts.root / "directors" / str(generation_id)
+        if (output_dir / "final.wav").exists():
+            output_dir = output_dir / "recompositions" / str(uuid4())
         composed = compose_final(
             ordered_inputs=tuple(inputs),
             output_spec=OutputAudioSpec(),
@@ -422,3 +546,45 @@ def _error_payload(error: BaseException) -> dict[str, Any]:
         "retryable": False,
         "details": {},
     }
+
+
+def _snapshot_inputs(
+    generation: DirectorGenerationRecord,
+) -> tuple[
+    DirectorProjectRecord,
+    list[DirectorUtteranceRecord],
+    dict[UUID, RolePresetRecord],
+]:
+    try:
+        project = DirectorProjectRecord.model_validate(generation.snapshot["project"])
+        utterances = [
+            DirectorUtteranceRecord.model_validate(item)
+            for item in generation.snapshot["utterances"]  # type: ignore[union-attr]
+        ]
+        roles = {
+            role.role_id: role
+            for role in (
+                DirectorRoleRecord.model_validate(item)
+                for item in generation.snapshot["roles"]  # type: ignore[union-attr]
+            )
+        }
+        presets = {
+            preset.preset_id: preset
+            for preset in (
+                RolePresetRecord.model_validate(item)
+                for item in generation.snapshot["presets"]  # type: ignore[union-attr]
+            )
+        }
+        preset_by_role = {
+            role_id: presets[role.preset_id]
+            for role_id, role in roles.items()
+            if role.preset_id is not None
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PipelineError(
+            ErrorCode.INVALID_INPUT,
+            "director_generation",
+            "director generation snapshot is invalid",
+            retryable=False,
+        ) from exc
+    return project, utterances, preset_by_role
