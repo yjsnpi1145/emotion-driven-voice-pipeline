@@ -4,13 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
-MODULE = (
-    Path(__file__).parents[2]
-    / "src"
-    / "voice_pipeline"
-    / "webui"
-    / "service-shutdown.js"
-)
+MODULE = Path(__file__).parents[2] / "src" / "voice_pipeline" / "webui" / "service-shutdown.js"
 
 
 def test_shutdown_coordinator_handles_cancel_accept_disconnect_and_http_error() -> None:

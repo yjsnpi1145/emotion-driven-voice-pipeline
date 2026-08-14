@@ -9,6 +9,14 @@ from uuid import UUID, uuid4
 
 from voice_pipeline.core.config import LlmSettings
 from voice_pipeline.core.errors import PipelineError
+from voice_pipeline.models.director_llm import (
+    AnalyzedUtterance,
+    CastReconciliationResult,
+    ChunkAnalysisResult,
+    ScriptChunk,
+    ScriptTranslationResult,
+    TranslationInput,
+)
 from voice_pipeline.models.runtime_settings import (
     LlmConnectionTestResult,
     LlmSettingsSnapshot,
@@ -42,6 +50,25 @@ class _Director(Protocol):
         activity_id: UUID | None = None,
     ) -> str: ...
 
+    async def analyze_script_chunk(
+        self, *, chunk: ScriptChunk, activity_id: UUID | None = None
+    ) -> ChunkAnalysisResult: ...
+
+    async def reconcile_cast(
+        self,
+        *,
+        utterances: tuple[AnalyzedUtterance, ...],
+        activity_id: UUID | None = None,
+    ) -> CastReconciliationResult: ...
+
+    async def translate_utterances(
+        self,
+        *,
+        target_language: LanguageCode,
+        utterances: tuple[TranslationInput, ...],
+        activity_id: UUID | None = None,
+    ) -> ScriptTranslationResult: ...
+
 
 class RuntimeDirector:
     """Hot-swappable Director with local, atomic runtime settings persistence."""
@@ -58,12 +85,17 @@ class RuntimeDirector:
             timeout_seconds=config.timeout_seconds,
             max_retries=config.max_retries,
             max_reference_corrections=config.max_reference_corrections,
+            max_parallel_requests=config.max_parallel_requests,
         )
         self._secret = os.environ.get(config.api_key_env or "") or None
         self._source: str = "config"
         self._director: _Director = FakeDirector()
         self.activity = LlmActivityLog()
         self._lock = asyncio.Lock()
+        self._parallel_calls = asyncio.Semaphore(config.max_parallel_requests)
+        self._active_staged_calls = 0
+        self._staged_idle = asyncio.Event()
+        self._staged_idle.set()
         self._started = False
 
     async def start(self) -> None:
@@ -78,6 +110,7 @@ class RuntimeDirector:
             if secret is not None:
                 self._secret = secret
             self._director = self._build_director(self._snapshot, self._secret)
+            self._parallel_calls = asyncio.Semaphore(self._snapshot.max_parallel_requests)
             self._started = True
 
     @property
@@ -92,6 +125,7 @@ class RuntimeDirector:
         )
 
     async def update(self, request: LlmSettingsUpdate) -> LlmSettingsView:
+        await self._staged_idle.wait()
         async with self._lock:
             snapshot = request.snapshot()
             secret = self._updated_secret(request)
@@ -106,6 +140,7 @@ class RuntimeDirector:
             self._secret = secret
             self._source = "runtime"
             self._director = replacement
+            self._parallel_calls = asyncio.Semaphore(snapshot.max_parallel_requests)
             await _close(previous)
             return self.view()
 
@@ -173,9 +208,7 @@ class RuntimeDirector:
         emotion_description: str,
     ) -> str:
         operation_id = uuid4()
-        await self._record_started(
-            operation_id, "reference_correction", "开始修正中文参考文本"
-        )
+        await self._record_started(operation_id, "reference_correction", "开始修正中文参考文本")
         try:
             async with self._lock:
                 result = await self._director.correct_reference_text(
@@ -195,9 +228,106 @@ class RuntimeDirector:
         )
         return result
 
+    async def analyze_script_chunk(self, *, chunk: ScriptChunk) -> ChunkAnalysisResult:
+        operation_id = uuid4()
+        await self._record_started(
+            operation_id,
+            "script_analysis",
+            f"开始分析剧本块 · {chunk.source_start}:{chunk.source_end}",
+        )
+        try:
+            async with self._parallel_calls:
+                director = await self._begin_staged_call()
+                try:
+                    result = await director.analyze_script_chunk(
+                        chunk=chunk, activity_id=operation_id
+                    )
+                finally:
+                    await self._end_staged_call()
+        except BaseException as exc:
+            await self._record_failed(operation_id, "script_analysis", exc)
+            raise
+        await self._record_completed(
+            operation_id,
+            "script_analysis",
+            f"剧本块分析完成 · {len(result.utterances)} 条语句",
+            result.model_dump_json(),
+        )
+        return result
+
+    async def reconcile_cast(
+        self, *, utterances: tuple[AnalyzedUtterance, ...]
+    ) -> CastReconciliationResult:
+        operation_id = uuid4()
+        await self._record_started(operation_id, "cast_reconciliation", "开始归并全局角色")
+        try:
+            async with self._parallel_calls:
+                director = await self._begin_staged_call()
+                try:
+                    result = await director.reconcile_cast(
+                        utterances=utterances, activity_id=operation_id
+                    )
+                finally:
+                    await self._end_staged_call()
+        except BaseException as exc:
+            await self._record_failed(operation_id, "cast_reconciliation", exc)
+            raise
+        await self._record_completed(
+            operation_id,
+            "cast_reconciliation",
+            f"角色归并完成 · {len(result.roles)} 个角色",
+            result.model_dump_json(),
+        )
+        return result
+
+    async def translate_utterances(
+        self,
+        *,
+        target_language: LanguageCode,
+        utterances: tuple[TranslationInput, ...],
+    ) -> ScriptTranslationResult:
+        operation_id = uuid4()
+        await self._record_started(
+            operation_id, "script_translation", f"开始翻译 {len(utterances)} 条语句"
+        )
+        try:
+            async with self._parallel_calls:
+                director = await self._begin_staged_call()
+                try:
+                    result = await director.translate_utterances(
+                        target_language=target_language,
+                        utterances=utterances,
+                        activity_id=operation_id,
+                    )
+                finally:
+                    await self._end_staged_call()
+        except BaseException as exc:
+            await self._record_failed(operation_id, "script_translation", exc)
+            raise
+        await self._record_completed(
+            operation_id,
+            "script_translation",
+            f"剧本翻译完成 · {len(result.items)} 条语句",
+            result.model_dump_json(),
+        )
+        return result
+
     async def aclose(self) -> None:
+        await self._staged_idle.wait()
         async with self._lock:
             await _close(self._director)
+
+    async def _begin_staged_call(self) -> _Director:
+        async with self._lock:
+            self._active_staged_calls += 1
+            self._staged_idle.clear()
+            return self._director
+
+    async def _end_staged_call(self) -> None:
+        async with self._lock:
+            self._active_staged_calls -= 1
+            if self._active_staged_calls == 0:
+                self._staged_idle.set()
 
     def _build_director(self, snapshot: LlmSettingsSnapshot, secret: str | None) -> _Director:
         if snapshot.mode == "fake":
@@ -211,6 +341,7 @@ class RuntimeDirector:
                 timeout_seconds=snapshot.timeout_seconds,
                 max_retries=snapshot.max_retries,
                 max_reference_corrections=snapshot.max_reference_corrections,
+                max_parallel_requests=snapshot.max_parallel_requests,
             ),
             api_key=secret,
             activity=self.activity,

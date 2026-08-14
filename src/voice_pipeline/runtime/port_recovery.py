@@ -176,8 +176,7 @@ def _same_command(actual: tuple[str, ...], expected: tuple[str, ...]) -> bool:
     if len(actual) != len(expected):
         return False
     return all(
-        _same_command_token(left, right)
-        for left, right in zip(actual, expected, strict=True)
+        _same_command_token(left, right) for left, right in zip(actual, expected, strict=True)
     )
 
 
@@ -189,9 +188,10 @@ def _same_command_token(actual: str, expected: str) -> bool:
 
 
 def _same_path(actual: str | Path, expected: str | Path) -> bool:
-    return str(Path(actual).resolve(strict=False)).casefold() == str(
-        Path(expected).resolve(strict=False)
-    ).casefold()
+    return (
+        str(Path(actual).resolve(strict=False)).casefold()
+        == str(Path(expected).resolve(strict=False)).casefold()
+    )
 
 
 def _same_create_time(actual: float, expected: float) -> bool:

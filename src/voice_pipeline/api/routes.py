@@ -51,6 +51,17 @@ def build_router(plane: Any) -> APIRouter:
         }
         storage_health = await _storage_health(plane)
         job_counts = await _job_counts(plane)
+        director_store = getattr(plane, "director_store", None)
+        director_health = (
+            await director_store.health_counts()
+            if director_store is not None
+            else {
+                "active_analysis": 0,
+                "active_generation": 0,
+                "projects_needing_review": 0,
+                "unavailable_role_presets": 0,
+            }
+        )
         dispatcher = getattr(plane, "dispatcher", None)
         dispatcher_stats = dispatcher.stats() if dispatcher is not None else None
         return {
@@ -83,6 +94,7 @@ def build_router(plane: Any) -> APIRouter:
                 ),
             },
             "job_counts": job_counts,
+            "director": director_health,
             "gpu_queue": {
                 "state": queue_stats.state,
                 "poison_reason": queue_stats.poison_reason,

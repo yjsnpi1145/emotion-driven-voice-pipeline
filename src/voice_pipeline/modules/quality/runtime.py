@@ -53,9 +53,7 @@ class RuntimeQualityGate:
             source=self._source,
         )
 
-    async def update(
-        self, request: QualityScoringSettingsUpdate
-    ) -> QualityScoringSettingsView:
+    async def update(self, request: QualityScoringSettingsUpdate) -> QualityScoringSettingsView:
         async with self._lock:
             await asyncio.to_thread(self._persist, request)
             self._asr_text_scoring_enabled = request.asr_text_scoring_enabled
@@ -77,8 +75,7 @@ class RuntimeQualityGate:
                 for item in report.checks
             )
             vad_failed = any(
-                item in {"duration_failed", "speech_failed", "ratio_failed"}
-                for item in checks
+                item in {"duration_failed", "speech_failed", "ratio_failed"} for item in checks
             )
             return report.model_copy(
                 update={

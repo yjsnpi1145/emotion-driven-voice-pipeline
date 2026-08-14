@@ -30,6 +30,8 @@ _WEBUI_ROOT = Path(__file__).parents[1] / "webui"
 _WEBUI_FILES = {
     "index.html",
     "app.js",
+    "director-dnd.js",
+    "director.js",
     "selection-state.js",
     "service-shutdown.js",
     "stage-progress.js",

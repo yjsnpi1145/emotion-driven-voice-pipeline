@@ -312,9 +312,7 @@ async def test_quality_toggle_does_not_invalidate_existing_reference_manifests(
     strict_gsv = make_gsv_request(strict_reference.manifest_path).model_copy(
         update={"request_id": uuid4()}
     )
-    await service.generate_gsv(
-        make_context(tmp_path, strict_gsv.request_id), strict_gsv
-    )
+    await service.generate_gsv(make_context(tmp_path, strict_gsv.request_id), strict_gsv)
 
     relaxed_request = request.model_copy(update={"request_id": uuid4(), "seed": 4321})
     relaxed_reference = await service.generate_reference(
@@ -324,9 +322,7 @@ async def test_quality_toggle_does_not_invalidate_existing_reference_manifests(
     relaxed_gsv = make_gsv_request(relaxed_reference.manifest_path).model_copy(
         update={"request_id": uuid4()}
     )
-    await service.generate_gsv(
-        make_context(tmp_path, relaxed_gsv.request_id), relaxed_gsv
-    )
+    await service.generate_gsv(make_context(tmp_path, relaxed_gsv.request_id), relaxed_gsv)
 
     assert [name for name, _ in calls].count("gsv") == 2
 

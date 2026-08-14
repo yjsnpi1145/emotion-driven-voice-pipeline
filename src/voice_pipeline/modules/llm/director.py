@@ -125,9 +125,7 @@ def validate_director_plan(
                 retryable=False,
             )
         materialized.append(
-            MaterializedDirectedSegment(
-                **segment.model_dump(), source_text=source_slice
-            )
+            MaterializedDirectedSegment(**segment.model_dump(), source_text=source_slice)
         )
         previous_end = segment.source_end
     if previous_end != len(source_text):

@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 
 from voice_pipeline.api.chapter_routes import build_chapter_router
 from voice_pipeline.api.dependencies import build_dependencies
+from voice_pipeline.api.director_routes import build_director_router
 from voice_pipeline.api.foundation_routes import build_foundation_router
 from voice_pipeline.api.maintenance_routes import build_maintenance_router
 from voice_pipeline.api.model_profile_routes import build_model_profile_router
@@ -21,6 +22,8 @@ from voice_pipeline.api.workbench_routes import build_workbench_router
 from voice_pipeline.core.chapter_service import ChapterService
 from voice_pipeline.core.config import AppSettings
 from voice_pipeline.core.desktop_service import DesktopService
+from voice_pipeline.core.director_analysis import ScriptAnalysisService
+from voice_pipeline.core.director_generation import DirectorGenerationService
 from voice_pipeline.core.dispatcher import DurableJobDispatcher
 from voice_pipeline.core.gpu_queue import SerialGpuQueue
 from voice_pipeline.core.job_executor import JobExecutor
@@ -28,6 +31,7 @@ from voice_pipeline.core.jobs import InMemoryJobRegistry
 from voice_pipeline.core.model_profile_service import ModelProfileService
 from voice_pipeline.core.pipeline import SynthesisService
 from voice_pipeline.core.regeneration_service import SegmentRegenerationService
+from voice_pipeline.core.role_preset_service import RolePresetService
 from voice_pipeline.core.segment_job_service import SegmentJobService
 from voice_pipeline.modules.llm.runtime import RuntimeDirector
 from voice_pipeline.modules.quality.fake import DeterministicQualityAnalyzer
@@ -39,12 +43,14 @@ from voice_pipeline.storage.artifact_store import ArtifactStore
 from voice_pipeline.storage.cache_store import CacheStore
 from voice_pipeline.storage.chapter_store import ChapterStore
 from voice_pipeline.storage.database import Database
+from voice_pipeline.storage.director_store import DirectorStore
 from voice_pipeline.storage.job_store import SqliteJobStore
 from voice_pipeline.storage.model_importer import ModelProfileImporter
 from voice_pipeline.storage.model_profile_store import SqliteModelProfileStore
 from voice_pipeline.storage.quality_cache import QualityCacheStore
 from voice_pipeline.storage.recovery import StorageRecovery
 from voice_pipeline.storage.retention import RetentionExecutor, RetentionPlanner
+from voice_pipeline.storage.role_preset_store import RolePresetStore
 from voice_pipeline.storage.segment_store import SegmentStore
 from voice_pipeline.storage.version_store import VersionCommitService, VersionStore
 
@@ -92,6 +98,11 @@ class ControlPlane:
         self.llm_client: Any | None = None
         self.desktop_service: DesktopService | None = None
         self.regeneration: SegmentRegenerationService | None = None
+        self.director_store: DirectorStore | None = None
+        self.director_analysis: ScriptAnalysisService | None = None
+        self.director_generation: DirectorGenerationService | None = None
+        self.role_presets: RolePresetService | None = None
+        self.director_tasks: set[asyncio.Task[object]] = set()
 
     def attach_durable_state(self, database: Database, model_profiles: ModelProfileService) -> None:
         self.database = database
@@ -125,6 +136,14 @@ class ControlPlane:
         regeneration = getattr(self, "regeneration", None)
         if regeneration is not None:
             await regeneration.stop(deadline=deadline)
+        director_generation = getattr(self, "director_generation", None)
+        if director_generation is not None:
+            await director_generation.stop(deadline=deadline)
+        director_tasks: set[asyncio.Task[object]] = getattr(self, "director_tasks", set())
+        for task in tuple(director_tasks):
+            task.cancel()
+        if director_tasks:
+            await asyncio.gather(*director_tasks, return_exceptions=True)
         await self.queue.stop(deadline=deadline, grace_seconds=0.5, abort_active=abort_active)
         registry = getattr(self, "registry", None)
         fail_unfinished = getattr(registry, "fail_unfinished", None)
@@ -242,6 +261,16 @@ def create_app(
             state_dir=runtime_dir / "state",
         )
         await plane.llm_client.start()
+        plane.director_store = DirectorStore(database)
+        plane.director_analysis = ScriptAnalysisService(
+            plane.director_store,
+            plane.llm_client,
+        )
+        plane.role_presets = RolePresetService(
+            store=RolePresetStore(database),
+            profiles=profile_store,
+            library_root=settings.storage.artifact_root / "role-presets",
+        )
         plane.desktop_service = DesktopService(
             model_library=settings.model_library.models_root,
             model_sources=settings.model_library.allowed_import_roots,
@@ -296,12 +325,24 @@ def create_app(
             segment_jobs=plane.segment_jobs,
             notify_jobs=lambda: _notify_dispatcher(plane),
         )
+        plane.director_generation = DirectorGenerationService(
+            directors=plane.director_store,
+            presets=plane.role_presets,
+            segments=plane.segment_store,
+            jobs=plane.registry,
+            segment_jobs=plane.segment_jobs,
+            versions=plane.version_store,
+            artifacts=plane.artifact_store,
+            notify_jobs=lambda: _notify_dispatcher(plane),
+        )
         try:
             plane.last_recovery_report = await StorageRecovery(
                 database, plane.artifact_store
             ).reconcile()
             await plane.retention_executor.resume_deletions()
             await plane.chapter_service.recover()
+            await plane.director_store.recover_interrupted_commands()
+            await plane.director_generation.recover()
             if settings.mode == "real":
                 selected_quality: QualityAnalyzer = FasterWhisperQualityAnalyzer(
                     model_path=settings.quality.model_path,
@@ -373,4 +414,5 @@ def create_app(
     app.include_router(build_maintenance_router(plane))
     app.include_router(build_chapter_router(plane))
     app.include_router(build_workbench_router(plane))
+    app.include_router(build_director_router(plane))
     return app

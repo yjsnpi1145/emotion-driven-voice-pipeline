@@ -73,9 +73,7 @@ class ChapterGsvArchiveBuilder:
         run = await self._chapters.get(run_id)
         segments = await self._chapters.list_segments(run_id)
         missing_ordinals = [
-            segment.ordinal
-            for segment in segments
-            if segment.active_gsv_version_id is None
+            segment.ordinal for segment in segments if segment.active_gsv_version_id is None
         ]
         if missing_ordinals:
             raise PipelineError(

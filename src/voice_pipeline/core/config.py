@@ -83,6 +83,7 @@ class LlmSettings(BaseModel):
     timeout_seconds: float = Field(default=60.0, gt=0, le=300)
     max_retries: int = Field(default=2, ge=0, le=5)
     max_reference_corrections: int = Field(default=2, ge=0, le=5)
+    max_parallel_requests: int = Field(default=3, ge=1, le=8)
 
     @model_validator(mode="after")
     def require_api_key_environment_variable(self) -> LlmSettings:
