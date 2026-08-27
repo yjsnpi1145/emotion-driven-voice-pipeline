@@ -127,9 +127,7 @@ def materialize_unit_analysis(
     return materialized
 
 
-def _validate_analysis_units(
-    chunk: ScriptChunk, units: tuple[ScriptAnalysisUnit, ...]
-) -> None:
+def _validate_analysis_units(chunk: ScriptChunk, units: tuple[ScriptAnalysisUnit, ...]) -> None:
     if not units:
         raise _invalid("analysis chunk contains no local units")
     cursor = chunk.source_start

@@ -214,9 +214,7 @@ async def test_script_analysis_requests_classifications_and_materializes_local_s
     assert all(set(unit) == {"unit_id", "source_text"} for unit in user_payload["units"])
     assert "source_start" not in system_prompt
     assert "source_end" not in system_prompt
-    assert [item.source_text for item in result.utterances] == [
-        unit.source_text for unit in units
-    ]
+    assert [item.source_text for item in result.utterances] == [unit.source_text for unit in units]
     assert [item.source_start for item in result.utterances] == [
         unit.source_start for unit in units
     ]
