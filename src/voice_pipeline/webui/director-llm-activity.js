@@ -1,4 +1,5 @@
 const DIRECTOR_OPERATIONS = new Set([
+  "script_preprocessing",
   "script_analysis",
   "cast_reconciliation",
   "script_translation",
@@ -7,6 +8,7 @@ const DIRECTOR_OPERATIONS = new Set([
 const TERMINAL_KINDS = new Set(["completed", "failed"]);
 
 export const directorOperationLabels = {
+  script_preprocessing: "文本预处理",
   script_analysis: "剧本分析",
   cast_reconciliation: "角色归并",
   script_translation: "台词翻译",

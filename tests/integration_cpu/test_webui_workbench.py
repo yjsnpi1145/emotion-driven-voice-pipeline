@@ -10,6 +10,28 @@ import pytest
 from tests.integration_cpu.conftest import write_tone
 from voice_pipeline.api.app import create_app
 
+WEBUI = Path(__file__).parents[2] / "src" / "voice_pipeline" / "webui"
+
+
+def test_director_preprocessing_review_assets_are_wired() -> None:
+    page = (WEBUI / "index.html").read_text(encoding="utf-8")
+    script = (WEBUI / "director.js").read_text(encoding="utf-8")
+    stylesheet = (WEBUI / "styles.css").read_text(encoding="utf-8")
+
+    assert 'name="preprocessing_mode"' in page
+    assert 'id="director-preprocess-review"' in page
+    assert 'id="director-preprocess-list"' in page
+    assert 'id="director-confirm-preprocessing"' in page
+    assert "创建并开始预处理" in page
+    assert 'from "./director-preprocessing.js?v=20260828a"' in script
+    assert "/confirm-preprocessing" in script
+    assert "/preprocess-paragraphs/" in script
+    assert "IntersectionObserver" in script
+    assert ".director-preprocess-grid" in stylesheet
+    assert "director-preprocessing.js" in {
+        item.name for item in WEBUI.iterdir() if item.is_file()
+    }
+
 
 async def _import_profile(client: httpx.AsyncClient, tmp_path: Path) -> str:
     source = tmp_path / "models"

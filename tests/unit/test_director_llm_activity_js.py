@@ -22,19 +22,23 @@ const event = (sequence, operationId, operation, kind, message, content, created
 const events = [
   event(1, 'chapter', 'chapter_plan', 'completed', 'chapter', null, '2026-08-27T10:00:00Z'),
   event(
-    2, 'analysis', 'script_analysis', 'started', 'analysis start', null,
+    2, 'preprocess', 'script_preprocessing', 'completed', 'preprocess done', null,
+    '2026-08-27T09:59:00Z',
+  ),
+  event(
+    3, 'analysis', 'script_analysis', 'started', 'analysis start', null,
     '2026-08-27T10:00:00Z',
   ),
   event(
-    3, 'analysis', 'script_analysis', 'response', 'analysis response',
+    4, 'analysis', 'script_analysis', 'response', 'analysis response',
     '{{"roles":[]}}', '2026-08-27T10:01:00Z',
   ),
   event(
-    4, 'translation', 'script_translation', 'started', 'translation start', null,
+    5, 'translation', 'script_translation', 'started', 'translation start', null,
     '2026-08-27T10:02:00Z',
   ),
   event(
-    5, 'translation', 'script_translation', 'completed', 'translation done',
+    6, 'translation', 'script_translation', 'completed', 'translation done',
     '{{"items":[]}}', '2026-08-27T10:03:00Z',
   ),
 ];
@@ -65,6 +69,7 @@ console.log(JSON.stringify({{active, failed}}));
 
     active = payload["active"]
     assert [event["operation"] for event in active["events"]] == [
+        "script_preprocessing",
         "script_analysis",
         "script_analysis",
         "script_translation",
@@ -79,6 +84,21 @@ console.log(JSON.stringify({{active, failed}}));
     assert failed["active"] is False
     assert failed["statusState"] == "degraded"
     assert failed["statusText"] == "失败"
+
+
+def test_director_preprocessing_operation_has_user_facing_label() -> None:
+    script = f"""
+import {{ directorOperationLabels }} from {json.dumps(MODULE.as_uri())};
+console.log(JSON.stringify(directorOperationLabels.script_preprocessing));
+"""
+    result = subprocess.run(
+        ["node", "--input-type=module", "--eval", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert json.loads(result.stdout) == "文本预处理"
 
 
 def test_director_activity_view_preserves_events_when_endpoint_is_unavailable() -> None:

@@ -34,6 +34,7 @@ _WEBUI_FILES = {
     "director-dnd.js",
     "director-lazy-editor.js",
     "director-llm-activity.js",
+    "director-preprocessing.js",
     "director-working-text.js",
     "director.js",
     "selection-state.js",

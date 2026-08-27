@@ -22,6 +22,9 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
             director_script = await client.get("/ui/director.js")
             director_dnd_script = await client.get("/ui/director-dnd.js")
             director_activity_script = await client.get("/ui/director-llm-activity.js")
+            director_preprocessing_script = await client.get(
+                "/ui/director-preprocessing.js"
+            )
             director_working_text_script = await client.get(
                 "/ui/director-working-text.js"
             )
@@ -174,7 +177,8 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'requested === "director"' in script.text
     assert 'state.activeView === "director"' in script.text
     assert "/api/v1/director-projects" in director_script.text
-    assert "/analyze" in director_script.text
+    assert "/preprocess" in director_script.text
+    assert "/confirm-preprocessing" in director_script.text
     assert "/translate" in director_script.text
     assert "/start-generation" in director_script.text
     assert "/api/v1/director-roles/split" in director_script.text
@@ -185,15 +189,18 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "canEditRoleReview" in director_script.text
     assert 'from "./director-lazy-editor.js?v=20260828a"' in director_script.text
     assert 'from "./director-llm-activity.js?v=20260828a"' in director_script.text
+    assert 'from "./director-preprocessing.js?v=20260828a"' in director_script.text
     assert "/api/v1/llm/activity" in director_script.text
     assert "output.textContent = event.content" in director_script.text
     assert "log.scrollHeight - log.scrollTop - log.clientHeight < 32" in director_script.text
     assert director_activity_script.status_code == 200
+    assert director_preprocessing_script.status_code == 200
     assert director_working_text_script.status_code == 200
     assert director_lazy_editor_script.status_code == 200
     assert "script_analysis" in director_activity_script.text
     assert "cast_reconciliation" in director_activity_script.text
     assert "script_translation" in director_activity_script.text
+    assert "script_preprocessing" in director_activity_script.text
     assert "dirtyTranslations" in director_script.text
     assert "function lazyTranslatedEditor(utterance)" in director_script.text
     assert "details.ontoggle" in director_script.text
