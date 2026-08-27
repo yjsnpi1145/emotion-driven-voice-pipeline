@@ -10,9 +10,82 @@ import respx
 
 from voice_pipeline.core.config import LlmSettings
 from voice_pipeline.core.errors import ErrorCode, PipelineError
+from voice_pipeline.models.director_llm import PreprocessRewriteUnit
 from voice_pipeline.modules.llm.activity import LlmActivityLog
 from voice_pipeline.modules.llm.client import OpenAiDirectorClient
 from voice_pipeline.modules.llm.script_chunking import build_analysis_units, split_script
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_preprocess_rewrite_uses_strict_unit_payload_and_prompt() -> None:
+    units = (
+        PreprocessRewriteUnit(
+            unit_id="unit-1",
+            text="“Your Majesty，欠款168万。”",
+            context="quoted_dialogue",
+        ),
+    )
+    route = respx.post("https://llm.example/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": {
+                                "items": [
+                                    {
+                                        "unit_id": "unit-1",
+                                        "rewritten_text": "“Your Majesty，欠款168万。”",
+                                        "input_unit_ids": ["unit-1"],
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                ]
+            },
+        )
+    )
+    settings = LlmSettings(
+        mode="openai",
+        base_url="https://llm.example/v1",
+        model="director",
+        api_key_env="PIPELINE_LLM_KEY",
+    )
+    activity = LlmActivityLog()
+    async with httpx.AsyncClient(base_url=settings.base_url + "/") as http:
+        client = OpenAiDirectorClient(
+            settings,
+            http_client=http,
+            api_key="secret",
+            activity=activity,
+        )
+        result = await client.rewrite_preprocess_paragraph(
+            paragraph_id="paragraph-1",
+            units=units,
+        )
+
+    assert result.items[0].unit_id == "unit-1"
+    body = json.loads(route.calls[0].request.content)
+    prompt = body["messages"][0]["content"]
+    payload = json.loads(body["messages"][1]["content"])
+    assert payload == {
+        "paragraph_id": "paragraph-1",
+        "units": [
+            {
+                "unit_id": "unit-1",
+                "text": "“Your Majesty，欠款168万。”",
+                "context": "quoted_dialogue",
+            }
+        ],
+    }
+    assert "Never add or delete plot information" in prompt
+    assert "Never translate" in prompt
+    events = (await activity.snapshot()).events
+    assert [event.operation for event in events] == ["script_preprocessing"] * 2
+    assert [event.kind for event in events] == ["request_sent", "response"]
 
 
 def _analysis_response(unit_ids: list[str]) -> dict[str, object]:

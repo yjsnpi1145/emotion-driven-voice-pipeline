@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import delete, func, insert, select, update
@@ -17,9 +17,12 @@ from voice_pipeline.models.director import (
     CreateDirectorUtterance,
     DirectorGenerationItemRecord,
     DirectorGenerationRecord,
+    DirectorPreprocessParagraphPage,
+    DirectorPreprocessParagraphRecord,
     DirectorProjectRecord,
     DirectorRoleRecord,
     DirectorUtteranceRecord,
+    PreprocessRewriteState,
 )
 from voice_pipeline.models.director_llm import (
     ChunkAnalysisResult,
@@ -27,12 +30,15 @@ from voice_pipeline.models.director_llm import (
     TranslationResultItem,
 )
 from voice_pipeline.models.schemas import EmotionVector
+from voice_pipeline.modules.text.speakability import is_speakable_text
+from voice_pipeline.modules.text.structural_cleaner import StructuralDocument
 from voice_pipeline.storage.database import Database
 from voice_pipeline.storage.orm import (
     director_analysis_chunks,
     director_edit_events,
     director_generation_items,
     director_generations,
+    director_preprocess_paragraphs,
     director_projects,
     director_roles,
     director_utterances,
@@ -59,8 +65,12 @@ class DirectorStore:
                     source_language=request.source_language,
                     target_language=request.target_language,
                     narration_enabled=int(request.narration_enabled),
+                    preprocessing_mode=request.preprocessing_mode,
+                    structural_text=None,
+                    preprocessed_text=None,
                     status="draft",
                     revision=0,
+                    preprocess_revision=0,
                     analysis_revision=0,
                     role_revision=0,
                     translation_revision=0,
@@ -118,10 +128,16 @@ class DirectorStore:
                 )
                 return int(value or 0)
 
-            active_analysis = await project_count(("analyzing", "translating"))
+            active_analysis = await project_count(("preprocessing", "analyzing", "translating"))
             active_generation = await project_count(("generating",))
             projects_needing_review = await project_count(
-                ("role_review", "translation_review", "voice_mapping", "generation_incomplete")
+                (
+                    "preprocess_review",
+                    "role_review",
+                    "translation_review",
+                    "voice_mapping",
+                    "generation_incomplete",
+                )
             )
             unavailable = await session.scalar(
                 select(func.count())
@@ -135,13 +151,565 @@ class DirectorStore:
             "unavailable_role_presets": int(unavailable or 0),
         }
 
+    async def begin_preprocessing(
+        self,
+        project_id: UUID,
+        *,
+        expected_revision: int,
+    ) -> DirectorProjectRecord:
+        await self._update_project_state(
+            project_id,
+            expected_revision=expected_revision,
+            allowed={"draft", "preprocessing", "preprocess_review"},
+            status="preprocessing",
+            event="preprocessing_started",
+        )
+        return await self.get_project(project_id)
+
+    async def stage_preprocess_document(
+        self,
+        project_id: UUID,
+        *,
+        expected_revision: int,
+        document: StructuralDocument,
+    ) -> None:
+        now = _now()
+        async with self._database.write_session() as session:
+            project = await _locked_project(session, project_id)
+            _require_revision(project, expected_revision)
+            if str(project["status"]) != "preprocessing":
+                raise _state_conflict(str(project["status"]), "stage preprocessing")
+            rewrite_mode = str(project["preprocessing_mode"]) == "rewrite"
+            existing_rows = (
+                (
+                    await session.execute(
+                        select(director_preprocess_paragraphs).where(
+                            director_preprocess_paragraphs.c.project_id
+                            == str(project_id)
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing_by_id = {
+                str(row["paragraph_id"]): row for row in existing_rows
+            }
+            incoming_ids = {
+                paragraph.paragraph_id for paragraph in document.paragraphs
+            }
+            await session.execute(
+                delete(director_preprocess_paragraphs).where(
+                    director_preprocess_paragraphs.c.project_id == str(project_id),
+                    director_preprocess_paragraphs.c.paragraph_id.not_in(incoming_ids),
+                )
+            )
+            resumed = 0
+            pending = 0
+            for paragraph in document.paragraphs:
+                source_sha = _sha256(paragraph.source_text)
+                structural_sha = _sha256(paragraph.structural_text)
+                desired_state: PreprocessRewriteState = (
+                    "pending"
+                    if rewrite_mode and any(unit.speakable for unit in paragraph.units)
+                    else "local"
+                )
+                existing = existing_by_id.get(paragraph.paragraph_id)
+                unchanged = bool(
+                    existing is not None
+                    and str(existing["source_sha256"]) == source_sha
+                    and str(existing["structural_sha256"]) == structural_sha
+                )
+                preserved = False
+                if unchanged and existing is not None:
+                    preserved = str(existing["rewrite_state"]) in {
+                        "succeeded",
+                        "user_edited",
+                        "local",
+                    }
+                common = {
+                    "ordinal": paragraph.ordinal,
+                    "source_start": paragraph.source_start,
+                    "source_end": paragraph.source_end,
+                    "source_text": paragraph.source_text,
+                    "structural_text": paragraph.structural_text,
+                    "source_sha256": source_sha,
+                    "structural_sha256": structural_sha,
+                    "updated_at_utc": now,
+                }
+                if existing is None:
+                    await session.execute(
+                        insert(director_preprocess_paragraphs).values(
+                            paragraph_id=paragraph.paragraph_id,
+                            project_id=str(project_id),
+                            preprocessed_text=paragraph.structural_text,
+                            rewrite_state=desired_state,
+                            validation_json=None,
+                            revision=0,
+                            preprocessed_sha256=structural_sha,
+                            created_at_utc=now,
+                            **common,
+                        )
+                    )
+                elif preserved:
+                    resumed += 1
+                    await session.execute(
+                        update(director_preprocess_paragraphs)
+                        .where(
+                            director_preprocess_paragraphs.c.paragraph_id
+                            == paragraph.paragraph_id
+                        )
+                        .values(**common)
+                    )
+                else:
+                    new_revision = int(existing["revision"])
+                    if str(existing["rewrite_state"]) != "pending" or not unchanged:
+                        new_revision += 1
+                    await session.execute(
+                        update(director_preprocess_paragraphs)
+                        .where(
+                            director_preprocess_paragraphs.c.paragraph_id
+                            == paragraph.paragraph_id
+                        )
+                        .values(
+                            preprocessed_text=paragraph.structural_text,
+                            rewrite_state=desired_state,
+                            validation_json=None,
+                            revision=new_revision,
+                            preprocessed_sha256=structural_sha,
+                            **common,
+                        )
+                    )
+                if desired_state == "pending" and not preserved:
+                    pending += 1
+            await session.execute(
+                update(director_projects)
+                .where(director_projects.c.project_id == str(project_id))
+                .values(
+                    structural_text=document.structural_text,
+                    preprocessed_text=None,
+                    updated_at_utc=now,
+                )
+            )
+            await _append_event(
+                session,
+                project_id,
+                operation="preprocessing_staged",
+                before_revision=expected_revision,
+                after_revision=expected_revision,
+                details={
+                    "paragraphs": len(document.paragraphs),
+                    "resumed": resumed,
+                    "pending": pending,
+                },
+            )
+
+    async def pending_preprocess_paragraphs(
+        self,
+        project_id: UUID,
+    ) -> tuple[DirectorPreprocessParagraphRecord, ...]:
+        await self.get_project(project_id)
+        async with self._database.read_session() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(director_preprocess_paragraphs)
+                        .where(
+                            director_preprocess_paragraphs.c.project_id
+                            == str(project_id),
+                            director_preprocess_paragraphs.c.rewrite_state == "pending",
+                        )
+                        .order_by(director_preprocess_paragraphs.c.ordinal)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return tuple(_preprocess_paragraph(dict(row)) for row in rows)
+
+    async def save_preprocess_result(
+        self,
+        project_id: UUID,
+        paragraph_id: str,
+        *,
+        expected_project_revision: int,
+        expected_revision: int,
+        preprocessed_text: str,
+        rewrite_state: Literal["succeeded", "fallback", "local"],
+        validation: dict[str, object] | None = None,
+    ) -> DirectorPreprocessParagraphRecord:
+        if not preprocessed_text.strip():
+            raise PipelineError(
+                ErrorCode.INVALID_INPUT,
+                "director",
+                "preprocessed paragraph must not be blank",
+                retryable=False,
+            )
+        async with self._database.write_session() as session:
+            project = await _locked_project(session, project_id)
+            _require_revision(project, expected_project_revision)
+            if str(project["status"]) != "preprocessing":
+                raise _state_conflict(str(project["status"]), "save preprocessing result")
+            paragraph = await _locked_preprocess_paragraph(session, paragraph_id)
+            if str(paragraph["project_id"]) != str(project_id):
+                raise KeyError(f"unknown preprocessing paragraph: {paragraph_id}")
+            if int(paragraph["revision"]) != expected_revision:
+                raise _version_conflict()
+            await session.execute(
+                update(director_preprocess_paragraphs)
+                .where(director_preprocess_paragraphs.c.paragraph_id == paragraph_id)
+                .values(
+                    preprocessed_text=preprocessed_text,
+                    rewrite_state=rewrite_state,
+                    validation_json=_json(validation) if validation is not None else None,
+                    revision=expected_revision + 1,
+                    preprocessed_sha256=_sha256(preprocessed_text),
+                    updated_at_utc=_now(),
+                )
+            )
+            await _append_event(
+                session,
+                project_id,
+                operation=(
+                    "preprocessing_paragraph_fallback"
+                    if rewrite_state == "fallback"
+                    else "preprocessing_paragraph_saved"
+                ),
+                before_revision=expected_project_revision,
+                after_revision=expected_project_revision,
+                details={
+                    "paragraph_id": paragraph_id,
+                    "paragraph_revision": expected_revision + 1,
+                    "rewrite_state": rewrite_state,
+                },
+            )
+        return await self.get_preprocess_paragraph(project_id, paragraph_id)
+
+    async def complete_preprocessing(
+        self,
+        project_id: UUID,
+        *,
+        expected_revision: int,
+    ) -> DirectorProjectRecord:
+        async with self._database.write_session() as session:
+            project = await _locked_project(session, project_id)
+            _require_revision(project, expected_revision)
+            if str(project["status"]) != "preprocessing":
+                raise _state_conflict(str(project["status"]), "complete preprocessing")
+            rows = (
+                (
+                    await session.execute(
+                        select(
+                            director_preprocess_paragraphs.c.preprocessed_text,
+                            director_preprocess_paragraphs.c.rewrite_state,
+                        )
+                        .where(
+                            director_preprocess_paragraphs.c.project_id == str(project_id)
+                        )
+                        .order_by(director_preprocess_paragraphs.c.ordinal)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if not rows or any(str(row["rewrite_state"]) == "pending" for row in rows):
+                raise _state_conflict("preprocessing", "complete unresolved preprocessing")
+            preprocessed_text = "\n\n".join(str(row["preprocessed_text"]) for row in rows)
+            if not preprocessed_text.strip():
+                raise PipelineError(
+                    ErrorCode.INVALID_INPUT,
+                    "director",
+                    "preprocessed document must not be blank",
+                    retryable=False,
+                )
+            await session.execute(
+                update(director_projects)
+                .where(director_projects.c.project_id == str(project_id))
+                .values(
+                    preprocessed_text=preprocessed_text,
+                    status="preprocess_review",
+                    revision=expected_revision + 1,
+                    preprocess_revision=director_projects.c.preprocess_revision + 1,
+                    last_error_json=None,
+                    updated_at_utc=_now(),
+                )
+            )
+            await _append_event(
+                session,
+                project_id,
+                operation="preprocessing_completed",
+                before_revision=expected_revision,
+                after_revision=expected_revision + 1,
+                details={
+                    "paragraphs": len(rows),
+                    "fallbacks": sum(
+                        str(row["rewrite_state"]) == "fallback" for row in rows
+                    ),
+                },
+            )
+        return await self.get_project(project_id)
+
+    async def list_preprocess_paragraphs(
+        self,
+        project_id: UUID,
+        *,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> DirectorPreprocessParagraphPage:
+        await self.get_project(project_id)
+        if offset < 0 or not 1 <= limit <= 100:
+            raise ValueError("invalid preprocessing pagination")
+        async with self._database.read_session() as session:
+            total = int(
+                (
+                    await session.execute(
+                        select(func.count())
+                        .select_from(director_preprocess_paragraphs)
+                        .where(
+                            director_preprocess_paragraphs.c.project_id == str(project_id)
+                        )
+                    )
+                ).scalar_one()
+            )
+            rows = (
+                (
+                    await session.execute(
+                        select(director_preprocess_paragraphs)
+                        .where(
+                            director_preprocess_paragraphs.c.project_id == str(project_id)
+                        )
+                        .order_by(director_preprocess_paragraphs.c.ordinal)
+                        .offset(offset)
+                        .limit(limit)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        items = tuple(_preprocess_paragraph(dict(row)) for row in rows)
+        consumed = offset + len(items)
+        return DirectorPreprocessParagraphPage(
+            items=items,
+            total_count=total,
+            next_offset=consumed if consumed < total else None,
+        )
+
+    async def get_preprocess_paragraph(
+        self,
+        project_id: UUID,
+        paragraph_id: str,
+    ) -> DirectorPreprocessParagraphRecord:
+        await self.get_project(project_id)
+        async with self._database.read_session() as session:
+            row = (
+                (
+                    await session.execute(
+                        select(director_preprocess_paragraphs).where(
+                            director_preprocess_paragraphs.c.paragraph_id == paragraph_id,
+                            director_preprocess_paragraphs.c.project_id == str(project_id),
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            raise KeyError(f"unknown preprocessing paragraph: {paragraph_id}")
+        return _preprocess_paragraph(dict(row))
+
+    async def patch_preprocess_paragraph(
+        self,
+        project_id: UUID,
+        paragraph_id: str,
+        *,
+        expected_project_revision: int,
+        expected_revision: int,
+        preprocessed_text: str,
+    ) -> DirectorPreprocessParagraphRecord:
+        return await self._edit_preprocess_paragraph(
+            project_id,
+            paragraph_id,
+            expected_project_revision=expected_project_revision,
+            expected_revision=expected_revision,
+            preprocessed_text=preprocessed_text,
+            rewrite_state="user_edited",
+            operation="preprocessing_paragraph_edited",
+        )
+
+    async def restore_preprocess_paragraph(
+        self,
+        project_id: UUID,
+        paragraph_id: str,
+        *,
+        expected_project_revision: int,
+        expected_revision: int,
+        target: Literal["source", "structural"],
+    ) -> DirectorPreprocessParagraphRecord:
+        paragraph = await self.get_preprocess_paragraph(project_id, paragraph_id)
+        value = (
+            paragraph.source_text if target == "source" else paragraph.structural_text
+        )
+        return await self._edit_preprocess_paragraph(
+            project_id,
+            paragraph_id,
+            expected_project_revision=expected_project_revision,
+            expected_revision=expected_revision,
+            preprocessed_text=value,
+            rewrite_state="user_edited",
+            operation="preprocessing_paragraph_restored",
+            details={"target": target},
+        )
+
+    async def apply_review_preprocess_result(
+        self,
+        project_id: UUID,
+        paragraph_id: str,
+        *,
+        expected_project_revision: int,
+        expected_revision: int,
+        preprocessed_text: str,
+        rewrite_state: Literal["succeeded", "fallback"],
+        validation: dict[str, object] | None = None,
+    ) -> DirectorPreprocessParagraphRecord:
+        return await self._edit_preprocess_paragraph(
+            project_id,
+            paragraph_id,
+            expected_project_revision=expected_project_revision,
+            expected_revision=expected_revision,
+            preprocessed_text=preprocessed_text,
+            rewrite_state=rewrite_state,
+            operation=(
+                "preprocessing_paragraph_fallback"
+                if rewrite_state == "fallback"
+                else "preprocessing_paragraph_rewritten"
+            ),
+            validation=validation,
+        )
+
+    async def _edit_preprocess_paragraph(
+        self,
+        project_id: UUID,
+        paragraph_id: str,
+        *,
+        expected_project_revision: int,
+        expected_revision: int,
+        preprocessed_text: str,
+        rewrite_state: PreprocessRewriteState,
+        operation: str,
+        details: dict[str, object] | None = None,
+        validation: dict[str, object] | None = None,
+    ) -> DirectorPreprocessParagraphRecord:
+        if not preprocessed_text.strip():
+            raise PipelineError(
+                ErrorCode.INVALID_INPUT,
+                "director",
+                "preprocessed paragraph must not be blank",
+                retryable=False,
+            )
+        async with self._database.write_session() as session:
+            project = await _locked_project(session, project_id)
+            _require_revision(project, expected_project_revision)
+            if str(project["status"]) != "preprocess_review":
+                raise _state_conflict(str(project["status"]), operation)
+            paragraph = await _locked_preprocess_paragraph(session, paragraph_id)
+            if str(paragraph["project_id"]) != str(project_id):
+                raise KeyError(f"unknown preprocessing paragraph: {paragraph_id}")
+            if int(paragraph["revision"]) != expected_revision:
+                raise _version_conflict()
+            await session.execute(
+                update(director_preprocess_paragraphs)
+                .where(director_preprocess_paragraphs.c.paragraph_id == paragraph_id)
+                .values(
+                    preprocessed_text=preprocessed_text,
+                    preprocessed_sha256=_sha256(preprocessed_text),
+                    rewrite_state=rewrite_state,
+                    validation_json=(
+                        _json(validation) if validation is not None else None
+                    ),
+                    revision=expected_revision + 1,
+                    updated_at_utc=_now(),
+                )
+            )
+            rows = (
+                (
+                    await session.execute(
+                        select(director_preprocess_paragraphs.c.preprocessed_text)
+                        .where(
+                            director_preprocess_paragraphs.c.project_id == str(project_id)
+                        )
+                        .order_by(director_preprocess_paragraphs.c.ordinal)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            recomposed = "\n\n".join(str(value) for value in rows)
+            await session.execute(
+                update(director_projects)
+                .where(director_projects.c.project_id == str(project_id))
+                .values(
+                    preprocessed_text=recomposed,
+                    revision=expected_project_revision + 1,
+                    preprocess_revision=director_projects.c.preprocess_revision + 1,
+                    updated_at_utc=_now(),
+                )
+            )
+            await _append_event(
+                session,
+                project_id,
+                operation=operation,
+                before_revision=expected_project_revision,
+                after_revision=expected_project_revision + 1,
+                details={
+                    "paragraph_id": paragraph_id,
+                    **(details or {}),
+                },
+            )
+        return await self.get_preprocess_paragraph(project_id, paragraph_id)
+
+    async def confirm_preprocessing(
+        self,
+        project_id: UUID,
+        *,
+        expected_revision: int,
+    ) -> DirectorProjectRecord:
+        project = await self.get_project(project_id)
+        if project.preprocessed_text is None or not is_speakable_text(
+            project.preprocessed_text
+        ):
+            raise PipelineError(
+                ErrorCode.INVALID_INPUT,
+                "director",
+                "preprocessed document contains no speakable text",
+                retryable=False,
+            )
+        await self._update_project_state(
+            project_id,
+            expected_revision=expected_revision,
+            allowed={"preprocess_review"},
+            status="analyzing",
+            event="preprocessing_confirmed",
+        )
+        return await self.get_project(project_id)
+
+    async def analysis_text(self, project_id: UUID) -> str:
+        project = await self.get_project(project_id)
+        if project.preprocessed_text is None:
+            raise PipelineError(
+                ErrorCode.DIRECTOR_REVIEW_REQUIRED,
+                "director",
+                "confirm the preprocessing draft before analysis",
+                retryable=False,
+            )
+        return project.preprocessed_text
+
     async def begin_analysis(
         self, project_id: UUID, *, expected_revision: int
     ) -> DirectorProjectRecord:
         await self._update_project_state(
             project_id,
             expected_revision=expected_revision,
-            allowed={"draft", "analyzing", "role_review"},
+            allowed={"analyzing", "role_review"},
             status="analyzing",
             event="analysis_started",
         )
@@ -197,7 +765,9 @@ class DirectorStore:
                             director_projects.c.status,
                         ).where(
                             director_projects.c.deleted_at_utc.is_(None),
-                            director_projects.c.status.in_(["analyzing", "translating"]),
+                            director_projects.c.status.in_(
+                                ["preprocessing", "analyzing", "translating"]
+                            ),
                             director_projects.c.last_error_json.is_(None),
                         )
                     )
@@ -323,7 +893,14 @@ class DirectorStore:
         utterances: Sequence[CreateDirectorUtterance],
     ) -> DirectorProjectRecord:
         project = await self.get_project(project_id)
-        validate_source_coverage(project.source_text, utterances)
+        if project.preprocessed_text is None:
+            raise PipelineError(
+                ErrorCode.DIRECTOR_REVIEW_REQUIRED,
+                "director",
+                "confirm the preprocessing draft before publishing analysis",
+                retryable=False,
+            )
+        validate_source_coverage(project.preprocessed_text, utterances)
         if not roles:
             raise PipelineError(
                 ErrorCode.LLM_INVALID_RESPONSE,
@@ -342,7 +919,7 @@ class DirectorStore:
         async with self._database.write_session() as session:
             current = await _locked_project(session, project_id)
             _require_revision(current, expected_revision)
-            if str(current["status"]) not in {"draft", "analyzing", "role_review"}:
+            if str(current["status"]) not in {"analyzing", "role_review"}:
                 raise _state_conflict(str(current["status"]), "publish analysis")
             await session.execute(
                 delete(director_utterances).where(
@@ -368,6 +945,26 @@ class DirectorStore:
                     for role_id, role in role_rows
                 ],
             )
+            preprocess_rows = (
+                (
+                    await session.execute(
+                        select(
+                            director_preprocess_paragraphs.c.paragraph_id,
+                            director_preprocess_paragraphs.c.preprocessed_text,
+                        )
+                        .where(
+                            director_preprocess_paragraphs.c.project_id
+                            == str(project_id)
+                        )
+                        .order_by(director_preprocess_paragraphs.c.ordinal)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            preprocess_spans = _preprocess_paragraph_spans(
+                dict(row) for row in preprocess_rows
+            )
             materialized = []
             for item in utterances:
                 role_id: UUID | None = None
@@ -385,6 +982,14 @@ class DirectorStore:
                         "source_start": item.source_start,
                         "source_end": item.source_end,
                         "source_text": item.source_text,
+                        "preprocess_paragraph_id": (
+                            item.preprocess_paragraph_id
+                            or _paragraph_id_for_range(
+                                preprocess_spans,
+                                item.source_start,
+                                item.source_end,
+                            )
+                        ),
                         "working_text": item.source_text,
                         "kind": item.kind,
                         "speak_enabled": int(
@@ -721,6 +1326,12 @@ class DirectorStore:
                     source_end=int(right["source_end"]),
                     source_text=str(left["source_text"]) + str(right["source_text"]),
                     working_text=str(left["working_text"]) + str(right["working_text"]),
+                    preprocess_paragraph_id=(
+                        left["preprocess_paragraph_id"]
+                        if left["preprocess_paragraph_id"]
+                        == right["preprocess_paragraph_id"]
+                        else None
+                    ),
                     synthesis_text=None,
                     ref_text_cn=None,
                     emotion_vector_json=None,
@@ -1703,6 +2314,26 @@ async def _locked_project(session: Any, project_id: UUID) -> Mapping[str, Any]:
     return cast(Mapping[str, Any], row)
 
 
+async def _locked_preprocess_paragraph(
+    session: Any,
+    paragraph_id: str,
+) -> Mapping[str, Any]:
+    row = (
+        (
+            await session.execute(
+                select(director_preprocess_paragraphs).where(
+                    director_preprocess_paragraphs.c.paragraph_id == paragraph_id
+                )
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        raise KeyError(f"unknown preprocessing paragraph: {paragraph_id}")
+    return cast(Mapping[str, Any], row)
+
+
 def _require_revision(row: Mapping[str, Any], expected: int) -> None:
     if int(row["revision"]) != expected:
         raise _version_conflict()
@@ -1767,6 +2398,42 @@ async def _append_event(
     )
 
 
+def _preprocess_paragraph_spans(
+    rows: Iterable[Mapping[str, Any]],
+) -> tuple[tuple[int, int, str], ...]:
+    spans: list[tuple[int, int, str]] = []
+    cursor = 0
+    for row in rows:
+        text = str(row["preprocessed_text"])
+        end = cursor + len(text)
+        spans.append((cursor, end, str(row["paragraph_id"])))
+        cursor = end + 2
+    return tuple(spans)
+
+
+def _paragraph_id_for_range(
+    spans: Sequence[tuple[int, int, str]],
+    source_start: int,
+    source_end: int,
+) -> str | None:
+    if not spans:
+        return None
+    best = max(
+        spans,
+        key=lambda span: max(
+            0,
+            min(source_end, span[1]) - max(source_start, span[0]),
+        ),
+    )
+    overlap = max(0, min(source_end, best[1]) - max(source_start, best[0]))
+    if overlap:
+        return best[2]
+    for start, _end, paragraph_id in spans:
+        if source_start <= start:
+            return paragraph_id
+    return spans[-1][2]
+
+
 def _project(row: dict[str, Any]) -> DirectorProjectRecord:
     def parsed(name: str) -> dict[str, Any] | None:
         value = row.get(name)
@@ -1780,8 +2447,12 @@ def _project(row: dict[str, Any]) -> DirectorProjectRecord:
         source_language=str(row["source_language"]),  # type: ignore[arg-type]
         target_language=str(row["target_language"]),  # type: ignore[arg-type]
         narration_enabled=bool(row["narration_enabled"]),
+        preprocessing_mode=str(row["preprocessing_mode"]),  # type: ignore[arg-type]
+        structural_text=cast(str | None, row.get("structural_text")),
+        preprocessed_text=cast(str | None, row.get("preprocessed_text")),
         status=str(row["status"]),  # type: ignore[arg-type]
         revision=int(row["revision"]),
+        preprocess_revision=int(row["preprocess_revision"]),
         analysis_revision=int(row["analysis_revision"]),
         role_revision=int(row["role_revision"]),
         translation_revision=int(row["translation_revision"]),
@@ -1800,6 +2471,32 @@ def _project(row: dict[str, Any]) -> DirectorProjectRecord:
             if row.get("deleted_at_utc")
             else None
         ),
+    )
+
+
+def _preprocess_paragraph(row: dict[str, Any]) -> DirectorPreprocessParagraphRecord:
+    validation = row.get("validation_json")
+    return DirectorPreprocessParagraphRecord(
+        paragraph_id=str(row["paragraph_id"]),
+        project_id=UUID(str(row["project_id"])),
+        ordinal=int(row["ordinal"]),
+        source_start=int(row["source_start"]),
+        source_end=int(row["source_end"]),
+        source_text=str(row["source_text"]),
+        structural_text=str(row["structural_text"]),
+        preprocessed_text=str(row["preprocessed_text"]),
+        rewrite_state=str(row["rewrite_state"]),  # type: ignore[arg-type]
+        validation=(
+            cast(dict[str, Any], json.loads(str(validation)))
+            if validation is not None
+            else None
+        ),
+        revision=int(row["revision"]),
+        source_sha256=str(row["source_sha256"]),
+        structural_sha256=str(row["structural_sha256"]),
+        preprocessed_sha256=str(row["preprocessed_sha256"]),
+        created_at_utc=datetime.fromisoformat(str(row["created_at_utc"])),
+        updated_at_utc=datetime.fromisoformat(str(row["updated_at_utc"])),
     )
 
 
@@ -1825,6 +2522,9 @@ def _utterance(row: dict[str, Any]) -> DirectorUtteranceRecord:
         source_start=int(row["source_start"]),
         source_end=int(row["source_end"]),
         source_text=str(row["source_text"]),
+        preprocess_paragraph_id=cast(
+            str | None, row.get("preprocess_paragraph_id")
+        ),
         working_text=str(row["working_text"]),
         kind=str(row["kind"]),  # type: ignore[arg-type]
         speak_enabled=bool(row["speak_enabled"]),

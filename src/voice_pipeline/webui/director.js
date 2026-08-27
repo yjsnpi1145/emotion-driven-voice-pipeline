@@ -10,6 +10,12 @@ import {
   directorOperationLabels,
 } from "./director-llm-activity.js?v=20260828a";
 import {
+  canConfirmPreprocessing,
+  nextPreprocessOffset,
+  preprocessDraftState,
+  preprocessStatusLabel,
+} from "./director-preprocessing.js?v=20260828a";
+import {
   canSplitWorkingText,
   hasUnsavedDirectorDrafts,
   isWorkingTextDirty,
@@ -29,6 +35,13 @@ const directorState = {
   polling: false,
   dirtyWorkingTexts: new Map(),
   dirtyTranslations: new Map(),
+  preprocessItems: [],
+  preprocessTotal: 0,
+  preprocessNextOffset: null,
+  preprocessLoading: false,
+  dirtyPreprocessTexts: new Map(),
+  preprocessScrollTop: 0,
+  preprocessObserver: null,
   pollTimer: null,
   llmActivity: { active: false, active_operation: null, active_since_utc: null, events: [] },
   llmActivityLoading: false,
@@ -36,7 +49,9 @@ const directorState = {
 };
 
 const statusLabels = {
-  draft: "等待分析",
+  draft: "等待预处理",
+  preprocessing: "文本预处理中",
+  preprocess_review: "预处理校对",
   analyzing: "LLM 分析中",
   role_review: "角色复核",
   translating: "LLM 翻译中",
@@ -56,7 +71,8 @@ const kindLabels = {
 const emotionLabels = ["愉悦", "愤怒", "悲伤", "恐惧", "厌恶", "忧郁", "惊讶", "平静"];
 
 const stageOrder = [
-  ["analysis", "分析剧本", ["draft", "analyzing"]],
+  ["preprocessing", "文本预处理", ["draft", "preprocessing", "preprocess_review"]],
+  ["analysis", "分析剧本", ["analyzing"]],
   ["roles", "角色复核", ["role_review"]],
   ["translation", "翻译校对", ["translating", "translation_review"]],
   ["mapping", "音色映射", ["voice_mapping", "ready"]],
@@ -102,11 +118,49 @@ async function busy(button, label, callback) {
 function persistProject() {
   try {
     if (directorState.project) {
-      localStorage.setItem("voice-pipeline.director-project", directorState.project.project_id);
+      sessionStorage.setItem(
+        "voice-pipeline.director-project",
+        directorState.project.project_id,
+      );
     } else {
-      localStorage.removeItem("voice-pipeline.director-project");
+      sessionStorage.removeItem("voice-pipeline.director-project");
     }
-  } catch { /* localStorage is optional. */ }
+  } catch { /* sessionStorage is optional. */ }
+}
+
+function preprocessSessionKey(projectId) {
+  return `voice-pipeline.director-preprocess.${projectId}`;
+}
+
+function persistPreprocessSession() {
+  const projectId = directorState.project?.project_id;
+  if (!projectId) return;
+  const root = $("#director-preprocess-list");
+  try {
+    sessionStorage.setItem(preprocessSessionKey(projectId), JSON.stringify({
+      drafts: Object.fromEntries(directorState.dirtyPreprocessTexts),
+      scrollTop: root?.scrollTop || 0,
+    }));
+  } catch { /* sessionStorage is optional. */ }
+}
+
+function restorePreprocessSession(projectId) {
+  directorState.dirtyPreprocessTexts = new Map();
+  directorState.preprocessScrollTop = 0;
+  try {
+    const value = JSON.parse(sessionStorage.getItem(preprocessSessionKey(projectId)) || "null");
+    if (value?.drafts && typeof value.drafts === "object") {
+      directorState.dirtyPreprocessTexts = new Map(
+        Object.entries(value.drafts).map(([key, text]) => [key, String(text)]),
+      );
+    }
+    directorState.preprocessScrollTop = Number(value?.scrollTop) || 0;
+  } catch { /* Ignore corrupt or unavailable session state. */ }
+}
+
+function hasUnsavedDirectorChanges() {
+  return hasUnsavedDirectorDrafts(directorState)
+    || directorState.dirtyPreprocessTexts.size > 0;
 }
 
 async function loadProjects({ preserveSelection = true } = {}) {
@@ -115,7 +169,7 @@ async function loadProjects({ preserveSelection = true } = {}) {
   renderProjectList();
   if (!preserveSelection || directorState.project) return;
   let preferred = null;
-  try { preferred = localStorage.getItem("voice-pipeline.director-project"); } catch { /* noop */ }
+  try { preferred = sessionStorage.getItem("voice-pipeline.director-project"); } catch { /* noop */ }
   const initial = directorState.projects.find((item) => item.project_id === preferred)
     || directorState.projects[0];
   if (initial) await selectProject(initial.project_id);
@@ -150,19 +204,23 @@ async function selectProject(projectId) {
   if (
     directorState.project
     && directorState.project.project_id !== projectId
-    && hasUnsavedDirectorDrafts(directorState)
+    && hasUnsavedDirectorChanges()
     && !window.confirm("当前有未保存的修改，仍要切换项目吗？")
   ) return;
-  if (directorState.project?.project_id !== projectId) {
+  const changedProject = directorState.project?.project_id !== projectId;
+  if (changedProject) {
+    persistPreprocessSession();
     directorState.dirtyWorkingTexts.clear();
     directorState.dirtyTranslations.clear();
+    restorePreprocessSession(projectId);
   }
   const token = ++directorState.refreshToken;
-  const [project, roles, utterances, progress] = await Promise.all([
+  const [project, roles, utterances, progress, preprocessPage] = await Promise.all([
     api(`/api/v1/director-projects/${projectId}`),
     api(`/api/v1/director-projects/${projectId}/roles`),
     api(`/api/v1/director-projects/${projectId}/utterances`),
     api(`/api/v1/director-projects/${projectId}/progress`),
+    api(`/api/v1/director-projects/${projectId}/preprocess?offset=0&limit=20`),
   ]);
   if (token !== directorState.refreshToken) return;
   directorState.project = project;
@@ -179,12 +237,21 @@ async function selectProject(projectId) {
     if (!liveUtteranceIds.has(id)) directorState.dirtyTranslations.delete(id);
   }
   directorState.progress = progress;
+  directorState.preprocessItems = preprocessPage.items || [];
+  directorState.preprocessTotal = preprocessPage.total_count || 0;
+  directorState.preprocessNextOffset = nextPreprocessOffset(preprocessPage);
   directorState.selected = new Set(
     [...directorState.selected].filter((id) => utterances.some((row) => row.utterance_id === id)),
   );
   persistProject();
   renderDirector();
   renderProjectList();
+  if (changedProject && directorState.preprocessScrollTop) {
+    window.requestAnimationFrame(() => {
+      const root = $("#director-preprocess-list");
+      if (root) root.scrollTop = directorState.preprocessScrollTop;
+    });
+  }
 }
 
 async function refreshCurrent() {
@@ -208,11 +275,256 @@ function renderDirector() {
   const narration = $("#director-narration-enabled");
   narration.disabled = !["role_review", "translation_review", "voice_mapping", "ready"].includes(project.status);
   narration.checked = project.narration_enabled;
+  renderPreprocessing();
   renderStages();
   renderActions();
   renderRoles();
   renderUtterances();
   renderGenerationProgress();
+}
+
+function preprocessParagraphCard(paragraph) {
+  const card = document.createElement("article");
+  card.className = "director-preprocess-card";
+  card.dataset.state = paragraph.rewrite_state;
+
+  const heading = document.createElement("header");
+  heading.className = "director-preprocess-card-heading";
+  const ordinal = document.createElement("strong");
+  ordinal.textContent = `段落 ${paragraph.ordinal + 1}`;
+  const state = document.createElement("span");
+  state.className = "badge";
+  state.dataset.state = paragraph.rewrite_state === "fallback" ? "warning" : "ready";
+  state.textContent = preprocessStatusLabel(paragraph.rewrite_state);
+  heading.append(ordinal, state);
+
+  const grid = document.createElement("div");
+  grid.className = "director-preprocess-grid";
+  const originalLabel = document.createElement("label");
+  originalLabel.append(document.createTextNode("导入原文（只读）"));
+  const original = document.createElement("textarea");
+  original.readOnly = true;
+  original.rows = 6;
+  original.value = paragraph.source_text;
+  originalLabel.append(original);
+
+  const currentLabel = document.createElement("label");
+  currentLabel.append(document.createTextNode("当前预处理稿"));
+  const current = document.createElement("textarea");
+  current.rows = 6;
+  current.value = directorState.dirtyPreprocessTexts.get(paragraph.paragraph_id)
+    ?? paragraph.preprocessed_text;
+  current.readOnly = directorState.project.status !== "preprocess_review";
+  currentLabel.append(current);
+  grid.append(originalLabel, currentLabel);
+
+  const status = document.createElement("small");
+  status.className = "director-preprocess-save-state";
+  const actions = document.createElement("div");
+  actions.className = "director-preprocess-card-actions button-row";
+  const save = actionButton("保存本段", async () => {
+    const updated = await api(
+      `/api/v1/director-projects/${directorState.project.project_id}`
+      + `/preprocess-paragraphs/${paragraph.paragraph_id}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          expected_project_revision: directorState.project.revision,
+          expected_revision: paragraph.revision,
+          preprocessed_text: current.value,
+        }),
+      },
+    );
+    directorState.dirtyPreprocessTexts.delete(paragraph.paragraph_id);
+    persistPreprocessSession();
+    notify("预处理段落已保存");
+    await refreshPreprocessRow(updated);
+  }, "secondary-button");
+  const restoreSource = actionButton("恢复原文", async () => {
+    await restorePreprocessParagraph(paragraph, "source");
+  }, "secondary-button");
+  const restoreStructural = actionButton("恢复本地清洗", async () => {
+    await restorePreprocessParagraph(paragraph, "structural");
+  }, "secondary-button");
+  const rewrite = actionButton("重新运行本段 LLM", async () => {
+    const updated = await api(
+      `/api/v1/director-projects/${directorState.project.project_id}`
+      + `/preprocess-paragraphs/${paragraph.paragraph_id}/rewrite`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          expected_project_revision: directorState.project.revision,
+          expected_revision: paragraph.revision,
+        }),
+      },
+    );
+    directorState.dirtyPreprocessTexts.delete(paragraph.paragraph_id);
+    persistPreprocessSession();
+    notify("本段 LLM 改写已完成");
+    await refreshPreprocessRow(updated);
+  }, "secondary-button");
+  rewrite.hidden = directorState.project.preprocessing_mode !== "rewrite";
+  actions.append(save, restoreSource, restoreStructural, rewrite);
+
+  const details = document.createElement("details");
+  details.className = "director-preprocess-diff";
+  const summary = document.createElement("summary");
+  summary.textContent = "查看本地清洗稿与校验详情";
+  const structural = document.createElement("pre");
+  structural.textContent = paragraph.structural_text;
+  details.append(summary, structural);
+  if (paragraph.validation) {
+    const validation = document.createElement("pre");
+    validation.className = "director-preprocess-validation";
+    validation.textContent = JSON.stringify(paragraph.validation, null, 2);
+    details.append(validation);
+  }
+
+  const updateDraft = () => {
+    const draft = preprocessDraftState(paragraph, current.value);
+    if (draft.dirty) {
+      directorState.dirtyPreprocessTexts.set(paragraph.paragraph_id, current.value);
+    } else {
+      directorState.dirtyPreprocessTexts.delete(paragraph.paragraph_id);
+    }
+    current.dataset.dirty = String(draft.dirty);
+    status.dataset.state = draft.blank || draft.dirty ? "warning" : "ready";
+    status.textContent = draft.blank
+      ? "文本不能为空"
+      : draft.dirty ? "有未保存修改" : "已保存";
+    save.disabled = !draft.canSave || current.readOnly;
+    restoreSource.disabled = current.readOnly;
+    restoreStructural.disabled = current.readOnly;
+    rewrite.disabled = current.readOnly;
+    persistPreprocessSession();
+    renderPreprocessSummary();
+  };
+  current.oninput = updateDraft;
+  updateDraft();
+  card.append(heading, grid, status, actions, details);
+  return card;
+}
+
+async function restorePreprocessParagraph(paragraph, target) {
+  const updated = await api(
+    `/api/v1/director-projects/${directorState.project.project_id}`
+    + `/preprocess-paragraphs/${paragraph.paragraph_id}/restore`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        expected_project_revision: directorState.project.revision,
+        expected_revision: paragraph.revision,
+        target,
+      }),
+    },
+  );
+  directorState.dirtyPreprocessTexts.delete(paragraph.paragraph_id);
+  persistPreprocessSession();
+  await refreshPreprocessRow(updated);
+}
+
+async function refreshPreprocessRow(updated) {
+  const projectId = directorState.project.project_id;
+  const root = $("#director-preprocess-list");
+  const scrollTop = root?.scrollTop || 0;
+  directorState.preprocessItems = directorState.preprocessItems.map((item) => (
+    item.paragraph_id === updated.paragraph_id ? updated : item
+  ));
+  const project = await api(`/api/v1/director-projects/${projectId}`);
+  if (directorState.project?.project_id !== projectId) return;
+  directorState.project = project;
+  directorState.projects = directorState.projects.map((item) => (
+    item.project_id === projectId ? project : item
+  ));
+  renderDirector();
+  renderProjectList();
+  window.requestAnimationFrame(() => {
+    const refreshed = $("#director-preprocess-list");
+    if (refreshed) refreshed.scrollTop = scrollTop;
+  });
+}
+
+function renderPreprocessSummary() {
+  const fallbacks = directorState.preprocessItems.filter(
+    (item) => item.rewrite_state === "fallback",
+  ).length;
+  $("#director-preprocess-count").textContent = `${directorState.preprocessTotal} 段`;
+  $("#director-preprocess-fallbacks").textContent = fallbacks
+    ? `${fallbacks} 段回退（已加载）` : "无回退";
+  const drafts = directorState.dirtyPreprocessTexts.size;
+  const draftChip = $("#director-preprocess-drafts");
+  draftChip.textContent = drafts ? `${drafts} 段未保存` : "无未保存修改";
+  draftChip.dataset.state = drafts ? "warning" : "ready";
+  const confirm = $("#director-confirm-preprocessing");
+  confirm.disabled = !canConfirmPreprocessing(
+    directorState.project,
+    directorState.dirtyPreprocessTexts,
+  );
+  confirm.title = drafts ? "请先保存所有段落修改" : "";
+}
+
+function renderPreprocessing() {
+  const review = $("#director-preprocess-review");
+  const visible = ["preprocessing", "preprocess_review"].includes(
+    directorState.project?.status,
+  );
+  review.hidden = !visible;
+  if (!visible) return;
+  $("#director-preprocess-help").textContent = directorState.project.status === "preprocessing"
+    ? "正在生成可校对文本；本地结构清洗无需 GPU，LLM 改写活动会显示在上方。"
+    : "逐段核对后确认；角色分析只会读取你确认的预处理稿。";
+
+  const root = $("#director-preprocess-list");
+  const fragment = document.createDocumentFragment();
+  for (const paragraph of directorState.preprocessItems) {
+    fragment.append(preprocessParagraphCard(paragraph));
+  }
+  if (!directorState.preprocessItems.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state compact";
+    empty.textContent = directorState.project.status === "preprocessing"
+      ? "正在构建预处理稿…" : "当前项目没有可校对段落";
+    fragment.append(empty);
+  }
+  root.replaceChildren(fragment);
+  root.onscroll = persistPreprocessSession;
+  renderPreprocessSummary();
+
+  const loadMore = $("#director-preprocess-load-more");
+  loadMore.hidden = directorState.preprocessNextOffset === null;
+  loadMore.disabled = directorState.preprocessLoading;
+  loadMore.textContent = directorState.preprocessLoading ? "加载中…" : "加载更多段落";
+  directorState.preprocessObserver?.disconnect();
+  directorState.preprocessObserver = null;
+  if (!loadMore.hidden && "IntersectionObserver" in window) {
+    directorState.preprocessObserver = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        void loadMorePreprocessing().catch((error) => notify(error, true));
+      }
+    }, { rootMargin: "160px" });
+    directorState.preprocessObserver.observe(loadMore);
+  }
+}
+
+async function loadMorePreprocessing() {
+  if (directorState.preprocessLoading || directorState.preprocessNextOffset === null) return;
+  directorState.preprocessLoading = true;
+  renderPreprocessing();
+  try {
+    const page = await api(
+      `/api/v1/director-projects/${directorState.project.project_id}/preprocess`
+      + `?offset=${directorState.preprocessNextOffset}&limit=20`,
+    );
+    const existing = new Set(directorState.preprocessItems.map((item) => item.paragraph_id));
+    directorState.preprocessItems.push(
+      ...(page.items || []).filter((item) => !existing.has(item.paragraph_id)),
+    );
+    directorState.preprocessTotal = page.total_count || directorState.preprocessTotal;
+    directorState.preprocessNextOffset = nextPreprocessOffset(page);
+  } finally {
+    directorState.preprocessLoading = false;
+    renderPreprocessing();
+  }
 }
 
 function renderStages() {
@@ -253,28 +565,47 @@ function renderActions() {
   const root = $("#director-actions");
   const project = directorState.project;
   const buttons = [];
-  if (project.last_error && ["analyzing", "translating"].includes(project.status)) {
+  if (project.last_error && ["preprocessing", "analyzing", "translating"].includes(project.status)) {
     const failure = document.createElement("span");
     failure.className = "director-command-error";
     failure.textContent = project.last_error.message || "后台任务失败";
-    const retryLabel = project.status === "analyzing" ? "重试剧本分析" : "重试翻译";
+    const retryLabels = {
+      preprocessing: "重试文本预处理",
+      analyzing: "重试剧本分析",
+      translating: "重试翻译",
+    };
+    const retryLabel = retryLabels[project.status];
     buttons.push(failure, actionButton(retryLabel, async () => {
-      const endpoint = project.status === "analyzing" ? "analyze" : "translate";
+      const endpoints = {
+        preprocessing: "preprocess",
+        analyzing: "analyze",
+        translating: "translate",
+      };
+      const endpoint = endpoints[project.status];
+      if (project.status === "preprocessing") {
+        directorState.dirtyPreprocessTexts.clear();
+        persistPreprocessSession();
+      }
       await api(`/api/v1/director-projects/${project.project_id}/${endpoint}`, {
         method: "POST", body: JSON.stringify({ expected_revision: project.revision }),
       });
       await selectProject(project.project_id);
     }));
   } else if (project.status === "draft") {
-    buttons.push(actionButton("分析剧本与角色", async () => {
-      await api(`/api/v1/director-projects/${project.project_id}/analyze`, {
+    buttons.push(actionButton("开始文本预处理", async () => {
+      await api(`/api/v1/director-projects/${project.project_id}/preprocess`, {
         method: "POST", body: JSON.stringify({ expected_revision: project.revision }),
       });
-      notify("已开始 LLM 剧本分析；GPU 不会启动");
+      notify("已开始文本预处理；此阶段不会启动 GPU");
       await selectProject(project.project_id);
     }));
-  } else if (project.status === "analyzing" || project.status === "translating") {
-    const disabled = actionButton(project.status === "analyzing" ? "LLM 正在分析…" : "LLM 正在翻译…", async () => {});
+  } else if (["preprocessing", "analyzing", "translating"].includes(project.status)) {
+    const labels = {
+      preprocessing: "正在预处理…",
+      analyzing: "LLM 正在分析…",
+      translating: "LLM 正在翻译…",
+    };
+    const disabled = actionButton(labels[project.status], async () => {});
     disabled.disabled = true;
     buttons.push(disabled);
   } else if (project.status === "role_review") {
@@ -344,6 +675,16 @@ function renderActions() {
 function renderRoles() {
   const root = $("#director-role-list");
   $("#director-role-count").textContent = `${directorState.roles.length} 个`;
+  if (["draft", "preprocessing", "preprocess_review", "analyzing"].includes(
+    directorState.project.status,
+  ) && directorState.roles.length === 0) {
+    const waiting = document.createElement("div");
+    waiting.className = "empty-state compact";
+    waiting.textContent = directorState.project.status === "analyzing"
+      ? "LLM 正在发布角色…" : "确认预处理稿后才会分析并发布角色";
+    root.replaceChildren(waiting);
+    return;
+  }
   const fragment = document.createDocumentFragment();
   const roleEditing = canEditRoleReview(directorState.project.status);
   const recoveryHint = directorState.project.status === "translation_review"
@@ -764,7 +1105,11 @@ function renderUtterances() {
   if (!visible.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state compact";
-    empty.textContent = directorState.project.status === "analyzing" ? "LLM 正在分析剧本…" : "尚无语句";
+    empty.textContent = ["draft", "preprocessing", "preprocess_review"].includes(
+      directorState.project.status,
+    )
+      ? "确认预处理稿后才会生成语句时间线"
+      : directorState.project.status === "analyzing" ? "LLM 正在分析剧本…" : "尚无语句";
     fragment.append(empty);
   }
   root.replaceChildren(fragment);
@@ -946,7 +1291,7 @@ function renderDirectorLlmActivity() {
     empty.className = "llm-activity-empty";
     empty.textContent = directorState.llmActivityUnavailable
       ? "活动接口暂时不可用，正在重试"
-      : "等待剧本分析或翻译请求";
+      : "等待文本预处理、剧本分析或翻译请求";
     log.replaceChildren(empty);
     return;
   }
@@ -1015,17 +1360,54 @@ $("#director-project-form").onsubmit = async (event) => {
         source_text: source,
         source_language: data.get("source_language"),
         target_language: data.get("target_language"),
+        preprocessing_mode: data.get("preprocessing_mode"),
         narration_enabled: data.get("narration_enabled") === "on",
       }),
+    });
+    await api(`/api/v1/director-projects/${project.project_id}/preprocess`, {
+      method: "POST",
+      body: JSON.stringify({ expected_revision: project.revision }),
     });
     form.reset();
     form.elements.title.value = "新导演项目";
     form.elements.narration_enabled.checked = true;
+    $("#director-skip-preprocessing-warning").hidden = true;
     await loadProjects();
     await selectProject(project.project_id);
-    notify("导演项目已创建；点击“分析剧本与角色”开始 LLM 分析");
+    notify("导演项目已创建并开始文本预处理；GPU 不会启动");
   }).catch((error) => notify(error, true));
 };
+
+$("#director-preprocessing-mode").onchange = (event) => {
+  $("#director-skip-preprocessing-warning").hidden = event.currentTarget.value !== "skip";
+};
+
+$("#director-confirm-preprocessing").onclick = (event) => busy(
+  event.currentTarget,
+  "确认中…",
+  async () => {
+    if (!canConfirmPreprocessing(
+      directorState.project,
+      directorState.dirtyPreprocessTexts,
+    )) {
+      notify("请先保存所有预处理段落，再确认", true);
+      return;
+    }
+    const projectId = directorState.project.project_id;
+    await api(`/api/v1/director-projects/${projectId}/confirm-preprocessing`, {
+      method: "POST",
+      body: JSON.stringify({ expected_revision: directorState.project.revision }),
+    });
+    try { sessionStorage.removeItem(preprocessSessionKey(projectId)); } catch { /* noop */ }
+    directorState.dirtyPreprocessTexts.clear();
+    notify("预处理稿已确认，正在分析角色和对白");
+    await selectProject(projectId);
+  },
+).catch((error) => notify(error, true));
+
+$("#director-preprocess-load-more").onclick = () => (
+  loadMorePreprocessing().catch((error) => notify(error, true))
+);
 
 $("#director-preset-form").onsubmit = async (event) => {
   event.preventDefault();
@@ -1084,6 +1466,9 @@ $("#director-refresh").onclick = (event) => busy(
 ).catch((error) => notify(error, true));
 
 function stopDirectorActivity() {
+  persistPreprocessSession();
+  directorState.preprocessObserver?.disconnect();
+  directorState.preprocessObserver = null;
   if (directorState.pollTimer !== null) {
     window.clearInterval(directorState.pollTimer);
     directorState.pollTimer = null;
@@ -1103,7 +1488,7 @@ async function initializeDirector() {
   directorState.pollTimer = window.setInterval(() => {
     void loadLlmState();
     const status = directorState.project?.status;
-    if (["analyzing", "translating", "generating"].includes(status)) {
+    if (["preprocessing", "analyzing", "translating", "generating"].includes(status)) {
       void selectProject(directorState.project.project_id).catch(() => {});
     }
   }, 1200);

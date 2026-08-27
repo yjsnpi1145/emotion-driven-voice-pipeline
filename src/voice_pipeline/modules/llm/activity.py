@@ -14,6 +14,7 @@ LlmOperation = Literal[
     "chapter_plan",
     "reference_correction",
     "connection_test",
+    "script_preprocessing",
     "script_analysis",
     "cast_reconciliation",
     "script_translation",

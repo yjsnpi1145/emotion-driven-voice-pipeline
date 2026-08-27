@@ -438,7 +438,7 @@ class DirectorGenerationService:
         task = await self._segments.create_task(
             CreateDubbingTaskRequest(
                 title=project.title,
-                source_text=project.source_text,
+                source_text=project.preprocessed_text or project.source_text,
                 target_language=project.target_language,
                 output_spec=OutputAudioSpec(),
             )

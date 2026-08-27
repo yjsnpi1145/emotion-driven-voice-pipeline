@@ -24,12 +24,14 @@ def storage_settings(tmp_path: Path) -> StorageSettings:
 async def test_director_migration_creates_all_tables(tmp_path: Path) -> None:
     database = await Database.open(storage_settings(tmp_path), instance_id=uuid4(), migrate=True)
     try:
-        assert await database.alembic_revision() == "0005_director_working_text"
+        assert await database.alembic_revision() == "0006_director_preprocessing"
         async with database.read_session() as session:
             rows = await session.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
             names = {str(row[0]) for row in rows}
-            column_rows = await session.execute(text("PRAGMA table_info(director_utterances)"))
-            columns = {str(row[1]) for row in column_rows}
+            utterance_rows = await session.execute(text("PRAGMA table_info(director_utterances)"))
+            columns = {str(row[1]) for row in utterance_rows}
+            project_rows = await session.execute(text("PRAGMA table_info(director_projects)"))
+            project_columns = {str(row[1]) for row in project_rows}
         assert {
             "director_projects",
             "director_analysis_chunks",
@@ -39,8 +41,16 @@ async def test_director_migration_creates_all_tables(tmp_path: Path) -> None:
             "role_presets",
             "director_generations",
             "director_generation_items",
+            "director_preprocess_paragraphs",
         } <= names
         assert "working_text" in columns
+        assert "preprocess_paragraph_id" in columns
+        assert {
+            "preprocessing_mode",
+            "structural_text",
+            "preprocessed_text",
+            "preprocess_revision",
+        } <= project_columns
     finally:
         await database.close()
 
@@ -62,6 +72,9 @@ async def test_director_working_text_migration_backfills_existing_source(tmp_pat
             "utterance_id TEXT PRIMARY KEY, source_text TEXT NOT NULL)"
         )
         connection.execute(
+            "CREATE TABLE director_projects (project_id TEXT PRIMARY KEY)"
+        )
+        connection.execute(
             "INSERT INTO director_utterances (utterance_id, source_text) VALUES (?, ?)",
             (str(uuid4()), " 原始切片。 "),
         )
@@ -71,7 +84,7 @@ async def test_director_working_text_migration_backfills_existing_source(tmp_pat
 
     database = await Database.open(settings, instance_id=uuid4(), migrate=True)
     try:
-        assert await database.alembic_revision() == "0005_director_working_text"
+        assert await database.alembic_revision() == "0006_director_preprocessing"
         async with database.read_session() as session:
             row = (
                 await session.execute(
@@ -79,5 +92,26 @@ async def test_director_working_text_migration_backfills_existing_source(tmp_pat
                 )
             ).one()
         assert tuple(row) == (" 原始切片。 ", " 原始切片。 ")
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_preprocessing_migration_does_not_convert_legacy_project_text(
+    tmp_path: Path,
+) -> None:
+    settings = storage_settings(tmp_path)
+    database = await Database.open(settings, instance_id=uuid4(), migrate=True)
+    try:
+        async with database.read_session() as session:
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT preprocessing_mode, structural_text, preprocessed_text, "
+                        "preprocess_revision FROM director_projects LIMIT 1"
+                    )
+                )
+            ).one_or_none()
+        assert row is None
     finally:
         await database.close()

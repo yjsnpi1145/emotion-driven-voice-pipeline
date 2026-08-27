@@ -19,6 +19,20 @@ the first public tag is created.
   counters.
 - Director script analysis now classifies deterministic local slice IDs instead of asking the LLM
   to reproduce source text and calculate Python character offsets.
+- Director text preflight with local structural cleanup, optional constrained LLM rewriting,
+  paragraph-level fallback and a paginated side-by-side review UI.
+- Session-persistent preprocessing drafts, restore/rewrite controls, confirmation gating and LLM
+  activity visibility for the preprocessing stage.
+- Quote-aware dialogue/bridge narration units and shared speakability filtering that keeps
+  punctuation-only rows out of translation and TTS.
+- Single-flight preprocessing, analysis and translation commands with visible restart recovery.
+
+### Fixed
+
+- Director generation now materializes segments against the confirmed preprocessed document while
+  preserving the immutable imported source.
+- Skip preprocessing mode now preserves every source character instead of normalizing paragraph
+  breaks.
 
 ## [0.1.0] - 2026-08-10
 

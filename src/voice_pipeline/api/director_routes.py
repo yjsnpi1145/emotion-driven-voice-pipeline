@@ -5,11 +5,12 @@ from collections.abc import Coroutine
 from typing import Any, cast
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from voice_pipeline.core.director_analysis import ScriptAnalysisService
 from voice_pipeline.core.director_generation import DirectorGenerationService
+from voice_pipeline.core.director_preprocessing import PreprocessingService
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.core.role_preset_service import RolePresetService
 from voice_pipeline.models.director import (
@@ -17,6 +18,7 @@ from voice_pipeline.models.director import (
     BulkDirectorUtterancePatch,
     CreateDirectorProjectRequest,
     CreateRolePresetRequest,
+    DirectorPreprocessParagraphPatch,
     DirectorProjectRecord,
     DirectorRolePatch,
     DirectorUtterancePatch,
@@ -24,6 +26,8 @@ from voice_pipeline.models.director import (
     MergeDirectorRolesRequest,
     MergeDirectorUtterancesRequest,
     NarrationSettingRequest,
+    RestoreDirectorPreprocessParagraphRequest,
+    RewriteDirectorPreprocessParagraphRequest,
     RolePresetRecord,
     SplitDirectorRoleRequest,
     SplitDirectorUtteranceRequest,
@@ -63,16 +67,189 @@ def build_director_router(plane: Any) -> APIRouter:
             raise _pipeline_error(exc) from exc
         return {"status": "deleted", "project_id": str(project_id)}
 
+    @router.post(
+        "/api/v1/director-projects/{project_id}/preprocess",
+        status_code=202,
+    )
+    async def preprocess(
+        project_id: UUID,
+        request: ExpectedProjectRevision,
+    ) -> dict[str, str]:
+        if await _should_start_command(
+            plane,
+            project_id,
+            request.expected_revision,
+            operation="preprocessing",
+        ):
+            _spawn(
+                plane,
+                _preprocessing(plane).run(
+                    project_id,
+                    expected_revision=request.expected_revision,
+                ),
+                project_id=project_id,
+                operation="preprocessing",
+                expected_status="preprocessing",
+            )
+        return {
+            "project_id": str(project_id),
+            "status": "accepted",
+            "status_url": f"/api/v1/director-projects/{project_id}",
+        }
+
+    @router.get("/api/v1/director-projects/{project_id}/preprocess")
+    async def preprocessing_page(
+        project_id: UUID,
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=20, ge=1, le=100),
+    ) -> dict[str, Any]:
+        try:
+            return _dump(
+                await _store(plane).list_preprocess_paragraphs(
+                    project_id,
+                    offset=offset,
+                    limit=limit,
+                )
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="director project not found") from exc
+
+    @router.patch(
+        "/api/v1/director-projects/{project_id}"
+        "/preprocess-paragraphs/{paragraph_id}"
+    )
+    async def patch_preprocessing_paragraph(
+        project_id: UUID,
+        paragraph_id: str,
+        request: DirectorPreprocessParagraphPatch,
+    ) -> dict[str, Any]:
+        try:
+            return _dump(
+                await _store(plane).patch_preprocess_paragraph(
+                    project_id,
+                    paragraph_id,
+                    expected_project_revision=request.expected_project_revision,
+                    expected_revision=request.expected_revision,
+                    preprocessed_text=request.preprocessed_text,
+                )
+            )
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="preprocessing paragraph not found",
+            ) from exc
+        except PipelineError as exc:
+            raise _pipeline_error(exc) from exc
+
+    @router.post(
+        "/api/v1/director-projects/{project_id}"
+        "/preprocess-paragraphs/{paragraph_id}/restore"
+    )
+    async def restore_preprocessing_paragraph(
+        project_id: UUID,
+        paragraph_id: str,
+        request: RestoreDirectorPreprocessParagraphRequest,
+    ) -> dict[str, Any]:
+        try:
+            return _dump(
+                await _store(plane).restore_preprocess_paragraph(
+                    project_id,
+                    paragraph_id,
+                    expected_project_revision=request.expected_project_revision,
+                    expected_revision=request.expected_revision,
+                    target=request.target,
+                )
+            )
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="preprocessing paragraph not found",
+            ) from exc
+        except PipelineError as exc:
+            raise _pipeline_error(exc) from exc
+
+    @router.post(
+        "/api/v1/director-projects/{project_id}"
+        "/preprocess-paragraphs/{paragraph_id}/rewrite"
+    )
+    async def rewrite_preprocessing_paragraph(
+        project_id: UUID,
+        paragraph_id: str,
+        request: RewriteDirectorPreprocessParagraphRequest,
+    ) -> dict[str, Any]:
+        try:
+            return _dump(
+                await _preprocessing(plane).rewrite_paragraph(
+                    project_id,
+                    paragraph_id,
+                    expected_project_revision=request.expected_project_revision,
+                    expected_revision=request.expected_revision,
+                )
+            )
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="preprocessing paragraph not found",
+            ) from exc
+        except PipelineError as exc:
+            raise _pipeline_error(exc) from exc
+
+    @router.post(
+        "/api/v1/director-projects/{project_id}/confirm-preprocessing",
+        status_code=202,
+    )
+    async def confirm_preprocessing(
+        project_id: UUID,
+        request: ExpectedProjectRevision,
+    ) -> dict[str, str]:
+        async with _command_submission_lock(plane, project_id, "analysis"):
+            if not _command_running(plane, project_id, "analysis"):
+                try:
+                    confirmed = await _store(plane).confirm_preprocessing(
+                        project_id,
+                        expected_revision=request.expected_revision,
+                    )
+                except KeyError as exc:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="director project not found",
+                    ) from exc
+                except PipelineError as exc:
+                    raise _pipeline_error(exc) from exc
+                _spawn(
+                    plane,
+                    _analysis(plane).analyze(
+                        project_id,
+                        expected_revision=confirmed.revision,
+                    ),
+                    project_id=project_id,
+                    operation="analysis",
+                    expected_status="analyzing",
+                )
+        return {
+            "project_id": str(project_id),
+            "status": "accepted",
+            "status_url": f"/api/v1/director-projects/{project_id}",
+        }
+
     @router.post("/api/v1/director-projects/{project_id}/analyze", status_code=202)
     async def analyze(project_id: UUID, request: ExpectedProjectRevision) -> dict[str, str]:
-        await _require_project_revision(plane, project_id, request.expected_revision)
-        _spawn(
+        if await _should_start_command(
             plane,
-            _analysis(plane).analyze(project_id, expected_revision=request.expected_revision),
-            project_id=project_id,
+            project_id,
+            request.expected_revision,
             operation="analysis",
-            expected_status="analyzing",
-        )
+            require_confirmed_preprocessing=True,
+        ):
+            _spawn(
+                plane,
+                _analysis(plane).analyze(
+                    project_id, expected_revision=request.expected_revision
+                ),
+                project_id=project_id,
+                operation="analysis",
+                expected_status="analyzing",
+            )
         return {
             "project_id": str(project_id),
             "status": "accepted",
@@ -239,14 +416,21 @@ def build_director_router(plane: Any) -> APIRouter:
 
     @router.post("/api/v1/director-projects/{project_id}/translate", status_code=202)
     async def translate(project_id: UUID, request: ExpectedProjectRevision) -> dict[str, str]:
-        await _require_project_revision(plane, project_id, request.expected_revision)
-        _spawn(
+        if await _should_start_command(
             plane,
-            _analysis(plane).translate(project_id, expected_revision=request.expected_revision),
-            project_id=project_id,
+            project_id,
+            request.expected_revision,
             operation="translation",
-            expected_status="translating",
-        )
+        ):
+            _spawn(
+                plane,
+                _analysis(plane).translate(
+                    project_id, expected_revision=request.expected_revision
+                ),
+                project_id=project_id,
+                operation="translation",
+                expected_status="translating",
+            )
         return {
             "project_id": str(project_id),
             "status": "accepted",
@@ -426,6 +610,13 @@ def _analysis(plane: Any) -> ScriptAnalysisService:
     return cast(ScriptAnalysisService, value)
 
 
+def _preprocessing(plane: Any) -> PreprocessingService:
+    value = getattr(plane, "director_preprocessing", None)
+    if value is None:
+        raise HTTPException(status_code=503, detail="director preprocessing is not ready")
+    return cast(PreprocessingService, value)
+
+
 def _presets(plane: Any) -> RolePresetService:
     value = getattr(plane, "role_presets", None)
     if value is None:
@@ -456,6 +647,59 @@ async def _require_project_revision(plane: Any, project_id: UUID, revision: int)
         )
 
 
+def _command_running(plane: Any, project_id: UUID, operation: str) -> bool:
+    command = plane.director_commands.get((project_id, operation))
+    return command is not None and not command.done()
+
+
+def _command_submission_lock(
+    plane: Any,
+    project_id: UUID,
+    operation: str,
+) -> asyncio.Lock:
+    locks = getattr(plane, "director_submission_locks", None)
+    if locks is None:
+        locks = {}
+        plane.director_submission_locks = locks
+    return cast(dict[tuple[UUID, str], asyncio.Lock], locks).setdefault(
+        (project_id, operation),
+        asyncio.Lock(),
+    )
+
+
+async def _should_start_command(
+    plane: Any,
+    project_id: UUID,
+    revision: int,
+    *,
+    operation: str,
+    require_confirmed_preprocessing: bool = False,
+) -> bool:
+    if _command_running(plane, project_id, operation):
+        return False
+    try:
+        await _require_project_revision(plane, project_id, revision)
+        if require_confirmed_preprocessing:
+            project = await _store(plane).get_project(project_id)
+            if project.preprocessed_text is None or project.status not in {
+                "analyzing",
+                "role_review",
+            }:
+                raise _pipeline_error(
+                    PipelineError(
+                        ErrorCode.DIRECTOR_REVIEW_REQUIRED,
+                        "director",
+                        "confirm the preprocessing draft before analysis",
+                        retryable=False,
+                    )
+                )
+    except HTTPException:
+        if _command_running(plane, project_id, operation):
+            return False
+        raise
+    return True
+
+
 def _spawn(
     plane: Any,
     coroutine: Coroutine[Any, Any, object],
@@ -463,7 +707,14 @@ def _spawn(
     project_id: UUID,
     operation: str,
     expected_status: str,
-) -> None:
+) -> bool:
+    key = (project_id, operation)
+    commands: dict[tuple[UUID, str], asyncio.Task[object]] = plane.director_commands
+    existing = commands.get(key)
+    if existing is not None and not existing.done():
+        coroutine.close()
+        return False
+
     async def run() -> None:
         try:
             await coroutine
@@ -480,15 +731,19 @@ def _spawn(
     task = asyncio.create_task(run())
     tasks: set[asyncio.Task[object]] = plane.director_tasks
     tasks.add(task)
+    commands[key] = task
 
     def done(completed: asyncio.Task[object]) -> None:
         tasks.discard(completed)
+        if commands.get(key) is completed:
+            commands.pop(key, None)
         try:
             completed.exception()
         except (asyncio.CancelledError, Exception):
             pass
 
     task.add_done_callback(done)
+    return True
 
 
 def _background_error(error: BaseException) -> dict[str, object]:
@@ -512,7 +767,12 @@ def _public_preset(record: RolePresetRecord) -> dict[str, Any]:
 def _public_project(record: DirectorProjectRecord) -> dict[str, Any]:
     payload = record.model_dump(
         mode="json",
-        exclude={"final_relative_path", "timeline"},
+        exclude={
+            "final_relative_path",
+            "timeline",
+            "structural_text",
+            "preprocessed_text",
+        },
     )
     payload["audio_url"] = (
         f"/api/v1/director-projects/{record.project_id}/audio"

@@ -13,6 +13,7 @@ from voice_pipeline.models.director import (
     CreateDirectorUtterance,
 )
 from voice_pipeline.models.director_llm import TranslationResultItem
+from voice_pipeline.modules.text.structural_cleaner import StructuralTextCleaner
 from voice_pipeline.storage.database import Database
 from voice_pipeline.storage.director_store import DirectorStore
 
@@ -44,9 +45,34 @@ def project_request(source: str = "旁白。甲说你好。") -> CreateDirectorP
     )
 
 
+async def confirmed_for_analysis(store: DirectorStore, project):
+    project = await store.begin_preprocessing(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+    document = StructuralTextCleaner().clean(
+        project.source_text,
+        namespace=str(project.project_id),
+    )
+    await store.stage_preprocess_document(
+        project.project_id,
+        expected_revision=project.revision,
+        document=document,
+    )
+    project = await store.complete_preprocessing(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+    return await store.confirm_preprocessing(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+
+
 @pytest.mark.asyncio
 async def test_publish_analysis_requires_exact_contiguous_source_coverage(store: DirectorStore):
     project = await store.create_project(project_request())
+    project = await confirmed_for_analysis(store, project)
     with pytest.raises(PipelineError) as exc:
         await store.publish_analysis(
             project.project_id,
@@ -67,9 +93,108 @@ async def test_publish_analysis_requires_exact_contiguous_source_coverage(store:
 
 
 @pytest.mark.asyncio
+async def test_preprocessing_document_is_revisioned_editable_and_confirmable(
+    store: DirectorStore,
+) -> None:
+    source = "第一段。\r\n\r\n第二段。"
+    project = await store.create_project(project_request(source))
+    assert project.preprocessing_mode == "structural"
+    assert project.structural_text is None
+    assert project.preprocessed_text is None
+    assert project.preprocess_revision == 0
+
+    project = await store.begin_preprocessing(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+    assert project.status == "preprocessing"
+    document = StructuralTextCleaner().clean(source)
+    await store.stage_preprocess_document(
+        project.project_id,
+        expected_revision=project.revision,
+        document=document,
+    )
+    project = await store.complete_preprocessing(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+
+    assert project.status == "preprocess_review"
+    assert project.structural_text == "第一段。\n\n第二段。"
+    assert project.preprocessed_text == project.structural_text
+    assert project.preprocess_revision == 1
+    page = await store.list_preprocess_paragraphs(
+        project.project_id,
+        offset=0,
+        limit=1,
+    )
+    assert page.total_count == 2
+    assert len(page.items) == 1
+    assert page.next_offset == 1
+    first = page.items[0]
+
+    updated = await store.patch_preprocess_paragraph(
+        project.project_id,
+        first.paragraph_id,
+        expected_project_revision=project.revision,
+        expected_revision=first.revision,
+        preprocessed_text="第一段，用户修改。",
+    )
+    project = await store.get_project(project.project_id)
+    assert updated.rewrite_state == "user_edited"
+    assert updated.revision == first.revision + 1
+    assert project.preprocessed_text == "第一段，用户修改。\n\n第二段。"
+    assert project.preprocess_revision == 2
+
+    restored = await store.restore_preprocess_paragraph(
+        project.project_id,
+        first.paragraph_id,
+        expected_project_revision=project.revision,
+        expected_revision=updated.revision,
+        target="structural",
+    )
+    project = await store.get_project(project.project_id)
+    assert restored.preprocessed_text == "第一段。"
+    assert project.preprocessed_text == "第一段。\n\n第二段。"
+
+    with pytest.raises(PipelineError) as exc:
+        await store.patch_preprocess_paragraph(
+            project.project_id,
+            first.paragraph_id,
+            expected_project_revision=0,
+            expected_revision=restored.revision,
+            preprocessed_text="过期写入。",
+        )
+    assert exc.value.code == ErrorCode.VERSION_CONFLICT
+
+    confirmed = await store.confirm_preprocessing(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+    assert confirmed.status == "analyzing"
+    assert await store.analysis_text(project.project_id) == "第一段。\n\n第二段。"
+
+
+@pytest.mark.asyncio
+async def test_analysis_cannot_bypass_preprocessing_confirmation(
+    store: DirectorStore,
+) -> None:
+    project = await store.create_project(project_request("旁白。"))
+
+    with pytest.raises(PipelineError) as exc:
+        await store.begin_analysis(
+            project.project_id,
+            expected_revision=project.revision,
+        )
+
+    assert exc.value.code == ErrorCode.DIRECTOR_STATE_CONFLICT
+
+
+@pytest.mark.asyncio
 async def test_publish_split_merge_and_occ(store: DirectorStore):
     source = "旁白。甲说你好。"
     project = await store.create_project(project_request(source))
+    project = await confirmed_for_analysis(store, project)
     project = await store.publish_analysis(
         project.project_id,
         expected_revision=project.revision,
@@ -126,6 +251,7 @@ async def test_publish_split_merge_and_occ(store: DirectorStore):
 async def test_working_text_edit_preserves_source_and_stays_in_role_review(store: DirectorStore):
     source = "甲：原始台词。"
     project = await store.create_project(project_request(source))
+    project = await confirmed_for_analysis(store, project)
     project = await store.publish_analysis(
         project.project_id,
         expected_revision=project.revision,
@@ -173,6 +299,7 @@ async def test_working_text_edit_preserves_source_and_stays_in_role_review(store
 async def test_working_text_edit_is_rejected_after_role_review(store: DirectorStore):
     source = "甲：你好。"
     project = await store.create_project(project_request(source))
+    project = await confirmed_for_analysis(store, project)
     project = await store.publish_analysis(
         project.project_id,
         expected_revision=project.revision,
@@ -209,6 +336,7 @@ async def test_working_text_edit_is_rejected_after_role_review(store: DirectorSt
 async def test_merge_concatenates_source_and_working_text_independently(store: DirectorStore):
     source = "第一句。第二句。"
     project = await store.create_project(project_request(source))
+    project = await confirmed_for_analysis(store, project)
     await store.publish_analysis(
         project.project_id,
         expected_revision=project.revision,
@@ -260,6 +388,7 @@ async def test_merge_concatenates_source_and_working_text_independently(store: D
 async def test_narration_toggle_preserves_source_rows(store: DirectorStore):
     source = "旁白。"
     project = await store.create_project(project_request(source))
+    project = await confirmed_for_analysis(store, project)
     project = await store.publish_analysis(
         project.project_id,
         expected_revision=project.revision,
@@ -288,6 +417,7 @@ async def test_narration_toggle_preserves_source_rows(store: DirectorStore):
 async def test_split_role_creates_character_and_reassigns_selected_rows(store: DirectorStore):
     source = "甲：第一句。甲：第二句。"
     project = await store.create_project(project_request(source))
+    project = await confirmed_for_analysis(store, project)
     project = await store.publish_analysis(
         project.project_id,
         expected_revision=project.revision,
@@ -332,6 +462,7 @@ async def test_split_role_creates_character_and_reassigns_selected_rows(store: D
 async def test_review_and_translation_are_explicit_gates(store: DirectorStore):
     source = "甲：你好。"
     project = await store.create_project(project_request(source))
+    project = await confirmed_for_analysis(store, project)
     project = await store.publish_analysis(
         project.project_id,
         expected_revision=project.revision,

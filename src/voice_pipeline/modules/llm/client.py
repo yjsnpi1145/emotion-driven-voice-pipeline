@@ -18,6 +18,8 @@ from voice_pipeline.models.director_llm import (
     AnalyzedUtterance,
     CastReconciliationResult,
     ChunkAnalysisResult,
+    PreprocessRewriteResult,
+    PreprocessRewriteUnit,
     ScriptChunk,
     ScriptTranslationResult,
     TranslationInput,
@@ -244,6 +246,35 @@ class OpenAiDirectorClient:
         )
         repaired = _validate_payload(UnitAnalysisResult, repaired_content)
         return materialize_unit_analysis(chunk, units, repaired)
+
+    async def rewrite_preprocess_paragraph(
+        self,
+        *,
+        paragraph_id: str,
+        units: tuple[PreprocessRewriteUnit, ...],
+        activity_id: UUID | None = None,
+    ) -> PreprocessRewriteResult:
+        content = await self._post_json(
+            _schema_messages(
+                PreprocessRewriteResult,
+                instruction=(
+                    "Return exactly one item for every supplied unit_id in the supplied order. "
+                    "Each input_unit_ids must contain exactly that item's unit_id. Never merge, "
+                    "omit, duplicate, reorder, or invent units. Improve readability for spoken "
+                    "performance while preserving meaning and structural context. Never add or "
+                    "delete plot information. Never translate or change the source language. "
+                    "Preserve names, numbers, foreign-language tokens, dialogue quote wrappers, "
+                    "and the distinction between dialogue, bridge narration, and narration."
+                ),
+                payload={
+                    "paragraph_id": paragraph_id,
+                    "units": [unit.model_dump(mode="json") for unit in units],
+                },
+            ),
+            operation_id=activity_id or uuid4(),
+            operation="script_preprocessing",
+        )
+        return _validate_payload(PreprocessRewriteResult, content)
 
     async def reconcile_cast(
         self,

@@ -9,10 +9,39 @@ from voice_pipeline.models.schemas import (
     ChineseReferenceText,
     EmotionVector,
     NonBlankText,
+    PreservedNonBlankText,
     StrictModel,
 )
 
-AnalysisUnitContext = Literal["general", "quoted_dialogue", "quote_bridge_narration"]
+AnalysisUnitContext = Literal[
+    "general",
+    "quoted_dialogue",
+    "quote_bridge_narration",
+    "pause_marker",
+]
+PreprocessUnitContext = Literal[
+    "quoted_dialogue",
+    "quote_bridge_narration",
+    "narration",
+    "formatting",
+    "pause_marker",
+]
+
+
+class PreprocessRewriteUnit(StrictModel):
+    unit_id: NonBlankText
+    text: PreservedNonBlankText
+    context: PreprocessUnitContext
+
+
+class PreprocessRewriteItem(StrictModel):
+    unit_id: NonBlankText
+    rewritten_text: PreservedNonBlankText
+    input_unit_ids: tuple[NonBlankText, ...] = Field(min_length=1)
+
+
+class PreprocessRewriteResult(StrictModel):
+    items: tuple[PreprocessRewriteItem, ...] = Field(min_length=1)
 
 
 class ScriptChunk(StrictModel):
