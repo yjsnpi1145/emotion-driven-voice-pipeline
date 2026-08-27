@@ -25,6 +25,9 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
             director_working_text_script = await client.get(
                 "/ui/director-working-text.js"
             )
+            director_lazy_editor_script = await client.get(
+                "/ui/director-lazy-editor.js"
+            )
             shutdown_script = await client.get("/ui/service-shutdown.js")
             stage_script = await client.get("/ui/stage-progress.js")
             selection_script = await client.get("/ui/selection-state.js")
@@ -181,6 +184,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "log.scrollHeight - log.scrollTop - log.clientHeight < 32" in director_script.text
     assert director_activity_script.status_code == 200
     assert director_working_text_script.status_code == 200
+    assert director_lazy_editor_script.status_code == 200
     assert "script_analysis" in director_activity_script.text
     assert "cast_reconciliation" in director_activity_script.text
     assert "script_translation" in director_activity_script.text

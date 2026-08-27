@@ -31,6 +31,7 @@ _WEBUI_FILES = {
     "index.html",
     "app.js",
     "director-dnd.js",
+    "director-lazy-editor.js",
     "director-llm-activity.js",
     "director-working-text.js",
     "director.js",
