@@ -19,4 +19,3 @@ def test_pause_marker_accepts_only_pause_symbols(value: str) -> None:
 def test_unicode_letters_and_numbers_are_speakable(value: str) -> None:
     assert is_speakable_text(value) is True
     assert is_pause_marker(value) is False
-

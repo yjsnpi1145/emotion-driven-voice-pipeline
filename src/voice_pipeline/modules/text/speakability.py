@@ -14,4 +14,3 @@ def is_pause_marker(value: str) -> bool:
     """Return whether a non-empty value contains only supported pause symbols."""
     compact = "".join(character for character in value if not character.isspace())
     return bool(compact) and all(character in _PAUSE_SYMBOLS for character in compact)
-

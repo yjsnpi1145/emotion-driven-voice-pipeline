@@ -16,4 +16,3 @@ __all__ = [
     "is_pause_marker",
     "is_speakable_text",
 ]
-

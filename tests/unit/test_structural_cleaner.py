@@ -102,4 +102,3 @@ def test_cleaner_is_stable_and_never_emits_formatting_only_units_between_text() 
     assert "".join(
         unit.text for paragraph in first.paragraphs for unit in paragraph.units
     ) == first.structural_text
-
