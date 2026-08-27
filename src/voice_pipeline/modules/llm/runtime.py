@@ -13,6 +13,8 @@ from voice_pipeline.models.director_llm import (
     AnalyzedUtterance,
     CastReconciliationResult,
     ChunkAnalysisResult,
+    PreprocessRewriteResult,
+    PreprocessRewriteUnit,
     ScriptChunk,
     ScriptTranslationResult,
     TranslationInput,
@@ -53,6 +55,14 @@ class _Director(Protocol):
     async def analyze_script_chunk(
         self, *, chunk: ScriptChunk, activity_id: UUID | None = None
     ) -> ChunkAnalysisResult: ...
+
+    async def rewrite_preprocess_paragraph(
+        self,
+        *,
+        paragraph_id: str,
+        units: tuple[PreprocessRewriteUnit, ...],
+        activity_id: UUID | None = None,
+    ) -> PreprocessRewriteResult: ...
 
     async def reconcile_cast(
         self,
@@ -251,6 +261,40 @@ class RuntimeDirector:
             operation_id,
             "script_analysis",
             f"剧本块分析完成 · {len(result.utterances)} 条语句",
+            result.model_dump_json(),
+        )
+        return result
+
+    async def rewrite_preprocess_paragraph(
+        self,
+        *,
+        paragraph_id: str,
+        units: tuple[PreprocessRewriteUnit, ...],
+    ) -> PreprocessRewriteResult:
+        operation_id = uuid4()
+        await self._record_started(
+            operation_id,
+            "script_preprocessing",
+            f"开始改写预处理段落 · {paragraph_id[:8]}",
+        )
+        try:
+            async with self._parallel_calls:
+                director = await self._begin_staged_call()
+                try:
+                    result = await director.rewrite_preprocess_paragraph(
+                        paragraph_id=paragraph_id,
+                        units=units,
+                        activity_id=operation_id,
+                    )
+                finally:
+                    await self._end_staged_call()
+        except BaseException as exc:
+            await self._record_failed(operation_id, "script_preprocessing", exc)
+            raise
+        await self._record_completed(
+            operation_id,
+            "script_preprocessing",
+            f"预处理段落改写完成 · {len(result.items)} 个单元",
             result.model_dump_json(),
         )
         return result

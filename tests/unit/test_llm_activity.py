@@ -91,3 +91,30 @@ async def test_failed_event_clears_active_state_and_serializes_without_secrets()
     assert payload["events"][-1]["kind"] == "failed"
     assert "api_key" not in str(payload).casefold()
     assert "authorization" not in str(payload).casefold()
+
+
+@pytest.mark.asyncio
+async def test_activity_accepts_script_preprocessing_operation() -> None:
+    activity = LlmActivityLog()
+    operation_id = uuid4()
+
+    await activity.emit(
+        operation_id=operation_id,
+        operation="script_preprocessing",
+        kind="started",
+        message="开始文本预处理",
+    )
+    await activity.emit(
+        operation_id=operation_id,
+        operation="script_preprocessing",
+        kind="completed",
+        message="文本预处理完成",
+        content='{"items":[]}',
+    )
+
+    snapshot = await activity.snapshot()
+    assert snapshot.active is False
+    assert [event.operation for event in snapshot.events] == [
+        "script_preprocessing",
+        "script_preprocessing",
+    ]

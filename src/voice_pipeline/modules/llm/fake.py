@@ -8,6 +8,9 @@ from voice_pipeline.models.director_llm import (
     CandidateRoleAssignment,
     CastReconciliationResult,
     ChunkAnalysisResult,
+    PreprocessRewriteItem,
+    PreprocessRewriteResult,
+    PreprocessRewriteUnit,
     ReconciledRole,
     ScriptChunk,
     ScriptTranslationResult,
@@ -96,6 +99,25 @@ class FakeDirector:
                 )
             )
         return ChunkAnalysisResult(utterances=tuple(rows))
+
+    async def rewrite_preprocess_paragraph(
+        self,
+        *,
+        paragraph_id: str,
+        units: tuple[PreprocessRewriteUnit, ...],
+        activity_id: UUID | None = None,
+    ) -> PreprocessRewriteResult:
+        del paragraph_id, activity_id
+        return PreprocessRewriteResult(
+            items=tuple(
+                PreprocessRewriteItem(
+                    unit_id=unit.unit_id,
+                    rewritten_text=unit.text,
+                    input_unit_ids=(unit.unit_id,),
+                )
+                for unit in units
+            )
+        )
 
     async def reconcile_cast(
         self,
