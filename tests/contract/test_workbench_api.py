@@ -204,7 +204,8 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "speakInput.disabled = !canEditRoleReview" in director_script.text
     assert "confirm.hidden = utterance.role_confirmed || !canEditRoleReview" in director_script.text
     assert "修改后将返回角色复核并需要重新翻译" in director_script.text
-    assert 'speakInput.disabled = directorState.project.status !== "role_review"' not in director_script.text
+    old_speak_gate = 'speakInput.disabled = directorState.project.status !== "role_review"'
+    assert old_speak_gate not in director_script.text
     assert "/api/v1/settings/quality" in script.text
     assert "loadQualitySettings" in script.text
     assert "saveQualitySettings" in script.text
