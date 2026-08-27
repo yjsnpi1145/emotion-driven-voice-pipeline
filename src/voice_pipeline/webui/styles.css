@@ -241,6 +241,16 @@ details summary { cursor: pointer; color: #aebed1; font-size: .82rem; }
 .director-utterance-card[data-kind="stage_direction"] { opacity: .7; }
 .director-utterance-card > input[type="checkbox"] { margin-top: .2rem; }
 .director-source-slice { margin: .4rem 0 .6rem; white-space: pre-wrap; color: #c6d2e0; line-height: 1.55; }
+.director-working-text-editor { display: grid; gap: .35rem; min-width: 0; }
+.director-working-text-editor > strong { color: #dce8f7; font-size: .78rem; }
+.director-working-text { min-height: 5rem; resize: vertical; transition: border-color .15s ease, box-shadow .15s ease; }
+.director-working-text[data-dirty="true"] { border-color: #b9883e; box-shadow: 0 0 0 2px rgb(185 136 62 / 12%); }
+.director-working-text-actions { display: flex; justify-content: space-between; align-items: center; gap: .7rem; }
+.director-working-text-actions small[data-state="warning"] { color: #e7b86b; }
+.director-working-text-actions small[data-state="ready"] { color: var(--muted); }
+.director-original-source { grid-column: 2; min-width: 0; padding: .45rem .55rem; border: 1px solid var(--line); border-radius: .45rem; background: rgb(8 16 27 / 42%); }
+.director-original-source summary { cursor: pointer; color: #9fb0c5; font-size: .76rem; font-weight: 650; }
+.director-original-source textarea { width: 100%; margin-bottom: 0; color: #8fa0b5; background: #0a121e; }
 .director-utterance-controls { display: grid; grid-template-columns: minmax(9rem, .7fr) auto auto minmax(5rem, .35fr); gap: .45rem; align-items: end; }
 .director-inline-button { min-height: 2.28rem; padding: .45rem .65rem; }
 .director-translation-editor { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: .45rem; }
@@ -332,6 +342,7 @@ details summary { cursor: pointer; color: #aebed1; font-size: .82rem; }
   .director-workspace { min-height: 0; }
   .director-stage-rail { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .director-utterance-controls, .director-translation-editor, .director-emotion-vector { grid-template-columns: 1fr; }
+  .director-original-source { grid-column: 1 / -1; }
 }
 
 @media (max-width: 560px) {

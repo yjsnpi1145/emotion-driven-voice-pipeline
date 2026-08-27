@@ -385,6 +385,7 @@ class DirectorStore:
                         "source_start": item.source_start,
                         "source_end": item.source_end,
                         "source_text": item.source_text,
+                        "working_text": item.source_text,
                         "kind": item.kind,
                         "speak_enabled": int(
                             item.speak_enabled
@@ -472,6 +473,7 @@ class DirectorStore:
             "role_id",
             "speak_enabled",
             "role_confirmed",
+            "working_text",
             "synthesis_text",
             "ref_text_cn",
             "emotion_vector",
@@ -489,6 +491,23 @@ class DirectorStore:
             if name in values and values[name] is not None:
                 values[name] = int(bool(values[name]))
         values = {key: value for key, value in values.items() if value is not None}
+        if "working_text" in values:
+            if not str(values["working_text"]).strip():
+                raise PipelineError(
+                    ErrorCode.INVALID_INPUT,
+                    "director",
+                    "working text must not be blank",
+                    retryable=False,
+                )
+            values.update(
+                synthesis_text=None,
+                ref_text_cn=None,
+                emotion_vector_json=None,
+                task_id=None,
+                segment_id=None,
+                reference_version_id=None,
+                gsv_version_id=None,
+            )
         values["revision"] = director_utterances.c.revision + 1
         async with self._database.write_session() as session:
             existing = (
@@ -504,6 +523,10 @@ class DirectorStore:
             )
             if existing is None:
                 raise KeyError(f"unknown director utterance: {utterance_id}")
+            project_id = UUID(str(existing["project_id"]))
+            project = await _locked_project(session, project_id)
+            if "working_text" in values and str(project["status"]) != "role_review":
+                raise _state_conflict(str(project["status"]), "edit working text")
             result = await session.execute(
                 update(director_utterances)
                 .where(director_utterances.c.utterance_id == str(utterance_id))
@@ -512,8 +535,10 @@ class DirectorStore:
             )
             if cast(CursorResult[Any], result).rowcount != 1:
                 raise _version_conflict()
-            project_id = UUID(str(existing["project_id"]))
-            await _touch_project(session, project_id, role_change="role_id" in values)
+            role_change = bool(
+                {"role_id", "speak_enabled", "role_confirmed", "working_text"} & values.keys()
+            )
+            await _touch_project(session, project_id, role_change=role_change)
             await _append_event(
                 session,
                 project_id,
@@ -590,6 +615,14 @@ class DirectorStore:
                     .values(ordinal=int(later_ordinal) + 1)
                 )
             source = str(row["source_text"])
+            working = str(row["working_text"])
+            if working != source:
+                raise PipelineError(
+                    ErrorCode.INVALID_INPUT,
+                    "director",
+                    "restore the working text before splitting the original source slice",
+                    retryable=False,
+                )
             cut = split_at - start
             await session.execute(
                 update(director_utterances)
@@ -597,9 +630,14 @@ class DirectorStore:
                 .values(
                     source_end=split_at,
                     source_text=source[:cut],
+                    working_text=working[:cut],
                     synthesis_text=None,
                     ref_text_cn=None,
                     emotion_vector_json=None,
+                    task_id=None,
+                    segment_id=None,
+                    reference_version_id=None,
+                    gsv_version_id=None,
                     role_confirmed=0,
                     revision=expected_revision + 1,
                 )
@@ -611,9 +649,14 @@ class DirectorStore:
                 ordinal=ordinal + 1,
                 source_start=split_at,
                 source_text=source[cut:],
+                working_text=working[cut:],
                 synthesis_text=None,
                 ref_text_cn=None,
                 emotion_vector_json=None,
+                task_id=None,
+                segment_id=None,
+                reference_version_id=None,
+                gsv_version_id=None,
                 role_confirmed=0,
                 revision=0,
             )
@@ -677,9 +720,14 @@ class DirectorStore:
                 .values(
                     source_end=int(right["source_end"]),
                     source_text=str(left["source_text"]) + str(right["source_text"]),
+                    working_text=str(left["working_text"]) + str(right["working_text"]),
                     synthesis_text=None,
                     ref_text_cn=None,
                     emotion_vector_json=None,
+                    task_id=None,
+                    segment_id=None,
+                    reference_version_id=None,
+                    gsv_version_id=None,
                     role_confirmed=0,
                     revision=expected_left_revision + 1,
                 )
@@ -1777,6 +1825,7 @@ def _utterance(row: dict[str, Any]) -> DirectorUtteranceRecord:
         source_start=int(row["source_start"]),
         source_end=int(row["source_end"]),
         source_text=str(row["source_text"]),
+        working_text=str(row["working_text"]),
         kind=str(row["kind"]),  # type: ignore[arg-type]
         speak_enabled=bool(row["speak_enabled"]),
         role_id=UUID(str(row["role_id"])) if row.get("role_id") else None,

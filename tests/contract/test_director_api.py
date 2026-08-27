@@ -65,6 +65,30 @@ async def test_director_api_stages_analysis_review_and_translation(fake_settings
             assert {role["canonical_name"] for role in roles} >= {"旁白", "甲", "乙"}
             source_text = "".join(item["source_text"] for item in utterances)
             assert source_text == "旁白。\n甲：你好。\n乙：再见。"
+            assert all(item["working_text"] == item["source_text"] for item in utterances)
+
+            edited_row = utterances[1]
+            edited = await client.patch(
+                f"/api/v1/director-utterances/{edited_row['utterance_id']}",
+                json={
+                    "expected_revision": edited_row["revision"],
+                    "working_text": "甲：用户修改后的你好。",
+                },
+            )
+            assert edited.status_code == 200, edited.text
+            assert edited.json()["source_text"] == edited_row["source_text"]
+            assert edited.json()["working_text"] == "甲：用户修改后的你好。"
+            stale = await client.patch(
+                f"/api/v1/director-utterances/{edited_row['utterance_id']}",
+                json={
+                    "expected_revision": edited_row["revision"],
+                    "working_text": "甲：过期修改。",
+                },
+            )
+            assert stale.status_code == 409
+            project = (
+                await client.get(f"/api/v1/director-projects/{project['project_id']}")
+            ).json()
 
             confirmed = await client.post(
                 f"/api/v1/director-projects/{project['project_id']}/confirm-roles",

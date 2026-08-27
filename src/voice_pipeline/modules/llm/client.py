@@ -187,12 +187,20 @@ class OpenAiDirectorClient:
                 "order. Never merge, omit, duplicate, reorder, or invent unit IDs. Classify each "
                 "unit as dialogue, narration, or stage_direction. Infer a temporary speaker name "
                 "and aliases for dialogue. Narration uses no temporary role. Stage directions are "
-                "normally not spoken. Do not return source text or character indices."
+                "normally not spoken. The local context quoted_dialogue is a structurally proven "
+                "quoted speech span, and quote_bridge_narration is structurally proven narration "
+                "between quoted spans; still return speaker candidates for every unit where "
+                "possible. Do not return source text or character indices."
             ),
             payload={
                 "chunk_id": chunk.chunk_id,
                 "units": [
-                    {"unit_id": unit.unit_id, "source_text": unit.source_text} for unit in units
+                    {
+                        "unit_id": unit.unit_id,
+                        "source_text": unit.source_text,
+                        "context": unit.context,
+                    }
+                    for unit in units
                 ],
             },
         )

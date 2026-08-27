@@ -12,6 +12,8 @@ from voice_pipeline.models.schemas import (
     StrictModel,
 )
 
+AnalysisUnitContext = Literal["general", "quoted_dialogue", "quote_bridge_narration"]
+
 
 class ScriptChunk(StrictModel):
     chunk_id: str
@@ -31,6 +33,7 @@ class ScriptAnalysisUnit(StrictModel):
     source_start: int = Field(ge=0)
     source_end: int = Field(gt=0)
     source_text: str
+    context: AnalysisUnitContext = "general"
 
     @model_validator(mode="after")
     def validate_range(self) -> ScriptAnalysisUnit:

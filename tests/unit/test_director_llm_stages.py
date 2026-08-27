@@ -81,6 +81,80 @@ def test_analysis_units_preserve_every_character_and_range(source: str) -> None:
     ]
 
 
+def test_analysis_units_split_quoted_dialogue_from_inline_narration() -> None:
+    source = "“我的初吻……”她慌乱地摆弄着手指，目光四处乱飘，“祥子，为什么——”"
+    chunk = ScriptChunk(
+        chunk_id="quoted-scene",
+        source_start=0,
+        source_end=len(source),
+        source_text=source,
+    )
+
+    units = build_analysis_units(chunk)
+
+    assert [(unit.source_text, unit.context) for unit in units] == [
+        ("“我的初吻……”", "quoted_dialogue"),
+        ("她慌乱地摆弄着手指，目光四处乱飘，", "quote_bridge_narration"),
+        ("“祥子，为什么——”", "quoted_dialogue"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "前文「日文对白」后文",
+        "前文『二重对白』后文",
+        'Before "English dialogue" after',
+    ],
+)
+def test_analysis_units_support_balanced_quote_styles(source: str) -> None:
+    chunk = ScriptChunk(
+        chunk_id="quote-styles",
+        source_start=19,
+        source_end=19 + len(source),
+        source_text=source,
+    )
+
+    units = build_analysis_units(chunk)
+
+    assert "".join(unit.source_text for unit in units) == source
+    assert [unit.context for unit in units].count("quoted_dialogue") == 1
+    assert units[0].source_start == chunk.source_start
+    assert units[-1].source_end == chunk.source_end
+    assert all(left.source_end == right.source_start for left, right in pairwise(units))
+
+
+def test_unmatched_quote_falls_back_losslessly_to_general_units() -> None:
+    source = "旁白。“这段引号没有闭合，因此不能推断为对白。"
+    chunk = ScriptChunk(
+        chunk_id="unmatched-quote",
+        source_start=7,
+        source_end=7 + len(source),
+        source_text=source,
+    )
+
+    units = build_analysis_units(chunk)
+
+    assert "".join(unit.source_text for unit in units) == source
+    assert {unit.context for unit in units} == {"general"}
+
+
+def test_long_quoted_dialogue_respects_the_analysis_unit_limit() -> None:
+    source = "“" + "很长的对白" * 40 + "”"
+    chunk = ScriptChunk(
+        chunk_id="long-quote",
+        source_start=0,
+        source_end=len(source),
+        source_text=source,
+    )
+
+    units = build_analysis_units(chunk)
+
+    assert "".join(unit.source_text for unit in units) == source
+    assert all(unit.context == "quoted_dialogue" for unit in units)
+    assert all(len(unit.source_text) <= 160 for unit in units)
+
+
 def test_unit_analysis_materializes_only_trusted_local_source_slices() -> None:
     chunk = ScriptChunk(
         chunk_id="regression-chunk",
@@ -118,6 +192,42 @@ def test_unit_analysis_materializes_only_trusted_local_source_slices() -> None:
         item.source_text for item in units
     ]
     assert "".join(item.source_text for item in materialized.utterances) == chunk.source_text
+
+
+def test_unit_analysis_enforces_quote_context_classifications() -> None:
+    source = "“第一句。”她低下头，“第二句。”"
+    chunk = ScriptChunk(
+        chunk_id="quote-constraints",
+        source_start=0,
+        source_end=len(source),
+        source_text=source,
+    )
+    units = build_analysis_units(chunk)
+    annotations = UnitAnalysisResult(
+        units=tuple(
+            UnitAnalysis(
+                unit_id=unit.unit_id,
+                kind="dialogue" if unit.context == "quote_bridge_narration" else "narration",
+                temporary_role_name="错误角色",
+                role_aliases=("错误别名",),
+                role_confidence=0.72,
+                speak_enabled=False,
+            )
+            for unit in units
+        )
+    )
+
+    result = materialize_unit_analysis(chunk, units, annotations)
+
+    assert [item.kind for item in result.utterances] == [
+        "dialogue",
+        "narration",
+        "dialogue",
+    ]
+    assert [item.speak_enabled for item in result.utterances] == [True, True, True]
+    assert result.utterances[0].temporary_role_name == "错误角色"
+    assert result.utterances[1].temporary_role_name is None
+    assert result.utterances[1].role_aliases == ()
 
 
 @pytest.mark.parametrize("invalid_kind", ["missing", "duplicate", "reversed", "unknown"])

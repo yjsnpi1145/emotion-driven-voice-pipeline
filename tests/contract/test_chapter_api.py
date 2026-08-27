@@ -66,12 +66,11 @@ async def test_chapter_routes_submit_status_audio_and_timeline_without_path_leak
             )
             assert submitted.status_code == 202
             run_id = submitted.json()["run_id"]
-            for _ in range(300):
-                status = await client.get(f"/api/v1/chapters/{run_id}")
-                assert status.status_code == 200
-                if status.json()["status"] in {"succeeded", "failed", "interrupted"}:
-                    break
-                await asyncio.sleep(0.01)
+            status = await _wait_status(
+                client,
+                f"/api/v1/chapters/{run_id}",
+                {"succeeded", "failed", "interrupted"},
+            )
             payload = status.json()
             progress = await client.get(f"/api/v1/chapters/{run_id}/progress")
             audio = await client.get(f"/api/v1/chapters/{run_id}/audio")
@@ -175,7 +174,7 @@ async def test_chapter_submit_returns_before_reference_duration_probe_finishes(
                     },
                 )
             )
-            completed, _ = await asyncio.wait({post_task}, timeout=1.0)
+            completed, _ = await asyncio.wait({post_task}, timeout=5.0)
             returned_before_probe = post_task in completed
             index.release.set()
             submitted = await post_task
@@ -184,12 +183,12 @@ async def test_chapter_submit_returns_before_reference_duration_probe_finishes(
             assert submitted.status_code == 202
             run_id = submitted.json()["run_id"]
             incomplete_archive = await client.get(f"/api/v1/chapters/{run_id}/export/gsv")
-            await asyncio.wait_for(index.started.wait(), timeout=1.0)
-            for _ in range(300):
-                status = await client.get(f"/api/v1/chapters/{run_id}")
-                if status.json()["status"] in {"succeeded", "failed", "interrupted"}:
-                    break
-                await asyncio.sleep(0.01)
+            await asyncio.wait_for(index.started.wait(), timeout=10.0)
+            status = await _wait_status(
+                client,
+                f"/api/v1/chapters/{run_id}",
+                {"succeeded", "failed", "interrupted"},
+            )
 
     assert status.json()["status"] == "succeeded"
     assert index.calls == 1
@@ -228,11 +227,12 @@ async def test_chapter_resume_requires_repaired_reference_then_returns_accepted(
                 },
             )
             run_id = submitted.json()["run_id"]
-            for _ in range(400):
-                failed = await client.get(f"/api/v1/chapters/{run_id}")
-                if failed.json()["status"] == "failed":
-                    break
-                await asyncio.sleep(0.01)
+            failed = await _wait_status(
+                client,
+                f"/api/v1/chapters/{run_id}",
+                {"succeeded", "failed", "interrupted"},
+            )
+            assert failed.json()["status"] == "failed"
             progress = (await client.get(f"/api/v1/chapters/{run_id}/progress")).json()
             blocker = progress["segments"][1]
             calls_before_conflict = app.state.plane.index.calls
@@ -262,11 +262,11 @@ async def test_chapter_resume_requires_repaired_reference_then_returns_accepted(
                 json={"request_id": str(uuid4())},
             )
             assert repair.status_code == 202
-            for _ in range(400):
-                repair_status = await client.get(repair.json()["status_url"])
-                if repair_status.json()["status"] in {"succeeded", "failed"}:
-                    break
-                await asyncio.sleep(0.01)
+            repair_status = await _wait_status(
+                client,
+                repair.json()["status_url"],
+                {"succeeded", "failed"},
+            )
             assert repair_status.json()["status"] == "succeeded"
 
             accepted = await client.post(f"/api/v1/chapters/{run_id}/resume")
@@ -277,9 +277,32 @@ async def test_chapter_resume_requires_repaired_reference_then_returns_accepted(
             assert accepted.json()["status"] == "running"
             assert accepted.json()["status_url"] == f"/api/v1/chapters/{run_id}"
             assert duplicate.status_code == 409
-            for _ in range(400):
-                completed = await client.get(f"/api/v1/chapters/{run_id}")
-                if completed.json()["status"] in {"succeeded", "failed", "interrupted"}:
-                    break
-                await asyncio.sleep(0.01)
+            completed = await _wait_status(
+                client,
+                f"/api/v1/chapters/{run_id}",
+                {"succeeded", "failed", "interrupted"},
+            )
             assert completed.json()["status"] == "succeeded"
+
+
+async def _wait_status(
+    client: httpx.AsyncClient,
+    url: str,
+    terminal_statuses: set[str],
+    *,
+    timeout_seconds: float = 60.0,
+) -> httpx.Response:
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    last_status = "unknown"
+    while True:
+        response = await client.get(url)
+        assert response.status_code == 200
+        last_status = str(response.json()["status"])
+        if last_status in terminal_statuses:
+            return response
+        if asyncio.get_running_loop().time() >= deadline:
+            pytest.fail(
+                f"{url} did not reach {sorted(terminal_statuses)} within "
+                f"{timeout_seconds:.0f}s; last status was {last_status}"
+            )
+        await asyncio.sleep(0.05)

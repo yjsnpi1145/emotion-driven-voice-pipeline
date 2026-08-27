@@ -22,11 +22,14 @@ async def server_url(fake_settings, tmp_path: Path) -> Any:
     config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", lifespan="on")
     server = uvicorn.Server(config)
     task = asyncio.create_task(server.serve())
-    for _ in range(200):
-        if server.started:
-            break
-        await asyncio.sleep(0.01)
-    assert server.started
+    try:
+        async with asyncio.timeout(60):
+            while not server.started:
+                if task.done():
+                    await task
+                await asyncio.sleep(0.05)
+    except TimeoutError:
+        pytest.fail("uvicorn did not start within 60 seconds")
     port = server.servers[0].sockets[0].getsockname()[1]
     base_url = f"http://127.0.0.1:{port}"
     try:

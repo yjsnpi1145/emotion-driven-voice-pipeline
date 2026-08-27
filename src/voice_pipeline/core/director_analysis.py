@@ -22,9 +22,9 @@ from voice_pipeline.models.schemas import LanguageCode
 from voice_pipeline.modules.llm.script_chunking import split_script, validate_chunk_analysis
 from voice_pipeline.storage.director_store import DirectorStore
 
-_ANALYSIS_LLM_FINGERPRINT = "runtime-director-unit-ids-v2"
-_ANALYSIS_PROMPT_VERSION = "director-analysis-units-v2"
-_ANALYSIS_SCHEMA_VERSION = 2
+_ANALYSIS_LLM_FINGERPRINT = "runtime-director-quote-units-v3"
+_ANALYSIS_PROMPT_VERSION = "director-analysis-quote-units-v3"
+_ANALYSIS_SCHEMA_VERSION = 3
 
 
 class StagedDirector(Protocol):
@@ -119,7 +119,7 @@ class ScriptAnalysisService:
             TranslationInput(
                 utterance_id=item.utterance_id,
                 revision=item.revision,
-                source_text=item.source_text,
+                source_text=item.working_text,
             )
             for item in await self._store.list_utterances(project_id)
             if item.speak_enabled

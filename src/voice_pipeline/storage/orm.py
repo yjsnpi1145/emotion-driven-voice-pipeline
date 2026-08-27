@@ -494,6 +494,7 @@ director_utterances = Table(
     Column("source_start", Integer, nullable=False),
     Column("source_end", Integer, nullable=False),
     Column("source_text", Text, nullable=False),
+    Column("working_text", Text, nullable=False),
     Column("kind", String(24), nullable=False),
     Column("speak_enabled", Integer, nullable=False),
     Column(

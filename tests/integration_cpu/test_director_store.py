@@ -98,6 +98,7 @@ async def test_publish_split_merge_and_occ(store: DirectorStore):
     )
     assert project.status == "role_review"
     utterances = await store.list_utterances(project.project_id)
+    assert [item.working_text for item in utterances] == [item.source_text for item in utterances]
     split = await store.split_utterance(
         utterances[1].utterance_id,
         expected_revision=utterances[1].revision,
@@ -119,6 +120,140 @@ async def test_publish_split_merge_and_occ(store: DirectorStore):
             role_confirmed=False,
         )
     assert exc.value.code == ErrorCode.VERSION_CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_working_text_edit_preserves_source_and_stays_in_role_review(store: DirectorStore):
+    source = "甲：原始台词。"
+    project = await store.create_project(project_request(source))
+    project = await store.publish_analysis(
+        project.project_id,
+        expected_revision=project.revision,
+        roles=(CreateDirectorRole(canonical_name="甲", kind="character"),),
+        utterances=(
+            CreateDirectorUtterance(
+                ordinal=0,
+                source_start=0,
+                source_end=len(source),
+                source_text=source,
+                kind="dialogue",
+                speak_enabled=True,
+                role_name="甲",
+            ),
+        ),
+    )
+    utterance = (await store.list_utterances(project.project_id))[0]
+
+    updated = await store.patch_utterance(
+        utterance.utterance_id,
+        expected_revision=utterance.revision,
+        working_text=" 甲：修改后的台词。 ",
+    )
+    refreshed = await store.get_project(project.project_id)
+
+    assert updated.source_text == source
+    assert updated.working_text == " 甲：修改后的台词。 "
+    assert updated.revision == utterance.revision + 1
+    assert updated.synthesis_text is None
+    assert updated.ref_text_cn is None
+    assert updated.emotion_vector is None
+    assert refreshed.status == "role_review"
+    assert refreshed.revision == project.revision + 1
+
+    with pytest.raises(PipelineError) as exc:
+        await store.split_utterance(
+            updated.utterance_id,
+            expected_revision=updated.revision,
+            split_at=3,
+        )
+    assert exc.value.code == ErrorCode.INVALID_INPUT
+
+
+@pytest.mark.asyncio
+async def test_working_text_edit_is_rejected_after_role_review(store: DirectorStore):
+    source = "甲：你好。"
+    project = await store.create_project(project_request(source))
+    project = await store.publish_analysis(
+        project.project_id,
+        expected_revision=project.revision,
+        roles=(CreateDirectorRole(canonical_name="甲", kind="character"),),
+        utterances=(
+            CreateDirectorUtterance(
+                ordinal=0,
+                source_start=0,
+                source_end=len(source),
+                source_text=source,
+                kind="dialogue",
+                speak_enabled=True,
+                role_name="甲",
+            ),
+        ),
+    )
+    project = await store.confirm_role_review(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+    utterance = (await store.list_utterances(project.project_id))[0]
+
+    with pytest.raises(PipelineError) as exc:
+        await store.patch_utterance(
+            utterance.utterance_id,
+            expected_revision=utterance.revision,
+            working_text="越过复核阶段的修改",
+        )
+
+    assert exc.value.code == ErrorCode.DIRECTOR_STATE_CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_merge_concatenates_source_and_working_text_independently(store: DirectorStore):
+    source = "第一句。第二句。"
+    project = await store.create_project(project_request(source))
+    await store.publish_analysis(
+        project.project_id,
+        expected_revision=project.revision,
+        roles=(CreateDirectorRole(canonical_name="旁白", kind="narrator"),),
+        utterances=(
+            CreateDirectorUtterance(
+                ordinal=0,
+                source_start=0,
+                source_end=4,
+                source_text=source[:4],
+                kind="narration",
+                speak_enabled=True,
+            ),
+            CreateDirectorUtterance(
+                ordinal=1,
+                source_start=4,
+                source_end=len(source),
+                source_text=source[4:],
+                kind="narration",
+                speak_enabled=True,
+            ),
+        ),
+    )
+    left, right = await store.list_utterances(project.project_id)
+    left = await store.patch_utterance(
+        left.utterance_id,
+        expected_revision=left.revision,
+        working_text="修改一。",
+    )
+    right = await store.patch_utterance(
+        right.utterance_id,
+        expected_revision=right.revision,
+        working_text="修改二。",
+    )
+
+    merged = await store.merge_utterances(
+        left.utterance_id,
+        right.utterance_id,
+        expected_left_revision=left.revision,
+        expected_right_revision=right.revision,
+    )
+
+    assert len(merged) == 1
+    assert merged[0].source_text == source
+    assert merged[0].working_text == "修改一。修改二。"
 
 
 @pytest.mark.asyncio
