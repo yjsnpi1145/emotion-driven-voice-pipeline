@@ -751,7 +751,7 @@ class DirectorStore:
         utterances: Sequence[CreateDirectorUtterance],
     ) -> DirectorProjectRecord:
         project = await self.get_project(project_id)
-        validate_source_coverage(project.source_text, utterances)
+        validate_source_coverage(project.preprocessed_text or project.source_text, utterances)
         if not roles:
             raise PipelineError(
                 ErrorCode.LLM_INVALID_RESPONSE,

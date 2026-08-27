@@ -12,11 +12,17 @@ from voice_pipeline.models.director_llm import (
     UnitAnalysis,
     UnitAnalysisResult,
 )
+from voice_pipeline.modules.text.speakability import is_pause_marker, is_speakable_text
 
 _SAFE_BOUNDARIES = frozenset("。！？.!?；;\n")
 _DEFAULT_UNIT_CHARS = 160
 _QUOTE_CLOSERS = {"“": "”", "「": "」", "『": "』"}
-_AnalysisContext = Literal["general", "quoted_dialogue", "quote_bridge_narration"]
+_AnalysisContext = Literal[
+    "general",
+    "quoted_dialogue",
+    "quote_bridge_narration",
+    "pause_marker",
+]
 
 
 def split_script(source_text: str, max_chars: int = 2400) -> tuple[ScriptChunk, ...]:
@@ -26,6 +32,7 @@ def split_script(source_text: str, max_chars: int = 2400) -> tuple[ScriptChunk, 
     if max_chars < 8:
         raise ValueError("max_chars must be at least 8")
     chunks: list[ScriptChunk] = []
+    quote_spans = _balanced_quote_spans(source_text)
     start = 0
     while start < len(source_text):
         limit = min(start + max_chars, len(source_text))
@@ -33,9 +40,34 @@ def split_script(source_text: str, max_chars: int = 2400) -> tuple[ScriptChunk, 
         if limit < len(source_text):
             minimum = start + max(1, max_chars // 2)
             for index in range(limit, minimum - 1, -1):
-                if source_text[index - 1] in _SAFE_BOUNDARIES:
+                if (
+                    source_text[index - 1] in _SAFE_BOUNDARIES
+                    and not _boundary_inside_quote(index, quote_spans)
+                ):
                     end = index
                     break
+            else:
+                containing = next(
+                    (
+                        (quote_start, quote_end)
+                        for quote_start, quote_end in quote_spans
+                        if quote_start <= start < quote_end
+                    ),
+                    None,
+                )
+                if containing is not None:
+                    end = containing[1]
+                else:
+                    crossing = next(
+                        (
+                            (quote_start, quote_end)
+                            for quote_start, quote_end in quote_spans
+                            if start < quote_start < limit < quote_end
+                        ),
+                        None,
+                    )
+                    if crossing is not None:
+                        end = crossing[0]
         text = source_text[start:end]
         digest = hashlib.sha256(
             f"{start}:{end}:".encode("ascii") + text.encode("utf-8")
@@ -69,6 +101,7 @@ def build_analysis_units(
             prefer_safe_boundaries=context != "quoted_dialogue",
         ):
             ranges.append((start, end, context))
+    ranges = _merge_non_speakable_ranges(text, ranges)
 
     return tuple(
         ScriptAnalysisUnit(
@@ -126,6 +159,47 @@ def _balanced_quote_spans(text: str) -> tuple[tuple[int, int], ...]:
             if not stack:
                 spans.append((start, index + 1))
     return tuple(spans)
+
+
+def _boundary_inside_quote(
+    boundary: int,
+    quote_spans: tuple[tuple[int, int], ...],
+) -> bool:
+    return any(start < boundary < end for start, end in quote_spans)
+
+
+def _merge_non_speakable_ranges(
+    text: str,
+    ranges: list[tuple[int, int, _AnalysisContext]],
+) -> list[tuple[int, int, _AnalysisContext]]:
+    merged: list[tuple[int, int, _AnalysisContext]] = []
+    pending_start: int | None = None
+    for start, end, context in ranges:
+        value = text[start:end]
+        if is_speakable_text(value):
+            actual_start = pending_start if pending_start is not None else start
+            merged.append((actual_start, end, context))
+            pending_start = None
+            continue
+        pause_value = value.strip().strip("“”「」『』\"")
+        if is_pause_marker(pause_value):
+            if pending_start is not None:
+                start = pending_start
+                pending_start = None
+            merged.append((start, end, "pause_marker"))
+            continue
+        if merged:
+            previous_start, _, previous_context = merged[-1]
+            merged[-1] = (previous_start, end, previous_context)
+        else:
+            pending_start = start if pending_start is None else pending_start
+    if pending_start is not None:
+        if merged:
+            previous_start, _, previous_context = merged[-1]
+            merged[-1] = (previous_start, len(text), previous_context)
+        else:
+            merged.append((pending_start, len(text), "pause_marker"))
+    return merged
 
 
 def _segment_analysis_range(
@@ -232,6 +306,8 @@ def _constrain_unit_annotation(
         )
     if unit.context == "quote_bridge_narration":
         return ("narration", None, (), True)
+    if unit.context == "pause_marker":
+        return ("stage_direction", None, (), False)
     return (
         annotation.kind,
         annotation.temporary_role_name,

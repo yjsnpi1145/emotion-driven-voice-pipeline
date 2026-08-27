@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Protocol
+from collections.abc import Awaitable
+from typing import Protocol, TypeVar
 from uuid import UUID
 
 from voice_pipeline.core.errors import ErrorCode, PipelineError
@@ -20,6 +21,7 @@ from voice_pipeline.models.director_llm import (
 )
 from voice_pipeline.models.schemas import LanguageCode
 from voice_pipeline.modules.llm.script_chunking import split_script, validate_chunk_analysis
+from voice_pipeline.modules.text.speakability import is_speakable_text
 from voice_pipeline.storage.director_store import DirectorStore
 
 _ANALYSIS_LLM_FINGERPRINT = "runtime-director-quote-units-v3"
@@ -60,7 +62,8 @@ class ScriptAnalysisService:
 
     async def analyze(self, project_id: UUID, *, expected_revision: int) -> DirectorProjectRecord:
         project = await self._store.begin_analysis(project_id, expected_revision=expected_revision)
-        chunks = split_script(project.source_text, self._max_chunk_chars)
+        analysis_source = await self._store.analysis_text(project_id)
+        chunks = split_script(analysis_source, self._max_chunk_chars)
 
         async def resolve(ordinal: int, chunk: ScriptChunk) -> ChunkAnalysisResult:
             cached = await self._store.load_analysis_chunk(
@@ -86,7 +89,7 @@ class ScriptAnalysisService:
             )
             return result
 
-        results = await asyncio.gather(
+        results = await _gather_fail_fast(
             *(resolve(ordinal, chunk) for ordinal, chunk in enumerate(chunks))
         )
         analyzed = tuple(item for result in results for item in result.utterances)
@@ -115,20 +118,30 @@ class ScriptAnalysisService:
                 f"cannot translate while project is {project.status}",
                 retryable=False,
             )
-        spoken = [
-            TranslationInput(
-                utterance_id=item.utterance_id,
-                revision=item.revision,
-                source_text=item.working_text,
+        spoken = []
+        for item in await self._store.list_utterances(project_id):
+            if not item.speak_enabled:
+                continue
+            if not is_speakable_text(item.working_text):
+                raise PipelineError(
+                    ErrorCode.INVALID_INPUT,
+                    "director",
+                    "spoken utterance contains no pronounceable text",
+                    retryable=False,
+                    details={"utterance_id": str(item.utterance_id)},
+                )
+            spoken.append(
+                TranslationInput(
+                    utterance_id=item.utterance_id,
+                    revision=item.revision,
+                    source_text=item.working_text,
+                )
             )
-            for item in await self._store.list_utterances(project_id)
-            if item.speak_enabled
-        ]
         batches = [
             tuple(spoken[index : index + self._translation_batch_size])
             for index in range(0, len(spoken), self._translation_batch_size)
         ]
-        results = await asyncio.gather(
+        results = await _gather_fail_fast(
             *(
                 self._director.translate_utterances(
                     target_language=project.target_language,
@@ -143,6 +156,37 @@ class ScriptAnalysisService:
             expected_revision=project.revision,
             items=items,
         )
+
+
+_ResultT = TypeVar("_ResultT")
+
+
+async def _gather_fail_fast(
+    *awaitables: Awaitable[_ResultT],
+) -> tuple[_ResultT, ...]:
+    if not awaitables:
+        return ()
+    tasks: tuple[asyncio.Future[_ResultT], ...] = tuple(
+        asyncio.ensure_future(awaitable) for awaitable in awaitables
+    )
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+    failure: BaseException | None = None
+    for task in done:
+        if task.cancelled():
+            failure = asyncio.CancelledError()
+            break
+        error = task.exception()
+        if error is not None:
+            failure = error
+            break
+    if failure is not None:
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        raise failure
+    if pending:
+        await asyncio.gather(*pending)
+    return tuple(task.result() for task in tasks)
 
 
 def _materialize_cast(

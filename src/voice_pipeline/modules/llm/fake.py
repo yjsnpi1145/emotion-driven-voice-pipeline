@@ -67,15 +67,28 @@ class FakeDirector:
         self, *, chunk: ScriptChunk, activity_id: UUID | None = None
     ) -> ChunkAnalysisResult:
         del activity_id
+        from voice_pipeline.modules.llm.script_chunking import build_analysis_units
+        from voice_pipeline.modules.text.speakability import is_speakable_text
+
         rows: list[AnalyzedUtterance] = []
-        for start, end in _director_boundaries(chunk.source_text):
-            text = chunk.source_text[start:end]
+        for unit in build_analysis_units(chunk):
+            text = unit.source_text
             stripped = text.strip()
             role_name: str | None = None
             kind = "narration"
             confidence = 0.98
-            speak_enabled = True
-            if stripped.startswith(("（", "(", "【", "[")):
+            speak_enabled = is_speakable_text(text)
+            if unit.context == "pause_marker":
+                kind = "stage_direction"
+                speak_enabled = False
+            elif unit.context == "quoted_dialogue":
+                role_name = "角色"
+                kind = "dialogue"
+                speak_enabled = True
+            elif unit.context == "quote_bridge_narration":
+                kind = "narration"
+                speak_enabled = True
+            elif stripped.startswith(("（", "(", "【", "[")):
                 kind = "stage_direction"
                 speak_enabled = False
             else:
@@ -88,8 +101,8 @@ class FakeDirector:
                         confidence = 0.96
             rows.append(
                 AnalyzedUtterance(
-                    source_start=chunk.source_start + start,
-                    source_end=chunk.source_start + end,
+                    source_start=unit.source_start,
+                    source_end=unit.source_end,
                     source_text=text,
                     kind=kind,  # type: ignore[arg-type]
                     temporary_role_name=role_name,

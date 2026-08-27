@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from uuid import uuid4
 
@@ -7,7 +8,13 @@ import pytest
 
 from voice_pipeline.core.config import StorageSettings
 from voice_pipeline.core.director_analysis import ScriptAnalysisService
-from voice_pipeline.models.director import CreateDirectorProjectRequest
+from voice_pipeline.core.director_preprocessing import PreprocessingService
+from voice_pipeline.core.errors import ErrorCode, PipelineError
+from voice_pipeline.models.director import (
+    CreateDirectorProjectRequest,
+    CreateDirectorRole,
+    CreateDirectorUtterance,
+)
 from voice_pipeline.models.director_llm import UnitAnalysis, UnitAnalysisResult
 from voice_pipeline.modules.llm.fake import FakeDirector
 from voice_pipeline.modules.llm.script_chunking import (
@@ -59,6 +66,30 @@ class CapturingDirector(FakeDirector):
             utterances=utterances,
             **kwargs,
         )
+
+
+class FailingBatchDirector(FakeDirector):
+    def __init__(self) -> None:
+        self.calls = 0
+        self.cancelled = 0
+        self.release = asyncio.Event()
+
+    async def translate_utterances(self, *, target_language, utterances, **kwargs):
+        del target_language, utterances, kwargs
+        self.calls += 1
+        if self.calls == 1:
+            await asyncio.sleep(0.02)
+            raise PipelineError(
+                ErrorCode.LLM_UNAVAILABLE,
+                "llm",
+                "fixture batch failure",
+                retryable=True,
+            )
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
 
 
 @pytest.fixture
@@ -269,3 +300,141 @@ async def test_classification_only_analysis_preserves_long_unicode_source(
         left.source_end == right.source_start
         for left, right in zip(stored, stored[1:], strict=False)
     )
+
+
+@pytest.mark.asyncio
+async def test_analysis_consumes_confirmed_preprocessed_text(
+    resources: DirectorStore,
+) -> None:
+    project = await resources.create_project(
+        CreateDirectorProjectRequest(
+            title="确认稿",
+            source_text="原始第一段。\n\n原始第二段。",
+            source_language="zh",
+            target_language="ja",
+            preprocessing_mode="structural",
+        )
+    )
+    project = await PreprocessingService(resources, FakeDirector()).run(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+    page = await resources.list_preprocess_paragraphs(project.project_id)
+    first = page.items[0]
+    await resources.patch_preprocess_paragraph(
+        project.project_id,
+        first.paragraph_id,
+        expected_project_revision=project.revision,
+        expected_revision=first.revision,
+        preprocessed_text="用户确认后的第一段。",
+    )
+    project = await resources.get_project(project.project_id)
+    project = await resources.confirm_preprocessing(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+
+    result = await ScriptAnalysisService(
+        resources,
+        ClassificationOnlyDirector(),
+    ).analyze(project.project_id, expected_revision=project.revision)
+    utterances = await resources.list_utterances(project.project_id)
+
+    assert result.status == "role_review"
+    assert "".join(row.source_text for row in utterances) == (
+        "用户确认后的第一段。\n\n原始第二段。"
+    )
+    assert (await resources.get_project(project.project_id)).source_text == (
+        "原始第一段。\n\n原始第二段。"
+    )
+
+
+@pytest.mark.asyncio
+async def test_translation_rejects_spoken_punctuation_before_llm_call(
+    resources: DirectorStore,
+) -> None:
+    project = await resources.create_project(
+        CreateDirectorProjectRequest(
+            title="标点预检",
+            source_text="……",
+            source_language="zh",
+            target_language="ja",
+        )
+    )
+    project = await resources.publish_analysis(
+        project.project_id,
+        expected_revision=project.revision,
+        roles=(CreateDirectorRole(canonical_name="旁白", kind="narrator"),),
+        utterances=(
+            CreateDirectorUtterance(
+                ordinal=0,
+                source_start=0,
+                source_end=2,
+                source_text="……",
+                kind="narration",
+                speak_enabled=True,
+            ),
+        ),
+    )
+    project = await resources.confirm_role_review(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+    director = CapturingDirector()
+
+    with pytest.raises(PipelineError) as exc:
+        await ScriptAnalysisService(resources, director).translate(
+            project.project_id,
+            expected_revision=project.revision,
+        )
+
+    assert exc.value.code == ErrorCode.INVALID_INPUT
+    assert director.translation_inputs == []
+
+
+@pytest.mark.asyncio
+async def test_translation_cancels_sibling_batches_after_first_failure(
+    resources: DirectorStore,
+) -> None:
+    source = "甲。乙。丙。"
+    project = await resources.create_project(
+        CreateDirectorProjectRequest(
+            title="取消并行批",
+            source_text=source,
+            source_language="zh",
+            target_language="ja",
+        )
+    )
+    project = await resources.publish_analysis(
+        project.project_id,
+        expected_revision=project.revision,
+        roles=(CreateDirectorRole(canonical_name="旁白", kind="narrator"),),
+        utterances=tuple(
+            CreateDirectorUtterance(
+                ordinal=index,
+                source_start=index * 2,
+                source_end=index * 2 + 2,
+                source_text=source[index * 2 : index * 2 + 2],
+                kind="narration",
+                speak_enabled=True,
+            )
+            for index in range(3)
+        ),
+    )
+    project = await resources.confirm_role_review(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+    director = FailingBatchDirector()
+
+    with pytest.raises(PipelineError):
+        await ScriptAnalysisService(
+            resources,
+            director,
+            translation_batch_size=1,
+        ).translate(project.project_id, expected_revision=project.revision)
+    await asyncio.sleep(0)
+    director.release.set()
+
+    assert director.calls == 3
+    assert director.cancelled == 2

@@ -13,7 +13,12 @@ from voice_pipeline.models.schemas import (
     StrictModel,
 )
 
-AnalysisUnitContext = Literal["general", "quoted_dialogue", "quote_bridge_narration"]
+AnalysisUnitContext = Literal[
+    "general",
+    "quoted_dialogue",
+    "quote_bridge_narration",
+    "pause_marker",
+]
 PreprocessUnitContext = Literal[
     "quoted_dialogue",
     "quote_bridge_narration",

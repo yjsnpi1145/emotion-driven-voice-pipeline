@@ -19,6 +19,7 @@ from voice_pipeline.modules.llm.script_chunking import (
     split_script,
     validate_chunk_analysis,
 )
+from voice_pipeline.modules.text.speakability import is_speakable_text
 
 
 def test_split_script_preserves_every_character() -> None:
@@ -31,6 +32,57 @@ def test_split_script_preserves_every_character() -> None:
         left.source_end == right.source_start
         for left, right in zip(chunks, chunks[1:], strict=False)
     )
+
+
+def test_split_script_never_splits_inside_a_balanced_full_document_quote() -> None:
+    quoted = "“" + ("很长的对白。" * 430) + "”"
+    source = "旁白。" + quoted + "结尾。"
+    assert len(quoted) > 2400
+
+    chunks = split_script(source, max_chars=2400)
+
+    assert "".join(chunk.source_text for chunk in chunks) == source
+    containing = [chunk for chunk in chunks if "很长的对白" in chunk.source_text]
+    assert len(containing) == 1
+    assert containing[0].source_text == quoted
+
+
+def test_analysis_units_keep_pause_marker_non_spoken_and_merge_formatting() -> None:
+    source = "第一句。\n”\n第二句。\n……"
+    chunk = ScriptChunk(
+        chunk_id="punctuation",
+        source_start=0,
+        source_end=len(source),
+        source_text=source,
+    )
+    units = build_analysis_units(chunk)
+    annotations = UnitAnalysisResult(
+        units=tuple(
+            UnitAnalysis(
+                unit_id=unit.unit_id,
+                kind="dialogue",
+                temporary_role_name="错误角色",
+                role_aliases=(),
+                role_confidence=0.9,
+                speak_enabled=True,
+            )
+            for unit in units
+        )
+    )
+
+    result = materialize_unit_analysis(chunk, units, annotations)
+
+    assert "".join(item.source_text for item in result.utterances) == source
+    assert all(
+        is_speakable_text(item.source_text) or item.speak_enabled is False
+        for item in result.utterances
+    )
+    pause_rows = [
+        item for item in result.utterances if not is_speakable_text(item.source_text)
+    ]
+    assert pause_rows
+    assert all(item.kind == "stage_direction" for item in pause_rows)
+    assert all(item.speak_enabled is False for item in pause_rows)
 
 
 def test_chunk_validation_rejects_rewritten_text() -> None:
