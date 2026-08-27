@@ -22,6 +22,10 @@ from voice_pipeline.models.schemas import LanguageCode
 from voice_pipeline.modules.llm.script_chunking import split_script, validate_chunk_analysis
 from voice_pipeline.storage.director_store import DirectorStore
 
+_ANALYSIS_LLM_FINGERPRINT = "runtime-director-unit-ids-v2"
+_ANALYSIS_PROMPT_VERSION = "director-analysis-units-v2"
+_ANALYSIS_SCHEMA_VERSION = 2
+
 
 class StagedDirector(Protocol):
     async def analyze_script_chunk(self, *, chunk: ScriptChunk) -> ChunkAnalysisResult: ...
@@ -59,7 +63,13 @@ class ScriptAnalysisService:
         chunks = split_script(project.source_text, self._max_chunk_chars)
 
         async def resolve(ordinal: int, chunk: ScriptChunk) -> ChunkAnalysisResult:
-            cached = await self._store.load_analysis_chunk(project_id, chunk)
+            cached = await self._store.load_analysis_chunk(
+                project_id,
+                chunk,
+                llm_fingerprint=_ANALYSIS_LLM_FINGERPRINT,
+                prompt_version=_ANALYSIS_PROMPT_VERSION,
+                schema_version=_ANALYSIS_SCHEMA_VERSION,
+            )
             if cached is not None:
                 validate_chunk_analysis(chunk, cached)
                 return cached
@@ -70,7 +80,9 @@ class ScriptAnalysisService:
                 ordinal=ordinal,
                 chunk=chunk,
                 result=result,
-                llm_fingerprint="runtime-director-v1",
+                llm_fingerprint=_ANALYSIS_LLM_FINGERPRINT,
+                prompt_version=_ANALYSIS_PROMPT_VERSION,
+                schema_version=_ANALYSIS_SCHEMA_VERSION,
             )
             return result
 

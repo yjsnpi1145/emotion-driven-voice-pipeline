@@ -17,6 +17,8 @@ the first public tag is created.
   jobs grouped by model profile, followed by source-ordered composition.
 - Director generation resume/recompose controls, path-free progress APIs and operational health
   counters.
+- Director script analysis now classifies deterministic local slice IDs instead of asking the LLM
+  to reproduce source text and calculate Python character offsets.
 
 ## [0.1.0] - 2026-08-10
 
