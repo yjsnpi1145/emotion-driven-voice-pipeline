@@ -22,6 +22,7 @@ def valid_utterance() -> dict[str, object]:
         "source_start": 0,
         "source_end": 2,
         "source_text": "你好",
+        "working_text": "你好",
         "kind": "dialogue",
         "speak_enabled": True,
         "role_id": uuid4(),
@@ -67,3 +68,14 @@ def test_project_preserves_source_whitespace() -> None:
 def test_patch_rejects_invalid_emotion_sum() -> None:
     with pytest.raises(ValidationError):
         DirectorUtterancePatch(expected_revision=0, emotion_vector=[0.2] * 8)
+
+
+def test_patch_preserves_non_blank_working_text_whitespace() -> None:
+    patch = DirectorUtterancePatch(expected_revision=0, working_text="  修改后的台词。 \n")
+
+    assert patch.working_text == "  修改后的台词。 \n"
+
+
+def test_patch_rejects_blank_working_text() -> None:
+    with pytest.raises(ValidationError):
+        DirectorUtterancePatch(expected_revision=0, working_text=" \r\n\t ")

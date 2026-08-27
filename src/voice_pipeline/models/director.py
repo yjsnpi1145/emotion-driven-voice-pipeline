@@ -116,6 +116,7 @@ class DirectorUtteranceRecord(StrictModel):
     source_start: int = Field(ge=0)
     source_end: int = Field(gt=0)
     source_text: PreservedNonBlankText
+    working_text: PreservedNonBlankText
     kind: UtteranceKind
     speak_enabled: bool
     role_id: UUID | None = None
@@ -145,6 +146,7 @@ class DirectorUtterancePatch(StrictModel):
     role_id: UUID | None = None
     speak_enabled: bool | None = None
     role_confirmed: bool | None = None
+    working_text: PreservedNonBlankText | None = None
     synthesis_text: NonBlankText | None = None
     ref_text_cn: ChineseReferenceText | None = None
     emotion_vector: EmotionVector | None = None

@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import (
 from voice_pipeline.core.config import StorageSettings
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 
-PACKAGED_HEAD = "0004_director_mode"
+PACKAGED_HEAD = "0005_director_working_text"
 
 
 class ControlInstanceLock:
