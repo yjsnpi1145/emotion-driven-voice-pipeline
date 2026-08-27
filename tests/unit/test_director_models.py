@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from voice_pipeline.models.director import (
     CreateDirectorProjectRequest,
     CreateRolePresetRequest,
+    DirectorPreprocessParagraphPatch,
     DirectorUtterancePatch,
     DirectorUtteranceRecord,
 )
@@ -63,6 +64,38 @@ def test_project_preserves_source_whitespace() -> None:
         target_language="ja",
     )
     assert request.source_text == " 旁白\n角色：你好。 "
+    assert request.preprocessing_mode == "structural"
+
+
+def test_project_accepts_rewrite_preprocessing_mode() -> None:
+    request = CreateDirectorProjectRequest(
+        title="场景一",
+        source_text="旁白。",
+        source_language="auto",
+        target_language="ja",
+        preprocessing_mode="rewrite",
+    )
+
+    assert request.preprocessing_mode == "rewrite"
+
+
+def test_preprocess_paragraph_patch_preserves_non_blank_whitespace() -> None:
+    patch = DirectorPreprocessParagraphPatch(
+        expected_project_revision=2,
+        expected_revision=1,
+        preprocessed_text="  用户校对稿。\n",
+    )
+
+    assert patch.preprocessed_text == "  用户校对稿。\n"
+
+
+def test_preprocess_paragraph_patch_rejects_blank_text() -> None:
+    with pytest.raises(ValidationError):
+        DirectorPreprocessParagraphPatch(
+            expected_project_revision=2,
+            expected_revision=1,
+            preprocessed_text=" \r\n\t",
+        )
 
 
 def test_patch_rejects_invalid_emotion_sum() -> None:

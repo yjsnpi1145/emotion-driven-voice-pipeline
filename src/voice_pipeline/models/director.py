@@ -18,8 +18,12 @@ from voice_pipeline.models.schemas import (
 )
 
 SourceLanguage = Literal["auto", "zh", "ja", "en", "ko", "yue"]
+PreprocessMode = Literal["structural", "rewrite", "skip"]
+PreprocessRewriteState = Literal["local", "pending", "succeeded", "fallback", "user_edited"]
 DirectorProjectStatus = Literal[
     "draft",
+    "preprocessing",
+    "preprocess_review",
     "analyzing",
     "role_review",
     "translating",
@@ -46,6 +50,7 @@ class CreateDirectorProjectRequest(StrictModel):
     source_language: SourceLanguage = "auto"
     target_language: LanguageCode
     narration_enabled: bool = True
+    preprocessing_mode: PreprocessMode = "structural"
 
 
 class DirectorProjectRecord(StrictModel):
@@ -56,8 +61,12 @@ class DirectorProjectRecord(StrictModel):
     source_language: SourceLanguage
     target_language: LanguageCode
     narration_enabled: bool
+    preprocessing_mode: PreprocessMode
+    structural_text: str | None = None
+    preprocessed_text: str | None = None
     status: DirectorProjectStatus
     revision: int = Field(ge=0)
+    preprocess_revision: int = Field(ge=0)
     analysis_revision: int = Field(ge=0)
     role_revision: int = Field(ge=0)
     translation_revision: int = Field(ge=0)
@@ -70,6 +79,43 @@ class DirectorProjectRecord(StrictModel):
     created_at_utc: datetime
     updated_at_utc: datetime
     deleted_at_utc: datetime | None = None
+
+
+class DirectorPreprocessParagraphRecord(StrictModel):
+    paragraph_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    project_id: UUID
+    ordinal: int = Field(ge=0)
+    source_start: int = Field(ge=0)
+    source_end: int = Field(gt=0)
+    source_text: str
+    structural_text: str
+    preprocessed_text: PreservedNonBlankText
+    rewrite_state: PreprocessRewriteState
+    validation: dict[str, PydanticJsonValue] | None = None
+    revision: int = Field(ge=0)
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    structural_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    preprocessed_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created_at_utc: datetime
+    updated_at_utc: datetime
+
+    @model_validator(mode="after")
+    def validate_range(self) -> DirectorPreprocessParagraphRecord:
+        if self.source_end <= self.source_start:
+            raise ValueError("source_end must be greater than source_start")
+        return self
+
+
+class DirectorPreprocessParagraphPage(StrictModel):
+    items: tuple[DirectorPreprocessParagraphRecord, ...]
+    total_count: int = Field(ge=0)
+    next_offset: int | None = Field(default=None, ge=0)
+
+
+class DirectorPreprocessParagraphPatch(StrictModel):
+    expected_project_revision: int = Field(ge=0)
+    expected_revision: int = Field(ge=0)
+    preprocessed_text: PreservedNonBlankText
 
 
 class CreateDirectorRole(StrictModel):

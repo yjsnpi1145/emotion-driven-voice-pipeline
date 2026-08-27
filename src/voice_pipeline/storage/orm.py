@@ -384,8 +384,12 @@ director_projects = Table(
     Column("source_language", String(8), nullable=False),
     Column("target_language", String(8), nullable=False),
     Column("narration_enabled", Integer, nullable=False, server_default="1"),
+    Column("preprocessing_mode", String(16), nullable=False, server_default="structural"),
+    Column("structural_text", Text, nullable=True),
+    Column("preprocessed_text", Text, nullable=True),
     Column("status", String(32), nullable=False),
     Column("revision", Integer, nullable=False, server_default="0"),
+    Column("preprocess_revision", Integer, nullable=False, server_default="0"),
     Column("analysis_revision", Integer, nullable=False, server_default="0"),
     Column("role_revision", Integer, nullable=False, server_default="0"),
     Column("translation_revision", Integer, nullable=False, server_default="0"),
@@ -399,6 +403,44 @@ director_projects = Table(
     Column("updated_at_utc", Text, nullable=False),
     Column("deleted_at_utc", Text, nullable=True),
     CheckConstraint("revision >= 0", name="ck_director_projects_revision"),
+    CheckConstraint(
+        "preprocess_revision >= 0",
+        name="ck_director_projects_preprocess_revision",
+    ),
+)
+
+director_preprocess_paragraphs = Table(
+    "director_preprocess_paragraphs",
+    metadata,
+    Column("paragraph_id", String(64), primary_key=True),
+    Column(
+        "project_id",
+        String(36),
+        ForeignKey("director_projects.project_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("ordinal", Integer, nullable=False),
+    Column("source_start", Integer, nullable=False),
+    Column("source_end", Integer, nullable=False),
+    Column("source_text", Text, nullable=False),
+    Column("structural_text", Text, nullable=False),
+    Column("preprocessed_text", Text, nullable=False),
+    Column("rewrite_state", String(16), nullable=False),
+    Column("validation_json", Text, nullable=True),
+    Column("revision", Integer, nullable=False, server_default="0"),
+    Column("source_sha256", String(64), nullable=False),
+    Column("structural_sha256", String(64), nullable=False),
+    Column("preprocessed_sha256", String(64), nullable=False),
+    Column("created_at_utc", Text, nullable=False),
+    Column("updated_at_utc", Text, nullable=False),
+    UniqueConstraint(
+        "project_id",
+        "ordinal",
+        name="uq_director_preprocess_project_ordinal",
+    ),
+    CheckConstraint("source_start >= 0", name="ck_director_preprocess_start"),
+    CheckConstraint("source_end > source_start", name="ck_director_preprocess_range"),
+    CheckConstraint("revision >= 0", name="ck_director_preprocess_revision"),
 )
 
 director_analysis_chunks = Table(
