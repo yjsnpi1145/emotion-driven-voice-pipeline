@@ -224,7 +224,13 @@ class DirectorStore:
         return tuple(recovered)
 
     async def load_analysis_chunk(
-        self, project_id: UUID, chunk: ScriptChunk
+        self,
+        project_id: UUID,
+        chunk: ScriptChunk,
+        *,
+        llm_fingerprint: str,
+        prompt_version: str,
+        schema_version: int,
     ) -> ChunkAnalysisResult | None:
         chunk_id = _stored_chunk_id(project_id, chunk.chunk_id)
         async with self._database.read_session() as session:
@@ -233,6 +239,9 @@ class DirectorStore:
                     await session.execute(
                         select(
                             director_analysis_chunks.c.source_sha256,
+                            director_analysis_chunks.c.llm_fingerprint,
+                            director_analysis_chunks.c.prompt_version,
+                            director_analysis_chunks.c.schema_version,
                             director_analysis_chunks.c.status,
                             director_analysis_chunks.c.result_json,
                         ).where(director_analysis_chunks.c.chunk_id == chunk_id)
@@ -245,6 +254,9 @@ class DirectorStore:
             row is None
             or str(row["status"]) != "succeeded"
             or str(row["source_sha256"]) != _sha256(chunk.source_text)
+            or str(row["llm_fingerprint"]) != llm_fingerprint
+            or str(row["prompt_version"]) != prompt_version
+            or int(row["schema_version"]) != schema_version
             or row["result_json"] is None
         ):
             return None
@@ -258,6 +270,8 @@ class DirectorStore:
         chunk: ScriptChunk,
         result: ChunkAnalysisResult,
         llm_fingerprint: str,
+        prompt_version: str,
+        schema_version: int,
     ) -> None:
         chunk_id = _stored_chunk_id(project_id, chunk.chunk_id)
         async with self._database.write_session() as session:
@@ -275,8 +289,8 @@ class DirectorStore:
                 "source_end": chunk.source_end,
                 "source_sha256": _sha256(chunk.source_text),
                 "llm_fingerprint": llm_fingerprint,
-                "prompt_version": "director-analysis-v1",
-                "schema_version": 1,
+                "prompt_version": prompt_version,
+                "schema_version": schema_version,
                 "status": "succeeded",
                 "result_json": result.model_dump_json(),
                 "error_json": None,
