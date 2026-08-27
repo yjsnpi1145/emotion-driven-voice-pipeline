@@ -21,6 +21,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
             script = await client.get("/ui/app.js")
             director_script = await client.get("/ui/director.js")
             director_dnd_script = await client.get("/ui/director-dnd.js")
+            director_activity_script = await client.get("/ui/director-llm-activity.js")
             shutdown_script = await client.get("/ui/service-shutdown.js")
             stage_script = await client.get("/ui/stage-progress.js")
             selection_script = await client.get("/ui/selection-state.js")
@@ -33,7 +34,8 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'data-theme="dark-console"' in page.text
     assert 'class="brand-mark"' not in page.text
     assert ">声</div>" not in page.text
-    assert "20260814a" in page.text
+    assert "20260827a" in page.text
+    assert 'href="/ui/styles.css?v=20260827a"' in page.text
     assert 'id="segment-list"' in page.text
     assert 'id="segment-editor"' in page.text
     assert 'id="chapter-form"' in page.text
@@ -43,6 +45,14 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'id="llm-activity-console"' in page.text
     assert 'id="llm-activity-status"' in page.text
     assert 'id="llm-activity-log"' in page.text
+    assert 'id="director-llm-activity-console"' in page.text
+    assert 'id="director-llm-status"' in page.text
+    assert 'id="director-llm-log"' in page.text
+    assert (
+        page.text.index('class="director-project-heading"')
+        < page.text.index('id="director-llm-activity-console"')
+        < page.text.index('id="director-stage-rail"')
+    )
     assert page.text.index('id="llm-activity-console"') < page.text.index('id="chapter-progress"')
     assert page.text.index('id="chapter-progress"') < page.text.index("<h3>章节历史</h3>")
     assert 'id="chapter-audio"' in page.text
@@ -162,6 +172,14 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "/resume-generation" in director_script.text
     assert "/recompose" in director_script.text
     assert 'from "./director-dnd.js"' in director_script.text
+    assert 'from "./director-llm-activity.js"' in director_script.text
+    assert "/api/v1/llm/activity" in director_script.text
+    assert "output.textContent = event.content" in director_script.text
+    assert "log.scrollHeight - log.scrollTop - log.clientHeight < 32" in director_script.text
+    assert director_activity_script.status_code == 200
+    assert "script_analysis" in director_activity_script.text
+    assert "cast_reconciliation" in director_activity_script.text
+    assert "script_translation" in director_activity_script.text
     assert "dirtyTranslations" in director_script.text
     assert "stopDirectorActivity" in director_script.text
     assert "buildAssignmentPatch" in director_dnd_script.text

@@ -3,6 +3,10 @@ import {
   contiguousMergePair,
   toggleSelection,
 } from "./director-dnd.js";
+import {
+  directorActivityView,
+  directorOperationLabels,
+} from "./director-llm-activity.js";
 
 const $ = (selector) => document.querySelector(selector);
 const directorState = {
@@ -18,6 +22,9 @@ const directorState = {
   polling: false,
   dirtyTranslations: new Map(),
   pollTimer: null,
+  llmActivity: { active: false, active_operation: null, active_since_utc: null, events: [] },
+  llmActivityLoading: false,
+  llmActivityUnavailable: false,
 };
 
 const statusLabels = {
@@ -773,13 +780,86 @@ async function loadProfiles() {
   if ([...select.options].some((option) => option.value === value)) select.value = value;
 }
 
+function formatActivityTime(value) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "--:--:--";
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(timestamp);
+}
+
+function renderDirectorLlmActivity() {
+  const log = $("#director-llm-log");
+  const status = $("#director-llm-status");
+  if (!log || !status) return;
+  const shouldFollow = log.scrollHeight - log.scrollTop - log.clientHeight < 32;
+  const view = directorActivityView(
+    directorState.llmActivity,
+    directorState.llmActivityUnavailable,
+  );
+  status.dataset.state = view.statusState;
+  status.textContent = view.statusText;
+
+  if (!view.events.length) {
+    const empty = document.createElement("p");
+    empty.className = "llm-activity-empty";
+    empty.textContent = directorState.llmActivityUnavailable
+      ? "活动接口暂时不可用，正在重试"
+      : "等待剧本分析或翻译请求";
+    log.replaceChildren(empty);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  for (const event of view.events) {
+    const entry = document.createElement("article");
+    entry.className = "llm-activity-entry";
+    entry.dataset.kind = event.kind;
+
+    const time = document.createElement("time");
+    time.className = "llm-activity-time";
+    time.dateTime = event.created_at_utc;
+    time.textContent = formatActivityTime(event.created_at_utc);
+
+    const operation = document.createElement("span");
+    operation.className = "llm-activity-operation";
+    operation.textContent = directorOperationLabels[event.operation] || "导演 LLM";
+
+    const message = document.createElement("span");
+    message.className = "llm-activity-message";
+    message.textContent = event.message;
+    entry.append(time, operation, message);
+
+    if (event.content) {
+      const output = document.createElement("pre");
+      output.textContent = event.content;
+      entry.append(output);
+    }
+    fragment.append(entry);
+  }
+  log.replaceChildren(fragment);
+  if (shouldFollow) {
+    window.requestAnimationFrame(() => {
+      log.scrollTop = log.scrollHeight;
+    });
+  }
+}
+
 async function loadLlmState() {
+  if (directorState.llmActivityLoading) return;
+  directorState.llmActivityLoading = true;
   try {
-    const activity = await api("/api/v1/llm/activity");
-    const status = $("#director-llm-status");
-    status.textContent = activity.active ? "正在工作" : "空闲";
-    status.dataset.state = activity.active ? "active" : "ready";
-  } catch { /* shared monitor will retry. */ }
+    directorState.llmActivity = await api("/api/v1/llm/activity");
+    directorState.llmActivityUnavailable = false;
+  } catch {
+    directorState.llmActivityUnavailable = true;
+  } finally {
+    directorState.llmActivityLoading = false;
+    renderDirectorLlmActivity();
+  }
 }
 
 $("#director-project-form").onsubmit = async (event) => {

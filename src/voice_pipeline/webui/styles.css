@@ -219,7 +219,7 @@ details summary { cursor: pointer; color: #aebed1; font-size: .82rem; }
 .director-project-row { cursor: pointer; }
 .director-project-row:hover, .director-project-row[data-active="true"] { border-color: #5079b9; background: var(--accent-soft); }
 .director-project-row strong, .director-preset-card strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.director-monitor { display: flex; justify-content: space-between; align-items: center; gap: .8rem; padding: .75rem; border: 1px solid #345d99; border-radius: .55rem; background: var(--accent-soft); }
+.director-llm-activity-console { margin-top: .15rem; }
 .director-stage-rail { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .35rem; margin: 0; padding: 0; list-style: none; }
 .director-stage-rail li { min-width: 0; padding: .55rem .35rem; border: 1px solid var(--line); border-radius: .45rem; background: var(--panel-raised); color: var(--muted); font-size: .72rem; text-align: center; }
 .director-stage-rail li[data-state="complete"] { border-color: #286e5b; background: #10271f; color: #71e1b8; }
