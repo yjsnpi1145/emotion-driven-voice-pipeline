@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>情绪配音工作台</title>
-    <link rel="stylesheet" href="/ui/styles.css?v=20260814a" />
+    <link rel="stylesheet" href="/ui/styles.css?v=20260827a" />
   </head>
   <body>
     <div class="app-shell">
@@ -147,10 +147,6 @@
                   <button class="primary-button full-width" type="submit">创建导演项目</button>
                 </form>
               </details>
-              <section class="director-monitor" aria-label="导演模式 LLM 状态">
-                <div><p class="eyebrow">LLM Monitor</p><strong>分析与翻译活动</strong></div>
-                <span id="director-llm-status" class="status-chip">空闲</span>
-              </section>
               <div class="panel-heading compact"><div><p class="eyebrow">Projects</p><h3>导演项目</h3></div><span id="director-project-count" class="status-chip">0 个</span></div>
               <nav id="director-project-list" class="director-project-list" aria-label="导演项目列表"></nav>
             </aside>
@@ -164,6 +160,15 @@
                   <span class="quality-switch" aria-hidden="true"></span>
                 </label>
               </header>
+              <section id="director-llm-activity-console" class="llm-activity-console director-llm-activity-console" aria-label="导演模式 LLM 实时输出">
+                <div class="llm-activity-heading">
+                  <div><p class="eyebrow">LLM Monitor</p><strong>导演模式实时输出</strong></div>
+                  <span id="director-llm-status" class="status-chip llm-activity-status" data-state="idle">空闲</span>
+                </div>
+                <div id="director-llm-log" class="llm-activity-log" role="log" aria-live="polite">
+                  <p class="llm-activity-empty">等待剧本分析或翻译请求</p>
+                </div>
+              </section>
               <ol id="director-stage-rail" class="director-stage-rail" aria-label="导演流程阶段"></ol>
               <div id="director-actions" class="director-actions button-row"></div>
               <section class="director-role-zone">
@@ -272,7 +277,7 @@
     </section>
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
     <template id="segment-row-template"><button class="segment-row" type="button"></button></template>
-    <script type="module" src="/ui/app.js?v=20260814a"></script>
-    <script type="module" src="/ui/director.js?v=20260814a"></script>
+    <script type="module" src="/ui/app.js?v=20260827a"></script>
+    <script type="module" src="/ui/director.js?v=20260827a"></script>
   </body>
 </html>
