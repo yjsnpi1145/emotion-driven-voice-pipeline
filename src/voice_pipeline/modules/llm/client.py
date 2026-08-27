@@ -21,6 +21,7 @@ from voice_pipeline.models.director_llm import (
     ScriptChunk,
     ScriptTranslationResult,
     TranslationInput,
+    UnitAnalysisResult,
 )
 from voice_pipeline.models.schemas import LanguageCode
 from voice_pipeline.modules.llm.activity import (
@@ -32,6 +33,10 @@ from voice_pipeline.modules.llm.models import (
     CorrectionDirection,
     DirectorPlan,
     ReferenceTextCorrection,
+)
+from voice_pipeline.modules.llm.script_chunking import (
+    build_analysis_units,
+    materialize_unit_analysis,
 )
 
 _RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
@@ -173,22 +178,64 @@ class OpenAiDirectorClient:
         chunk: ScriptChunk,
         activity_id: UUID | None = None,
     ) -> ChunkAnalysisResult:
-        content = await self._post_json(
-            _schema_messages(
-                ChunkAnalysisResult,
-                instruction=(
-                    "Split the supplied source chunk into exact contiguous ranges. Preserve every "
-                    "character exactly, including whitespace. Classify each range as dialogue, "
-                    "narration, or stage_direction. Infer a temporary speaker name and aliases for "
-                    "dialogue. Narration uses no temporary role. Stage directions are normally not "
-                    "spoken. All indices are absolute Python string indices."
-                ),
-                payload=chunk.model_dump(mode="json"),
+        operation_id = activity_id or uuid4()
+        units = build_analysis_units(chunk)
+        messages = _schema_messages(
+            UnitAnalysisResult,
+            instruction=(
+                "Return exactly one classification for every supplied unit_id, in the supplied "
+                "order. Never merge, omit, duplicate, reorder, or invent unit IDs. Classify each "
+                "unit as dialogue, narration, or stage_direction. Infer a temporary speaker name "
+                "and aliases for dialogue. Narration uses no temporary role. Stage directions are "
+                "normally not spoken. Do not return source text or character indices."
             ),
-            operation_id=activity_id or uuid4(),
+            payload={
+                "chunk_id": chunk.chunk_id,
+                "units": [
+                    {"unit_id": unit.unit_id, "source_text": unit.source_text} for unit in units
+                ],
+            },
+        )
+        content = await self._post_json(
+            messages,
+            operation_id=operation_id,
             operation="script_analysis",
         )
-        return _validate_payload(ChunkAnalysisResult, content)
+        annotations = _validate_payload(UnitAnalysisResult, content)
+        try:
+            return materialize_unit_analysis(chunk, units, annotations)
+        except PipelineError as exc:
+            if exc.code != ErrorCode.LLM_INVALID_RESPONSE:
+                raise
+        await self._emit(
+            operation_id=operation_id,
+            operation="script_analysis",
+            kind="retrying",
+            message="分析单元 ID 校验失败，正在请求一次结构化修复",
+        )
+        expected_ids = [unit.unit_id for unit in units]
+        repair_messages = [
+            *messages,
+            {
+                "role": "assistant",
+                "content": json.dumps(content, ensure_ascii=False, separators=(",", ":")),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "The previous object used an invalid unit ID sequence. Return a corrected "
+                    "object with exactly these unit IDs in this order and no others: "
+                    + json.dumps(expected_ids, ensure_ascii=False, separators=(",", ":"))
+                ),
+            },
+        ]
+        repaired_content = await self._post_json(
+            repair_messages,
+            operation_id=operation_id,
+            operation="script_analysis",
+        )
+        repaired = _validate_payload(UnitAnalysisResult, repaired_content)
+        return materialize_unit_analysis(chunk, units, repaired)
 
     async def reconcile_cast(
         self,
