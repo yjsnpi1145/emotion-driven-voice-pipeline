@@ -32,6 +32,7 @@ _WEBUI_FILES = {
     "app.js",
     "director-dnd.js",
     "director-llm-activity.js",
+    "director-working-text.js",
     "director.js",
     "selection-state.js",
     "service-shutdown.js",
