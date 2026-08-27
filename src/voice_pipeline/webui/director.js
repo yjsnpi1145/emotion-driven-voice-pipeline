@@ -1,5 +1,6 @@
 import {
   buildAssignmentPatch,
+  canEditRoleReview,
   contiguousMergePair,
   toggleSelection,
 } from "./director-dnd.js";
@@ -344,10 +345,15 @@ function renderRoles() {
   const root = $("#director-role-list");
   $("#director-role-count").textContent = `${directorState.roles.length} 个`;
   const fragment = document.createDocumentFragment();
+  const roleEditing = canEditRoleReview(directorState.project.status);
+  const recoveryHint = directorState.project.status === "translation_review"
+    ? "修改后将返回角色复核并需要重新翻译"
+    : "";
   for (const role of directorState.roles) {
     const card = document.createElement("article");
     card.className = "director-role-card";
-    card.draggable = directorState.project.status === "role_review";
+    card.draggable = canEditRoleReview(directorState.project.status);
+    card.title = recoveryHint;
     card.dataset.roleId = role.role_id;
     card.ondragstart = (event) => {
       event.dataTransfer.setData("text/director-role-id", role.role_id);
@@ -384,7 +390,8 @@ function renderRoles() {
     rename.type = "button";
     rename.className = "director-inline-button";
     rename.textContent = "重命名";
-    rename.disabled = directorState.project.status !== "role_review";
+    rename.disabled = !roleEditing;
+    rename.title = recoveryHint;
     rename.onclick = async () => {
       const value = window.prompt("角色名称", role.canonical_name);
       if (!value?.trim()) return;
@@ -403,7 +410,8 @@ function renderRoles() {
     const selectedForRole = directorState.utterances.filter((item) => (
       directorState.selected.has(item.utterance_id) && item.role_id === role.role_id
     ));
-    split.disabled = directorState.project.status !== "role_review" || !selectedForRole.length;
+    split.disabled = !roleEditing || !selectedForRole.length;
+    split.title = recoveryHint;
     split.onclick = async () => {
       const value = window.prompt("新角色名称");
       if (!value?.trim()) return;
@@ -428,7 +436,8 @@ function renderRoles() {
     for (const targetRole of directorState.roles.filter((item) => item.role_id !== role.role_id)) {
       merge.append(new Option(targetRole.canonical_name, targetRole.role_id));
     }
-    merge.disabled = directorState.project.status !== "role_review" || directorState.roles.length < 2;
+    merge.disabled = !roleEditing || directorState.roles.length < 2;
+    merge.title = recoveryHint;
     merge.onchange = async () => {
       if (!merge.value || !window.confirm(`确认合并角色“${role.canonical_name}”吗？`)) {
         merge.value = "";
@@ -460,7 +469,10 @@ function roleSelect(utterance) {
   for (const role of directorState.roles) {
     select.append(new Option(role.canonical_name, role.role_id, false, role.role_id === utterance.role_id));
   }
-  select.disabled = directorState.project.status !== "role_review";
+  select.disabled = !canEditRoleReview(directorState.project.status);
+  if (directorState.project.status === "translation_review") {
+    select.title = "修改后将返回角色复核并需要重新翻译";
+  }
   select.onchange = () => assignRows(new Set([utterance.utterance_id]), select.value);
   return select;
 }
@@ -681,14 +693,20 @@ function renderUtterances() {
     const speakInput = document.createElement("input");
     speakInput.type = "checkbox";
     speakInput.checked = utterance.speak_enabled;
-    speakInput.disabled = directorState.project.status !== "role_review";
+    speakInput.disabled = !canEditRoleReview(directorState.project.status);
+    if (directorState.project.status === "translation_review") {
+      speak.title = "修改后将返回角色复核并需要重新翻译";
+    }
     speakInput.onchange = () => patchUtterance(utterance, { speak_enabled: speakInput.checked });
     speak.append(speakInput, document.createTextNode("配音"));
     const confirm = document.createElement("button");
     confirm.type = "button";
     confirm.className = "director-inline-button";
     confirm.textContent = "确认角色";
-    confirm.hidden = utterance.role_confirmed || directorState.project.status !== "role_review";
+    confirm.hidden = utterance.role_confirmed || !canEditRoleReview(directorState.project.status);
+    if (directorState.project.status === "translation_review") {
+      confirm.title = "确认后将返回角色复核并需要重新翻译";
+    }
     confirm.onclick = () => patchUtterance(utterance, { role_confirmed: true });
     const split = document.createElement("button");
     split.type = "button";
@@ -713,8 +731,10 @@ function renderUtterances() {
         source_text: utterance.source_text,
         working_text: working.value,
       });
-      split.disabled = directorState.project.status !== "role_review" || !splitSafe;
-      split.title = splitSafe ? "请在展开的原始切片中放置光标" : "配音文本修改后不能按原文偏移拆分";
+      split.disabled = !canEditRoleReview(directorState.project.status) || !splitSafe;
+      split.title = directorState.project.status === "translation_review"
+        ? "拆分后将返回角色复核并需要重新翻译"
+        : splitSafe ? "请在展开的原始切片中放置光标" : "配音文本修改后不能按原文偏移拆分";
     };
     working.oninput = updateWorkingState;
     saveWorking.onclick = () => busy(saveWorking, "保存中…", async () => {
@@ -751,7 +771,7 @@ function renderUtterances() {
   $("#director-clear-selection").disabled = directorState.selected.size === 0;
   $("#director-merge-selected").disabled = !contiguousMergePair(
     directorState.utterances, directorState.selected,
-  ) || directorState.project.status !== "role_review";
+  ) || !canEditRoleReview(directorState.project.status);
 }
 
 async function patchUtterance(utterance, patch) {

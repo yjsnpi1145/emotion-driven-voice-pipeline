@@ -178,6 +178,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "/resume-generation" in director_script.text
     assert "/recompose" in director_script.text
     assert 'from "./director-dnd.js"' in director_script.text
+    assert "canEditRoleReview" in director_script.text
     assert 'from "./director-lazy-editor.js"' in director_script.text
     assert 'from "./director-llm-activity.js"' in director_script.text
     assert "/api/v1/llm/activity" in director_script.text
@@ -197,6 +198,14 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "card.append(translatedEditor(utterance))" not in director_script.text
     assert "stopDirectorActivity" in director_script.text
     assert "buildAssignmentPatch" in director_dnd_script.text
+    assert "export function canEditRoleReview(status)" in director_dnd_script.text
+    assert "card.draggable = canEditRoleReview" in director_script.text
+    assert "select.disabled = !canEditRoleReview" in director_script.text
+    assert "speakInput.disabled = !canEditRoleReview" in director_script.text
+    assert "confirm.hidden = utterance.role_confirmed || !canEditRoleReview" in director_script.text
+    assert "修改后将返回角色复核并需要重新翻译" in director_script.text
+    old_speak_gate = 'speakInput.disabled = directorState.project.status !== "role_review"'
+    assert old_speak_gate not in director_script.text
     assert "/api/v1/settings/quality" in script.text
     assert "loadQualitySettings" in script.text
     assert "saveQualitySettings" in script.text

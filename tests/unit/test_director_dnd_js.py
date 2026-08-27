@@ -17,7 +17,17 @@ const rows = [
 ];
 const patch = d.buildAssignmentPatch(rows, new Set(['b','c']), 'role-1');
 const pair = d.contiguousMergePair(rows, new Set(['b','c']));
-console.log(JSON.stringify({{patch, pair, visible:d.filterNarration(rows, false)}}));
+console.log(JSON.stringify({{
+  patch,
+  pair,
+  visible:d.filterNarration(rows, false),
+  editableStatuses: {{
+    roleReview: d.canEditRoleReview('role_review'),
+    translationReview: d.canEditRoleReview('translation_review'),
+    translating: d.canEditRoleReview('translating'),
+    ready: d.canEditRoleReview('ready'),
+  }},
+}}));
 """
     result = subprocess.run(
         ["node", "--input-type=module", "--eval", script],
@@ -35,3 +45,9 @@ console.log(JSON.stringify({{patch, pair, visible:d.filterNarration(rows, false)
     }
     assert payload["pair"][0]["utterance_id"] == "b"
     assert [row["utterance_id"] for row in payload["visible"]] == ["b", "c"]
+    assert payload["editableStatuses"] == {
+        "roleReview": True,
+        "translationReview": True,
+        "translating": False,
+        "ready": False,
+    }
