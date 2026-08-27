@@ -178,6 +178,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "/resume-generation" in director_script.text
     assert "/recompose" in director_script.text
     assert 'from "./director-dnd.js"' in director_script.text
+    assert 'from "./director-lazy-editor.js"' in director_script.text
     assert 'from "./director-llm-activity.js"' in director_script.text
     assert "/api/v1/llm/activity" in director_script.text
     assert "output.textContent = event.content" in director_script.text
@@ -189,6 +190,11 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "cast_reconciliation" in director_activity_script.text
     assert "script_translation" in director_activity_script.text
     assert "dirtyTranslations" in director_script.text
+    assert "function lazyTranslatedEditor(utterance)" in director_script.text
+    assert "details.ontoggle" in director_script.text
+    assert "编辑译文与情绪" in director_script.text
+    assert "card.append(lazyTranslatedEditor(utterance))" in director_script.text
+    assert "card.append(translatedEditor(utterance))" not in director_script.text
     assert "stopDirectorActivity" in director_script.text
     assert "buildAssignmentPatch" in director_dnd_script.text
     assert "/api/v1/settings/quality" in script.text
@@ -227,6 +233,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert ".shutdown-overlay" in stylesheet.text
     assert ".director-layout" in stylesheet.text
     assert ".director-utterance-card" in stylesheet.text
+    assert ".director-translation-details" in stylesheet.text
     assert 'preload="metadata"' in script.text
     assert 'preload="none"' not in script.text
     assert 'player.preload = "metadata"' in script.text

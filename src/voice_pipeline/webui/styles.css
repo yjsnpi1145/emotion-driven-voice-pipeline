@@ -253,6 +253,11 @@ details summary { cursor: pointer; color: #aebed1; font-size: .82rem; }
 .director-original-source textarea { width: 100%; margin-bottom: 0; color: #8fa0b5; background: #0a121e; }
 .director-utterance-controls { display: grid; grid-template-columns: minmax(9rem, .7fr) auto auto minmax(5rem, .35fr); gap: .45rem; align-items: end; }
 .director-inline-button { min-height: 2.28rem; padding: .45rem .65rem; }
+.director-translation-details { grid-column: 1 / -1; min-width: 0; border: 1px solid var(--line); border-radius: .48rem; background: rgb(8 16 27 / 34%); }
+.director-translation-details > summary { padding: .58rem .7rem; cursor: pointer; color: #aebed1; font-size: .78rem; font-weight: 700; transition: color .15s ease, background .15s ease; }
+.director-translation-details > summary:hover, .director-translation-details > summary:focus-visible { color: #e3edf8; background: var(--accent-soft); outline: none; }
+.director-translation-details[open] > summary { border-bottom: 1px solid var(--line); color: #dce8f7; }
+.director-translation-details > .director-translation-editor { padding: .7rem; }
 .director-translation-editor { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: .45rem; }
 .director-translation-editor textarea { min-height: 5rem; resize: vertical; }
 .director-emotion-vector { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .45rem; margin: 0; padding: .65rem; border: 1px solid var(--line); border-radius: .48rem; }
