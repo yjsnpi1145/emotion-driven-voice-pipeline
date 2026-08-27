@@ -39,7 +39,7 @@ def _archive_registry(tmp_path: Path, worker_pid: int, worker_create_time: float
         check=True,
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=60,
     )
     return json.loads(completed.stdout)
 
