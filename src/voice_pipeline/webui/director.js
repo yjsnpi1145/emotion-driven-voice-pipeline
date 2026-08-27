@@ -7,6 +7,11 @@ import {
   directorActivityView,
   directorOperationLabels,
 } from "./director-llm-activity.js";
+import {
+  canSplitWorkingText,
+  hasUnsavedDirectorDrafts,
+  isWorkingTextDirty,
+} from "./director-working-text.js";
 
 const $ = (selector) => document.querySelector(selector);
 const directorState = {
@@ -20,6 +25,7 @@ const directorState = {
   selected: new Set(),
   refreshToken: 0,
   polling: false,
+  dirtyWorkingTexts: new Map(),
   dirtyTranslations: new Map(),
   pollTimer: null,
   llmActivity: { active: false, active_operation: null, active_since_utc: null, events: [] },
@@ -142,10 +148,11 @@ async function selectProject(projectId) {
   if (
     directorState.project
     && directorState.project.project_id !== projectId
-    && directorState.dirtyTranslations.size
-    && !window.confirm("当前有未保存的翻译修改，仍要切换项目吗？")
+    && hasUnsavedDirectorDrafts(directorState)
+    && !window.confirm("当前有未保存的修改，仍要切换项目吗？")
   ) return;
   if (directorState.project?.project_id !== projectId) {
+    directorState.dirtyWorkingTexts.clear();
     directorState.dirtyTranslations.clear();
   }
   const token = ++directorState.refreshToken;
@@ -162,6 +169,13 @@ async function selectProject(projectId) {
   ));
   directorState.roles = roles;
   directorState.utterances = utterances;
+  const liveUtteranceIds = new Set(utterances.map((item) => item.utterance_id));
+  for (const id of directorState.dirtyWorkingTexts.keys()) {
+    if (!liveUtteranceIds.has(id)) directorState.dirtyWorkingTexts.delete(id);
+  }
+  for (const id of directorState.dirtyTranslations.keys()) {
+    if (!liveUtteranceIds.has(id)) directorState.dirtyTranslations.delete(id);
+  }
   directorState.progress = progress;
   directorState.selected = new Set(
     [...directorState.selected].filter((id) => utterances.some((row) => row.utterance_id === id)),
@@ -263,6 +277,10 @@ function renderActions() {
     buttons.push(disabled);
   } else if (project.status === "role_review") {
     buttons.push(actionButton("确认角色并生成翻译", async () => {
+      if (hasUnsavedDirectorDrafts(directorState)) {
+        notify("请先保存所有配音文本修改，再进入翻译阶段", true);
+        return;
+      }
       const confirmed = await api(`/api/v1/director-projects/${project.project_id}/confirm-roles`, {
         method: "POST", body: JSON.stringify({ expected_revision: project.revision }),
       });
@@ -594,11 +612,38 @@ function renderUtterances() {
       ? `已确认 ${(utterance.role_confidence * 100).toFixed(0)}%`
       : `待确认 ${(utterance.role_confidence * 100).toFixed(0)}%`;
     heading.append(checkbox, ordinal, badge, confidence);
+    const savedWorkingText = utterance.working_text ?? utterance.source_text;
+    const workingEditor = document.createElement("div");
+    workingEditor.className = "director-working-text-editor";
+    const workingLabel = document.createElement("strong");
+    workingLabel.textContent = "配音文本";
+    const working = document.createElement("textarea");
+    working.className = "director-source-slice director-working-text";
+    working.value = directorState.dirtyWorkingTexts.get(utterance.utterance_id)
+      ?? savedWorkingText;
+    working.readOnly = directorState.project.status !== "role_review";
+    working.rows = Math.min(5, Math.max(2, working.value.split("\n").length));
+    const workingActions = document.createElement("div");
+    workingActions.className = "director-working-text-actions";
+    const workingStatus = document.createElement("small");
+    const saveWorking = document.createElement("button");
+    saveWorking.type = "button";
+    saveWorking.className = "secondary-button";
+    saveWorking.textContent = "保存配音文本";
+    saveWorking.hidden = directorState.project.status !== "role_review";
+    workingActions.append(workingStatus, saveWorking);
+    workingEditor.append(workingLabel, working, workingActions);
+
+    const sourceDetails = document.createElement("details");
+    sourceDetails.className = "director-original-source";
+    const sourceSummary = document.createElement("summary");
+    sourceSummary.textContent = "查看原始切片";
     const source = document.createElement("textarea");
     source.className = "director-source-slice";
     source.value = utterance.source_text;
     source.readOnly = true;
     source.rows = Math.min(5, Math.max(2, utterance.source_text.split("\n").length));
+    sourceDetails.append(sourceSummary, source);
     const controls = document.createElement("div");
     controls.className = "director-utterance-controls";
     const select = roleSelect(utterance);
@@ -619,11 +664,49 @@ function renderUtterances() {
     const split = document.createElement("button");
     split.type = "button";
     split.className = "director-inline-button";
-    split.textContent = "在光标处拆分";
-    split.disabled = directorState.project.status !== "role_review";
+    split.textContent = "在原文光标处拆分";
     split.onclick = () => splitUtterance(utterance, source.selectionStart);
+    const updateWorkingState = () => {
+      const dirty = isWorkingTextDirty(
+        { ...utterance, working_text: savedWorkingText },
+        working.value,
+      );
+      if (dirty) {
+        directorState.dirtyWorkingTexts.set(utterance.utterance_id, working.value);
+      } else {
+        directorState.dirtyWorkingTexts.delete(utterance.utterance_id);
+      }
+      working.dataset.dirty = String(dirty);
+      workingStatus.textContent = dirty ? "有未保存的修改" : "已保存";
+      workingStatus.dataset.state = dirty ? "warning" : "ready";
+      saveWorking.disabled = !dirty || !working.value.trim();
+      const splitSafe = canSplitWorkingText({
+        source_text: utterance.source_text,
+        working_text: working.value,
+      });
+      split.disabled = directorState.project.status !== "role_review" || !splitSafe;
+      split.title = splitSafe ? "请在展开的原始切片中放置光标" : "配音文本修改后不能按原文偏移拆分";
+    };
+    working.oninput = updateWorkingState;
+    saveWorking.onclick = () => busy(saveWorking, "保存中…", async () => {
+      if (!working.value.trim()) {
+        notify("配音文本不能为空", true);
+        return;
+      }
+      await api(`/api/v1/director-utterances/${utterance.utterance_id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          expected_revision: utterance.revision,
+          working_text: working.value,
+        }),
+      });
+      directorState.dirtyWorkingTexts.delete(utterance.utterance_id);
+      notify("配音文本已保存，后续翻译和配音将使用这段文字");
+      await selectProject(directorState.project.project_id);
+    }).catch((error) => notify(error, true));
+    updateWorkingState();
     controls.append(select, speak, confirm, split);
-    card.append(heading, source, controls);
+    card.append(heading, workingEditor, controls, sourceDetails);
     if (editableTranslation && utterance.speak_enabled) card.append(translatedEditor(utterance));
     fragment.append(card);
   }
@@ -680,6 +763,10 @@ async function splitUtterance(utterance, localIndex) {
 }
 
 async function mergeSelected() {
+  if (hasUnsavedDirectorDrafts(directorState)) {
+    notify("请先保存当前修改，再合并语句", true);
+    return;
+  }
   const pair = contiguousMergePair(directorState.utterances, directorState.selected);
   if (!pair) return;
   await api("/api/v1/director-utterances/merge", {
