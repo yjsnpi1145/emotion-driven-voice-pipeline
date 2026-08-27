@@ -26,6 +26,34 @@ class ScriptChunk(StrictModel):
         return self
 
 
+class ScriptAnalysisUnit(StrictModel):
+    unit_id: NonBlankText
+    source_start: int = Field(ge=0)
+    source_end: int = Field(gt=0)
+    source_text: str
+
+    @model_validator(mode="after")
+    def validate_range(self) -> ScriptAnalysisUnit:
+        if self.source_end <= self.source_start:
+            raise ValueError("analysis unit range must move forward")
+        if self.source_end - self.source_start != len(self.source_text):
+            raise ValueError("analysis unit range must match source_text length")
+        return self
+
+
+class UnitAnalysis(StrictModel):
+    unit_id: NonBlankText
+    kind: Literal["dialogue", "narration", "stage_direction"]
+    temporary_role_name: str | None = None
+    role_aliases: tuple[str, ...] = ()
+    role_confidence: float = Field(ge=0.0, le=1.0)
+    speak_enabled: bool
+
+
+class UnitAnalysisResult(StrictModel):
+    units: tuple[UnitAnalysis, ...]
+
+
 class AnalyzedUtterance(StrictModel):
     source_start: int = Field(ge=0)
     source_end: int = Field(gt=0)
