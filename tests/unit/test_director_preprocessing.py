@@ -310,33 +310,35 @@ async def test_two_projects_with_identical_source_have_distinct_paragraph_ids(
 
 
 @pytest.mark.asyncio
-async def test_manual_rewrite_validates_revision_before_single_flight_llm_call(
+async def test_manual_rewrite_is_single_flight_across_project_paragraphs(
     store: DirectorStore,
 ) -> None:
-    project = await store.create_project(request(mode="rewrite"))
+    project = await store.create_project(
+        request(mode="rewrite", source="第一段。\n\n第二段。")
+    )
     project = await PreprocessingService(store, RewriteDirector()).run(
         project.project_id,
         expected_revision=project.revision,
     )
-    paragraph = (await store.list_preprocess_paragraphs(project.project_id)).items[0]
+    paragraphs = (await store.list_preprocess_paragraphs(project.project_id)).items
     director = BlockingRewriteDirector()
     service = PreprocessingService(store, director)
 
     first = asyncio.create_task(
         service.rewrite_paragraph(
             project.project_id,
-            paragraph.paragraph_id,
+            paragraphs[0].paragraph_id,
             expected_project_revision=project.revision,
-            expected_revision=paragraph.revision,
+            expected_revision=paragraphs[0].revision,
         )
     )
     await director.started.wait()
     second = asyncio.create_task(
         service.rewrite_paragraph(
             project.project_id,
-            paragraph.paragraph_id,
+            paragraphs[1].paragraph_id,
             expected_project_revision=project.revision,
-            expected_revision=paragraph.revision,
+            expected_revision=paragraphs[1].revision,
         )
     )
     director.release.set()

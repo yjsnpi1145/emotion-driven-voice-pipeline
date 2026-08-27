@@ -53,9 +53,21 @@ class PreprocessingService:
         self._store = store
         self._director = director
         self._cleaner = cleaner or StructuralTextCleaner()
-        self._rewrite_locks: dict[tuple[UUID, str], asyncio.Lock] = {}
+        self._project_locks: dict[UUID, asyncio.Lock] = {}
 
     async def run(
+        self,
+        project_id: UUID,
+        *,
+        expected_revision: int,
+    ) -> DirectorProjectRecord:
+        async with self._project_locks.setdefault(project_id, asyncio.Lock()):
+            return await self._run_locked(
+                project_id,
+                expected_revision=expected_revision,
+            )
+
+    async def _run_locked(
         self,
         project_id: UUID,
         *,
@@ -104,8 +116,7 @@ class PreprocessingService:
         expected_project_revision: int,
         expected_revision: int,
     ) -> DirectorPreprocessParagraphRecord:
-        key = (project_id, paragraph_id)
-        lock = self._rewrite_locks.setdefault(key, asyncio.Lock())
+        lock = self._project_locks.setdefault(project_id, asyncio.Lock())
         async with lock:
             return await self._rewrite_paragraph_locked(
                 project_id,
