@@ -27,6 +27,7 @@ from voice_pipeline.storage.segment_store import SegmentStore
 from voice_pipeline.storage.version_store import VersionStore
 
 _WEBUI_ROOT = Path(__file__).parents[1] / "webui"
+_WEBUI_CACHE_HEADERS = {"Cache-Control": "no-store"}
 _WEBUI_FILES = {
     "index.html",
     "app.js",
@@ -48,13 +49,17 @@ def build_workbench_router(plane: Any) -> APIRouter:
 
     @router.get("/", include_in_schema=False)
     async def index() -> FileResponse:
-        return FileResponse(_WEBUI_ROOT / "index.html", media_type="text/html")
+        return FileResponse(
+            _WEBUI_ROOT / "index.html",
+            media_type="text/html",
+            headers=_WEBUI_CACHE_HEADERS,
+        )
 
     @router.get("/ui/{asset_path:path}", include_in_schema=False)
     async def asset(asset_path: str) -> FileResponse:
         if asset_path not in _WEBUI_FILES:
             raise HTTPException(status_code=404, detail="static asset not found")
-        return FileResponse(_WEBUI_ROOT / asset_path)
+        return FileResponse(_WEBUI_ROOT / asset_path, headers=_WEBUI_CACHE_HEADERS)
 
     @router.get("/api/v1/chapters")
     async def list_chapters() -> list[dict[str, Any]]:

@@ -40,8 +40,9 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'data-theme="dark-console"' in page.text
     assert 'class="brand-mark"' not in page.text
     assert ">声</div>" not in page.text
-    assert "20260827a" in page.text
-    assert 'href="/ui/styles.css?v=20260827a"' in page.text
+    assert "20260828a" in page.text
+    assert 'href="/ui/styles.css?v=20260828a"' in page.text
+    assert page.headers["cache-control"] == "no-store"
     assert 'id="segment-list"' in page.text
     assert 'id="segment-editor"' in page.text
     assert 'id="chapter-form"' in page.text
@@ -101,6 +102,9 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert script.status_code == 200
     assert director_script.status_code == 200
     assert director_dnd_script.status_code == 200
+    assert script.headers["cache-control"] == "no-store"
+    assert director_script.headers["cache-control"] == "no-store"
+    assert director_dnd_script.headers["cache-control"] == "no-store"
     assert shutdown_script.status_code == 200
     assert stage_script.status_code == 200
     assert selection_script.status_code == 200
@@ -177,10 +181,10 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "/api/v1/director-roles/merge" in director_script.text
     assert "/resume-generation" in director_script.text
     assert "/recompose" in director_script.text
-    assert 'from "./director-dnd.js"' in director_script.text
+    assert 'from "./director-dnd.js?v=20260828a"' in director_script.text
     assert "canEditRoleReview" in director_script.text
-    assert 'from "./director-lazy-editor.js"' in director_script.text
-    assert 'from "./director-llm-activity.js"' in director_script.text
+    assert 'from "./director-lazy-editor.js?v=20260828a"' in director_script.text
+    assert 'from "./director-llm-activity.js?v=20260828a"' in director_script.text
     assert "/api/v1/llm/activity" in director_script.text
     assert "output.textContent = event.content" in director_script.text
     assert "log.scrollHeight - log.scrollTop - log.clientHeight < 32" in director_script.text

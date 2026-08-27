@@ -3,17 +3,17 @@ import {
   canEditRoleReview,
   contiguousMergePair,
   toggleSelection,
-} from "./director-dnd.js";
-import { syncLazyEditor } from "./director-lazy-editor.js";
+} from "./director-dnd.js?v=20260828a";
+import { syncLazyEditor } from "./director-lazy-editor.js?v=20260828a";
 import {
   directorActivityView,
   directorOperationLabels,
-} from "./director-llm-activity.js";
+} from "./director-llm-activity.js?v=20260828a";
 import {
   canSplitWorkingText,
   hasUnsavedDirectorDrafts,
   isWorkingTextDirty,
-} from "./director-working-text.js";
+} from "./director-working-text.js?v=20260828a";
 
 const $ = (selector) => document.querySelector(selector);
 const directorState = {
