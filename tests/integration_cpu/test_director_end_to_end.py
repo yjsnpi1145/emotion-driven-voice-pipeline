@@ -51,6 +51,24 @@ async def test_director_end_to_end_keeps_source_order_and_can_exclude_narration(
             ).json()
             assert "".join(row["source_text"] for row in rows) == project["source_text"]
             assert all(not row["speak_enabled"] for row in rows if row["kind"] == "narration")
+            edited_row = next(row for row in rows if row["kind"] == "dialogue")
+            edited_text = "甲：用户修改后才进入配音的台词。"
+            edit_response = await client.patch(
+                f"/api/v1/director-utterances/{edited_row['utterance_id']}",
+                json={
+                    "expected_revision": edited_row["revision"],
+                    "working_text": edited_text,
+                },
+            )
+            assert edit_response.status_code == 200, edit_response.text
+            assert edit_response.json()["source_text"] == edited_row["source_text"]
+            assert edit_response.json()["working_text"] == edited_text
+            project = (
+                await client.get(f"/api/v1/director-projects/{project['project_id']}")
+            ).json()
+            rows = (
+                await client.get(f"/api/v1/director-projects/{project['project_id']}/utterances")
+            ).json()
 
             project = (
                 await client.post(
@@ -110,6 +128,16 @@ async def test_director_end_to_end_keeps_source_order_and_can_exclude_narration(
                 range(len(progress["items"]))
             )
             assert all(item["status"] == "ready" for item in progress["items"])
+            generated = await app.state.plane.director_store.get_utterance(
+                edit_response.json()["utterance_id"]
+            )
+            assert generated.source_text == edited_row["source_text"]
+            assert generated.working_text == edited_text
+            assert generated.synthesis_text == edited_text
+            assert generated.segment_id is not None
+            segment = await app.state.plane.segment_store.get_segment(generated.segment_id)
+            assert segment.source_text == edited_row["source_text"]
+            assert segment.synthesis_text == edited_text
             audio = await client.get(f"/api/v1/director-projects/{project['project_id']}/audio")
             assert audio.status_code == 200
             assert audio.content.startswith(b"RIFF")
