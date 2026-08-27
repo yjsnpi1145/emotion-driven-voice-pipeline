@@ -4,6 +4,8 @@ import httpx
 import pytest
 
 from voice_pipeline.api.app import create_app
+from voice_pipeline.core.director_preprocessing import PreprocessingService
+from voice_pipeline.modules.llm.fake import FakeDirector
 
 pytest_plugins = ("tests.integration_cpu.conftest",)
 
@@ -36,14 +38,15 @@ async def test_restart_marks_interrupted_director_command_retryable(
             projects[0]["project_id"],
             expected_revision=projects[0]["revision"],
         )
-        await store.begin_analysis(
-            projects[1]["project_id"],
-            expected_revision=projects[1]["revision"],
-        )
-        await store.begin_analysis(
-            projects[2]["project_id"],
-            expected_revision=projects[2]["revision"],
-        )
+        for project in projects[1:]:
+            prepared = await PreprocessingService(store, FakeDirector()).run(
+                project["project_id"],
+                expected_revision=project["revision"],
+            )
+            await store.confirm_preprocessing(
+                prepared.project_id,
+                expected_revision=prepared.revision,
+            )
         translating = await store.get_project(projects[2]["project_id"])
         await store._update_project_state(
             translating.project_id,

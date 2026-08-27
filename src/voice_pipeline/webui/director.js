@@ -323,7 +323,7 @@ function preprocessParagraphCard(paragraph) {
   const actions = document.createElement("div");
   actions.className = "director-preprocess-card-actions button-row";
   const save = actionButton("保存本段", async () => {
-    await api(
+    const updated = await api(
       `/api/v1/director-projects/${directorState.project.project_id}`
       + `/preprocess-paragraphs/${paragraph.paragraph_id}`,
       {
@@ -338,7 +338,7 @@ function preprocessParagraphCard(paragraph) {
     directorState.dirtyPreprocessTexts.delete(paragraph.paragraph_id);
     persistPreprocessSession();
     notify("预处理段落已保存");
-    await selectProject(directorState.project.project_id);
+    await refreshPreprocessRow(updated);
   }, "secondary-button");
   const restoreSource = actionButton("恢复原文", async () => {
     await restorePreprocessParagraph(paragraph, "source");
@@ -347,7 +347,7 @@ function preprocessParagraphCard(paragraph) {
     await restorePreprocessParagraph(paragraph, "structural");
   }, "secondary-button");
   const rewrite = actionButton("重新运行本段 LLM", async () => {
-    await api(
+    const updated = await api(
       `/api/v1/director-projects/${directorState.project.project_id}`
       + `/preprocess-paragraphs/${paragraph.paragraph_id}/rewrite`,
       {
@@ -361,7 +361,7 @@ function preprocessParagraphCard(paragraph) {
     directorState.dirtyPreprocessTexts.delete(paragraph.paragraph_id);
     persistPreprocessSession();
     notify("本段 LLM 改写已完成");
-    await selectProject(directorState.project.project_id);
+    await refreshPreprocessRow(updated);
   }, "secondary-button");
   rewrite.hidden = directorState.project.preprocessing_mode !== "rewrite";
   actions.append(save, restoreSource, restoreStructural, rewrite);
@@ -406,7 +406,7 @@ function preprocessParagraphCard(paragraph) {
 }
 
 async function restorePreprocessParagraph(paragraph, target) {
-  await api(
+  const updated = await api(
     `/api/v1/director-projects/${directorState.project.project_id}`
     + `/preprocess-paragraphs/${paragraph.paragraph_id}/restore`,
     {
@@ -420,7 +420,28 @@ async function restorePreprocessParagraph(paragraph, target) {
   );
   directorState.dirtyPreprocessTexts.delete(paragraph.paragraph_id);
   persistPreprocessSession();
-  await selectProject(directorState.project.project_id);
+  await refreshPreprocessRow(updated);
+}
+
+async function refreshPreprocessRow(updated) {
+  const projectId = directorState.project.project_id;
+  const root = $("#director-preprocess-list");
+  const scrollTop = root?.scrollTop || 0;
+  directorState.preprocessItems = directorState.preprocessItems.map((item) => (
+    item.paragraph_id === updated.paragraph_id ? updated : item
+  ));
+  const project = await api(`/api/v1/director-projects/${projectId}`);
+  if (directorState.project?.project_id !== projectId) return;
+  directorState.project = project;
+  directorState.projects = directorState.projects.map((item) => (
+    item.project_id === projectId ? project : item
+  ));
+  renderDirector();
+  renderProjectList();
+  window.requestAnimationFrame(() => {
+    const refreshed = $("#director-preprocess-list");
+    if (refreshed) refreshed.scrollTop = scrollTop;
+  });
 }
 
 function renderPreprocessSummary() {

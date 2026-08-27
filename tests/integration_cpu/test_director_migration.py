@@ -44,6 +44,7 @@ async def test_director_migration_creates_all_tables(tmp_path: Path) -> None:
             "director_preprocess_paragraphs",
         } <= names
         assert "working_text" in columns
+        assert "preprocess_paragraph_id" in columns
         assert {
             "preprocessing_mode",
             "structural_text",

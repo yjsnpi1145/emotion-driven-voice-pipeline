@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from uuid import UUID
 
 import httpx
 import pytest
@@ -63,6 +64,24 @@ async def _wait_project_status(client, project_id: str, expected: str):
         await asyncio.sleep(0.01)
     assert project is not None
     return project
+
+
+async def _preprocess_to_review(client, project: dict) -> dict:
+    response = await client.post(
+        f"/api/v1/director-projects/{project['project_id']}/preprocess",
+        json={"expected_revision": project["revision"]},
+    )
+    assert response.status_code == 202, response.text
+    return await _wait_project_status(client, project["project_id"], "preprocess_review")
+
+
+async def _confirm_and_wait_for_roles(client, project: dict) -> dict:
+    response = await client.post(
+        f"/api/v1/director-projects/{project['project_id']}/confirm-preprocessing",
+        json={"expected_revision": project["revision"]},
+    )
+    assert response.status_code == 202, response.text
+    return await _wait_project_status(client, project["project_id"], "role_review")
 
 
 @pytest.mark.asyncio
@@ -225,6 +244,73 @@ async def test_director_preprocess_command_is_single_flight(fake_settings) -> No
 
 
 @pytest.mark.asyncio
+async def test_director_analyze_rejects_unconfirmed_source(fake_settings) -> None:
+    app = create_app(fake_settings)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            project = (
+                await client.post(
+                    "/api/v1/director-projects",
+                    json={
+                        "title": "未确认预处理",
+                        "source_text": "旁白。",
+                        "source_language": "zh",
+                        "target_language": "ja",
+                    },
+                )
+            ).json()
+
+            response = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}/analyze",
+                json={"expected_revision": project["revision"]},
+            )
+
+            assert response.status_code == 409
+            assert response.json()["error"]["code"] == "DIRECTOR_REVIEW_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_confirm_preprocessing_double_submit_is_idempotent(fake_settings) -> None:
+    app = create_app(fake_settings)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            project = (
+                await client.post(
+                    "/api/v1/director-projects",
+                    json={
+                        "title": "确认单飞",
+                        "source_text": "旁白。",
+                        "source_language": "zh",
+                        "target_language": "ja",
+                    },
+                )
+            ).json()
+            project = await _preprocess_to_review(client, project)
+            blocking = _BlockingAnalysis()
+            app.state.plane.director_analysis = blocking
+            path = (
+                f"/api/v1/director-projects/{project['project_id']}"
+                "/confirm-preprocessing"
+            )
+
+            first, second = await asyncio.gather(
+                client.post(path, json={"expected_revision": project["revision"]}),
+                client.post(path, json={"expected_revision": project["revision"]}),
+            )
+            await asyncio.sleep(0)
+
+            assert (first.status_code, second.status_code) == (202, 202)
+            assert blocking.analysis_calls == 1
+            blocking.release.set()
+
+
+@pytest.mark.asyncio
 async def test_director_analysis_and_translation_commands_are_single_flight(
     fake_settings,
 ) -> None:
@@ -247,6 +333,19 @@ async def test_director_analysis_and_translation_commands_are_single_flight(
             ).json()
             blocking = _BlockingAnalysis()
             app.state.plane.director_analysis = blocking
+            prepared = await app.state.plane.director_preprocessing.run(
+                UUID(analysis_project["project_id"]),
+                expected_revision=analysis_project["revision"],
+            )
+            prepared = await app.state.plane.director_store.confirm_preprocessing(
+                prepared.project_id,
+                expected_revision=prepared.revision,
+            )
+            analysis_project = (
+                await client.get(
+                    f"/api/v1/director-projects/{prepared.project_id}"
+                )
+            ).json()
             analyze_path = (
                 f"/api/v1/director-projects/{analysis_project['project_id']}/analyze"
             )
@@ -281,14 +380,11 @@ async def test_director_analysis_and_translation_commands_are_single_flight(
                     },
                 )
             ).json()
-            await client.post(
-                f"/api/v1/director-projects/{translation_project['project_id']}/analyze",
-                json={"expected_revision": translation_project["revision"]},
+            translation_project = await _preprocess_to_review(
+                client, translation_project
             )
-            translation_project = await _wait_project_status(
-                client,
-                translation_project["project_id"],
-                "role_review",
+            translation_project = await _confirm_and_wait_for_roles(
+                client, translation_project
             )
             blocking = _BlockingAnalysis()
             app.state.plane.director_analysis = blocking
@@ -330,17 +426,8 @@ async def test_director_api_stages_analysis_review_and_translation(fake_settings
             )
             assert created.status_code == 201
             project = created.json()
-            submitted = await client.post(
-                f"/api/v1/director-projects/{project['project_id']}/analyze",
-                json={"expected_revision": project["revision"]},
-            )
-            assert submitted.status_code == 202
-            for _ in range(100):
-                response = await client.get(f"/api/v1/director-projects/{project['project_id']}")
-                project = response.json()
-                if project["status"] == "role_review":
-                    break
-                await asyncio.sleep(0.01)
+            project = await _preprocess_to_review(client, project)
+            project = await _confirm_and_wait_for_roles(client, project)
             assert project["status"] == "role_review"
             roles = (
                 await client.get(f"/api/v1/director-projects/{project['project_id']}/roles")
@@ -427,7 +514,6 @@ async def test_director_api_stages_analysis_review_and_translation(fake_settings
 async def test_director_background_failure_is_persisted_for_retry(fake_settings) -> None:
     app = create_app(fake_settings)
     async with app.router.lifespan_context(app):
-        app.state.plane.director_analysis = _FailingAnalysis(app.state.plane.director_store)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -442,9 +528,20 @@ async def test_director_background_failure_is_persisted_for_retry(fake_settings)
                     },
                 )
             ).json()
+            prepared = await app.state.plane.director_preprocessing.run(
+                UUID(project["project_id"]),
+                expected_revision=project["revision"],
+            )
+            prepared = await app.state.plane.director_store.confirm_preprocessing(
+                prepared.project_id,
+                expected_revision=prepared.revision,
+            )
+            app.state.plane.director_analysis = _FailingAnalysis(
+                app.state.plane.director_store
+            )
             response = await client.post(
                 f"/api/v1/director-projects/{project['project_id']}/analyze",
-                json={"expected_revision": project["revision"]},
+                json={"expected_revision": prepared.revision},
             )
             assert response.status_code == 202
             for _ in range(100):
@@ -482,11 +579,8 @@ async def test_director_generation_uses_role_presets_and_completes(fake_settings
                     },
                 )
             ).json()
-            await client.post(
-                f"/api/v1/director-projects/{project['project_id']}/analyze",
-                json={"expected_revision": project["revision"]},
-            )
-            project = await _wait_status(client, project["project_id"], "role_review")
+            project = await _preprocess_to_review(client, project)
+            project = await _confirm_and_wait_for_roles(client, project)
             project = (
                 await client.post(
                     f"/api/v1/director-projects/{project['project_id']}/confirm-roles",

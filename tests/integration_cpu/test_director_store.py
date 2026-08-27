@@ -45,9 +45,34 @@ def project_request(source: str = "旁白。甲说你好。") -> CreateDirectorP
     )
 
 
+async def confirmed_for_analysis(store: DirectorStore, project):
+    project = await store.begin_preprocessing(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+    document = StructuralTextCleaner().clean(
+        project.source_text,
+        namespace=str(project.project_id),
+    )
+    await store.stage_preprocess_document(
+        project.project_id,
+        expected_revision=project.revision,
+        document=document,
+    )
+    project = await store.complete_preprocessing(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+    return await store.confirm_preprocessing(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+
+
 @pytest.mark.asyncio
 async def test_publish_analysis_requires_exact_contiguous_source_coverage(store: DirectorStore):
     project = await store.create_project(project_request())
+    project = await confirmed_for_analysis(store, project)
     with pytest.raises(PipelineError) as exc:
         await store.publish_analysis(
             project.project_id,
@@ -151,9 +176,25 @@ async def test_preprocessing_document_is_revisioned_editable_and_confirmable(
 
 
 @pytest.mark.asyncio
+async def test_analysis_cannot_bypass_preprocessing_confirmation(
+    store: DirectorStore,
+) -> None:
+    project = await store.create_project(project_request("旁白。"))
+
+    with pytest.raises(PipelineError) as exc:
+        await store.begin_analysis(
+            project.project_id,
+            expected_revision=project.revision,
+        )
+
+    assert exc.value.code == ErrorCode.DIRECTOR_STATE_CONFLICT
+
+
+@pytest.mark.asyncio
 async def test_publish_split_merge_and_occ(store: DirectorStore):
     source = "旁白。甲说你好。"
     project = await store.create_project(project_request(source))
+    project = await confirmed_for_analysis(store, project)
     project = await store.publish_analysis(
         project.project_id,
         expected_revision=project.revision,
@@ -210,6 +251,7 @@ async def test_publish_split_merge_and_occ(store: DirectorStore):
 async def test_working_text_edit_preserves_source_and_stays_in_role_review(store: DirectorStore):
     source = "甲：原始台词。"
     project = await store.create_project(project_request(source))
+    project = await confirmed_for_analysis(store, project)
     project = await store.publish_analysis(
         project.project_id,
         expected_revision=project.revision,
@@ -257,6 +299,7 @@ async def test_working_text_edit_preserves_source_and_stays_in_role_review(store
 async def test_working_text_edit_is_rejected_after_role_review(store: DirectorStore):
     source = "甲：你好。"
     project = await store.create_project(project_request(source))
+    project = await confirmed_for_analysis(store, project)
     project = await store.publish_analysis(
         project.project_id,
         expected_revision=project.revision,
@@ -293,6 +336,7 @@ async def test_working_text_edit_is_rejected_after_role_review(store: DirectorSt
 async def test_merge_concatenates_source_and_working_text_independently(store: DirectorStore):
     source = "第一句。第二句。"
     project = await store.create_project(project_request(source))
+    project = await confirmed_for_analysis(store, project)
     await store.publish_analysis(
         project.project_id,
         expected_revision=project.revision,
@@ -344,6 +388,7 @@ async def test_merge_concatenates_source_and_working_text_independently(store: D
 async def test_narration_toggle_preserves_source_rows(store: DirectorStore):
     source = "旁白。"
     project = await store.create_project(project_request(source))
+    project = await confirmed_for_analysis(store, project)
     project = await store.publish_analysis(
         project.project_id,
         expected_revision=project.revision,
@@ -372,6 +417,7 @@ async def test_narration_toggle_preserves_source_rows(store: DirectorStore):
 async def test_split_role_creates_character_and_reassigns_selected_rows(store: DirectorStore):
     source = "甲：第一句。甲：第二句。"
     project = await store.create_project(project_request(source))
+    project = await confirmed_for_analysis(store, project)
     project = await store.publish_analysis(
         project.project_id,
         expected_revision=project.revision,
@@ -416,6 +462,7 @@ async def test_split_role_creates_character_and_reassigns_selected_rows(store: D
 async def test_review_and_translation_are_explicit_gates(store: DirectorStore):
     source = "甲：你好。"
     project = await store.create_project(project_request(source))
+    project = await confirmed_for_analysis(store, project)
     project = await store.publish_analysis(
         project.project_id,
         expected_revision=project.revision,

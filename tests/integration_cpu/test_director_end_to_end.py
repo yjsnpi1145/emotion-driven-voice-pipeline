@@ -98,6 +98,7 @@ async def test_director_end_to_end_uses_confirmed_preprocessing_and_filters_punc
             ]
             assert punctuation_rows
             assert all(not row["speak_enabled"] for row in punctuation_rows)
+            assert all(row["preprocess_paragraph_id"] for row in rows)
 
             project = (
                 await client.post(

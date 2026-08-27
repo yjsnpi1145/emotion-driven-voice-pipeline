@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import re
 import unicodedata
-from typing import Protocol
+from collections.abc import Awaitable
+from typing import Protocol, TypeVar
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -27,6 +28,7 @@ _PROTECTED_TOKEN = re.compile(
     r"\d+(?:[.,]\d+)?|[A-Za-z][A-Za-z0-9_-]*(?:\s+[A-Za-z][A-Za-z0-9_-]*)*"
 )
 _QUOTE_PAIRS = {"“": "”", "「": "」", "『": "』", '"': '"'}
+_ResultT = TypeVar("_ResultT")
 
 
 class PreprocessDirector(Protocol):
@@ -51,6 +53,7 @@ class PreprocessingService:
         self._store = store
         self._director = director
         self._cleaner = cleaner or StructuralTextCleaner()
+        self._rewrite_locks: dict[tuple[UUID, str], asyncio.Lock] = {}
 
     async def run(
         self,
@@ -63,9 +66,9 @@ class PreprocessingService:
             expected_revision=expected_revision,
         )
         document = (
-            self._cleaner.preserve(project.source_text)
+            self._cleaner.preserve(project.source_text, namespace=str(project_id))
             if project.preprocessing_mode == "skip"
-            else self._cleaner.clean(project.source_text)
+            else self._cleaner.clean(project.source_text, namespace=str(project_id))
         )
         await self._store.stage_preprocess_document(
             project_id,
@@ -73,13 +76,19 @@ class PreprocessingService:
             document=document,
         )
         if project.preprocessing_mode == "rewrite":
-            await asyncio.gather(
+            structural_by_id = {
+                paragraph.paragraph_id: paragraph
+                for paragraph in document.paragraphs
+            }
+            pending = await self._store.pending_preprocess_paragraphs(project_id)
+            await _run_fail_fast(
                 *(
                     self._rewrite_staged_paragraph(
                         project,
-                        paragraph,
+                        structural_by_id[record.paragraph_id],
+                        record,
                     )
-                    for paragraph in document.paragraphs
+                    for record in pending
                 )
             )
         return await self._store.complete_preprocessing(
@@ -95,7 +104,27 @@ class PreprocessingService:
         expected_project_revision: int,
         expected_revision: int,
     ) -> DirectorPreprocessParagraphRecord:
+        key = (project_id, paragraph_id)
+        lock = self._rewrite_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            return await self._rewrite_paragraph_locked(
+                project_id,
+                paragraph_id,
+                expected_project_revision=expected_project_revision,
+                expected_revision=expected_revision,
+            )
+
+    async def _rewrite_paragraph_locked(
+        self,
+        project_id: UUID,
+        paragraph_id: str,
+        *,
+        expected_project_revision: int,
+        expected_revision: int,
+    ) -> DirectorPreprocessParagraphRecord:
         project = await self._store.get_project(project_id)
+        if project.revision != expected_project_revision:
+            raise _version_conflict()
         if project.status != "preprocess_review":
             raise PipelineError(
                 ErrorCode.DIRECTOR_STATE_CONFLICT,
@@ -110,11 +139,13 @@ class PreprocessingService:
                 "paragraph rewrite is available only in rewrite preprocessing mode",
                 retryable=False,
             )
-        paragraph = await self._store.get_preprocess_paragraph(
-            project_id,
-            paragraph_id,
+        paragraph = await self._store.get_preprocess_paragraph(project_id, paragraph_id)
+        if paragraph.revision != expected_revision:
+            raise _version_conflict()
+        document = self._cleaner.clean(
+            paragraph.structural_text,
+            namespace=f"{project_id}:{paragraph_id}:review",
         )
-        document = self._cleaner.clean(paragraph.structural_text)
         if len(document.paragraphs) != 1:
             raise PipelineError(
                 ErrorCode.INVALID_INPUT,
@@ -184,6 +215,7 @@ class PreprocessingService:
         self,
         project: DirectorProjectRecord,
         paragraph: StructuralParagraph,
+        record: DirectorPreprocessParagraphRecord,
     ) -> None:
         units = tuple(
             PreprocessRewriteUnit(
@@ -198,7 +230,7 @@ class PreprocessingService:
                 project.project_id,
                 paragraph.paragraph_id,
                 expected_project_revision=project.revision,
-                expected_revision=0,
+                expected_revision=record.revision,
                 preprocessed_text=paragraph.structural_text,
                 rewrite_state="local",
             )
@@ -212,21 +244,21 @@ class PreprocessingService:
         except asyncio.CancelledError:
             raise
         except PipelineError as exc:
-            await self._fallback(project, paragraph, exc)
+            await self._fallback(project, paragraph, record, exc)
             return
         except ValidationError as exc:
             error = _schema_error(paragraph.paragraph_id, exc)
-            await self._fallback(project, paragraph, error)
+            await self._fallback(project, paragraph, record, error)
             return
         except Exception as exc:
             error = _request_error(paragraph.paragraph_id, exc)
-            await self._fallback(project, paragraph, error)
+            await self._fallback(project, paragraph, record, error)
             return
         await self._store.save_preprocess_result(
             project.project_id,
             paragraph.paragraph_id,
             expected_project_revision=project.revision,
-            expected_revision=0,
+            expected_revision=record.revision,
             preprocessed_text=rewritten,
             rewrite_state="succeeded",
         )
@@ -235,17 +267,60 @@ class PreprocessingService:
         self,
         project: DirectorProjectRecord,
         paragraph: StructuralParagraph,
+        record: DirectorPreprocessParagraphRecord,
         error: PipelineError,
     ) -> None:
         await self._store.save_preprocess_result(
             project.project_id,
             paragraph.paragraph_id,
             expected_project_revision=project.revision,
-            expected_revision=0,
+            expected_revision=record.revision,
             preprocessed_text=paragraph.structural_text,
             rewrite_state="fallback",
             validation=error.as_dict(),
         )
+
+
+async def _run_fail_fast(*awaitables: Awaitable[_ResultT]) -> None:
+    tasks: tuple[asyncio.Future[_ResultT], ...] = tuple(
+        asyncio.ensure_future(awaitable) for awaitable in awaitables
+    )
+    if not tasks:
+        return
+    try:
+        done, pending = await asyncio.wait(
+            tasks,
+            return_when=asyncio.FIRST_EXCEPTION,
+        )
+    except asyncio.CancelledError:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+    failure: BaseException | None = None
+    for task in done:
+        if task.cancelled():
+            failure = asyncio.CancelledError()
+            break
+        error = task.exception()
+        if error is not None:
+            failure = error
+            break
+    if failure is not None:
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        raise failure
+    await asyncio.gather(*pending)
+
+
+def _version_conflict() -> PipelineError:
+    return PipelineError(
+        ErrorCode.VERSION_CONFLICT,
+        "director",
+        "director data changed; refresh before submitting",
+        retryable=False,
+    )
 
 
 def _schema_error(paragraph_id: str, error: ValidationError) -> PipelineError:
@@ -306,6 +381,12 @@ def validate_preprocess_rewrite(
                 "preprocessing output must not be blank",
                 unit_id=unit.unit_id,
             )
+        if not unit.speakable and output != unit.text:
+            raise _invalid(
+                paragraph,
+                "preprocessing must preserve non-spoken formatting and pause markers",
+                unit_id=unit.unit_id,
+            )
         ratio = len(output) / max(1, len(unit.text))
         if not 0.45 <= ratio <= 2.5:
             raise _invalid(
@@ -321,18 +402,26 @@ def validate_preprocess_rewrite(
                     unit_id=unit.unit_id,
                 )
         _validate_script_profile(paragraph, unit.unit_id, unit.text, output)
-        if unit.context == "quoted_dialogue" and unit.text:
-            closer = _QUOTE_PAIRS.get(unit.text[0])
-            if closer is not None and not (
-                output.startswith(unit.text[0]) and output.endswith(closer)
-            ):
-                raise _invalid(
-                    paragraph,
-                    "preprocessing output changed dialogue quote wrappers",
-                    unit_id=unit.unit_id,
-                )
+        if unit.context == "quoted_dialogue" and (
+            _quote_boundary_signature(unit.text)
+            != _quote_boundary_signature(output)
+        ):
+            raise _invalid(
+                paragraph,
+                "preprocessing output changed dialogue quote wrappers",
+                unit_id=unit.unit_id,
+            )
         rewritten.append(output)
     return "".join(rewritten)
+
+
+def _quote_boundary_signature(value: str) -> tuple[str | None, str | None]:
+    if not value:
+        return None, None
+    opener = value[0] if value[0] in _QUOTE_PAIRS else None
+    closers = set(_QUOTE_PAIRS.values())
+    closer = value[-1] if value[-1] in closers else None
+    return opener, closer
 
 
 def _validate_script_profile(

@@ -152,6 +152,9 @@ class CreateDirectorUtterance(StrictModel):
     source_start: int = Field(ge=0)
     source_end: int = Field(gt=0)
     source_text: PreservedNonBlankText
+    preprocess_paragraph_id: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
     kind: UtteranceKind
     speak_enabled: bool
     role_id: UUID | None = None
@@ -173,6 +176,9 @@ class DirectorUtteranceRecord(StrictModel):
     source_start: int = Field(ge=0)
     source_end: int = Field(gt=0)
     source_text: PreservedNonBlankText
+    preprocess_paragraph_id: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
     working_text: PreservedNonBlankText
     kind: UtteranceKind
     speak_enabled: bool

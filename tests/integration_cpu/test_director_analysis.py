@@ -110,6 +110,20 @@ async def resources(tmp_path: Path):
         await database.close()
 
 
+async def confirmed_for_analysis(
+    store: DirectorStore,
+    project,
+):
+    project = await PreprocessingService(store, FakeDirector()).run(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+    return await store.confirm_preprocessing(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+
+
 @pytest.mark.asyncio
 async def test_analysis_and_translation_are_separate_and_use_no_gpu(resources: DirectorStore):
     source = "旁白。\n甲：你好。\n乙：再见。"
@@ -123,6 +137,7 @@ async def test_analysis_and_translation_are_separate_and_use_no_gpu(resources: D
     )
     director = CountingDirector()
     service = ScriptAnalysisService(resources, director, max_chunk_chars=10)
+    project = await confirmed_for_analysis(resources, project)
     project = await service.analyze(project.project_id, expected_revision=project.revision)
     assert project.status == "role_review"
     assert director.analysis_calls >= 2
@@ -164,6 +179,7 @@ async def test_successful_analysis_chunks_are_reused(resources: DirectorStore):
     )
     director = CountingDirector()
     service = ScriptAnalysisService(resources, director, max_chunk_chars=8)
+    project = await confirmed_for_analysis(resources, project)
     project = await service.analyze(project.project_id, expected_revision=project.revision)
     first_calls = director.analysis_calls
     project = await service.analyze(project.project_id, expected_revision=project.revision)
@@ -208,6 +224,7 @@ async def test_analysis_cache_requires_the_current_contract_metadata(
 
     director = CountingDirector()
     service = ScriptAnalysisService(resources, director, max_chunk_chars=100)
+    project = await confirmed_for_analysis(resources, project)
     await service.analyze(project.project_id, expected_revision=project.revision)
     assert director.analysis_calls == 1
 
@@ -245,6 +262,7 @@ async def test_translation_uses_edited_working_text_instead_of_source(
     )
     director = CapturingDirector()
     service = ScriptAnalysisService(resources, director)
+    project = await confirmed_for_analysis(resources, project)
     project = await service.analyze(project.project_id, expected_revision=project.revision)
     utterance = (await resources.list_utterances(project.project_id))[0]
     updated = await resources.patch_utterance(
@@ -289,6 +307,7 @@ async def test_classification_only_analysis_preserves_long_unicode_source(
         max_chunk_chars=2400,
     )
 
+    project = await confirmed_for_analysis(resources, project)
     project = await service.analyze(project.project_id, expected_revision=project.revision)
     stored = await resources.list_utterances(project.project_id)
 
@@ -356,11 +375,12 @@ async def test_translation_rejects_spoken_punctuation_before_llm_call(
     project = await resources.create_project(
         CreateDirectorProjectRequest(
             title="标点预检",
-            source_text="……",
+            source_text="甲。……",
             source_language="zh",
             target_language="ja",
         )
     )
+    project = await confirmed_for_analysis(resources, project)
     project = await resources.publish_analysis(
         project.project_id,
         expected_revision=project.revision,
@@ -370,6 +390,14 @@ async def test_translation_rejects_spoken_punctuation_before_llm_call(
                 ordinal=0,
                 source_start=0,
                 source_end=2,
+                source_text="甲。",
+                kind="narration",
+                speak_enabled=False,
+            ),
+            CreateDirectorUtterance(
+                ordinal=1,
+                source_start=2,
+                source_end=4,
                 source_text="……",
                 kind="narration",
                 speak_enabled=True,
@@ -405,6 +433,7 @@ async def test_translation_cancels_sibling_batches_after_first_failure(
             target_language="ja",
         )
     )
+    project = await confirmed_for_analysis(resources, project)
     project = await resources.publish_analysis(
         project.project_id,
         expected_revision=project.revision,

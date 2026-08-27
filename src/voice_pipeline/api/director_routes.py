@@ -75,17 +75,22 @@ def build_director_router(plane: Any) -> APIRouter:
         project_id: UUID,
         request: ExpectedProjectRevision,
     ) -> dict[str, str]:
-        await _require_project_revision(plane, project_id, request.expected_revision)
-        _spawn(
+        if await _should_start_command(
             plane,
-            _preprocessing(plane).run(
-                project_id,
-                expected_revision=request.expected_revision,
-            ),
-            project_id=project_id,
+            project_id,
+            request.expected_revision,
             operation="preprocessing",
-            expected_status="preprocessing",
-        )
+        ):
+            _spawn(
+                plane,
+                _preprocessing(plane).run(
+                    project_id,
+                    expected_revision=request.expected_revision,
+                ),
+                project_id=project_id,
+                operation="preprocessing",
+                expected_status="preprocessing",
+            )
         return {
             "project_id": str(project_id),
             "status": "accepted",
@@ -197,25 +202,30 @@ def build_director_router(plane: Any) -> APIRouter:
         project_id: UUID,
         request: ExpectedProjectRevision,
     ) -> dict[str, str]:
-        try:
-            confirmed = await _store(plane).confirm_preprocessing(
-                project_id,
-                expected_revision=request.expected_revision,
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="director project not found") from exc
-        except PipelineError as exc:
-            raise _pipeline_error(exc) from exc
-        _spawn(
-            plane,
-            _analysis(plane).analyze(
-                project_id,
-                expected_revision=confirmed.revision,
-            ),
-            project_id=project_id,
-            operation="analysis",
-            expected_status="analyzing",
-        )
+        async with _command_submission_lock(plane, project_id, "analysis"):
+            if not _command_running(plane, project_id, "analysis"):
+                try:
+                    confirmed = await _store(plane).confirm_preprocessing(
+                        project_id,
+                        expected_revision=request.expected_revision,
+                    )
+                except KeyError as exc:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="director project not found",
+                    ) from exc
+                except PipelineError as exc:
+                    raise _pipeline_error(exc) from exc
+                _spawn(
+                    plane,
+                    _analysis(plane).analyze(
+                        project_id,
+                        expected_revision=confirmed.revision,
+                    ),
+                    project_id=project_id,
+                    operation="analysis",
+                    expected_status="analyzing",
+                )
         return {
             "project_id": str(project_id),
             "status": "accepted",
@@ -224,14 +234,22 @@ def build_director_router(plane: Any) -> APIRouter:
 
     @router.post("/api/v1/director-projects/{project_id}/analyze", status_code=202)
     async def analyze(project_id: UUID, request: ExpectedProjectRevision) -> dict[str, str]:
-        await _require_project_revision(plane, project_id, request.expected_revision)
-        _spawn(
+        if await _should_start_command(
             plane,
-            _analysis(plane).analyze(project_id, expected_revision=request.expected_revision),
-            project_id=project_id,
+            project_id,
+            request.expected_revision,
             operation="analysis",
-            expected_status="analyzing",
-        )
+            require_confirmed_preprocessing=True,
+        ):
+            _spawn(
+                plane,
+                _analysis(plane).analyze(
+                    project_id, expected_revision=request.expected_revision
+                ),
+                project_id=project_id,
+                operation="analysis",
+                expected_status="analyzing",
+            )
         return {
             "project_id": str(project_id),
             "status": "accepted",
@@ -398,14 +416,21 @@ def build_director_router(plane: Any) -> APIRouter:
 
     @router.post("/api/v1/director-projects/{project_id}/translate", status_code=202)
     async def translate(project_id: UUID, request: ExpectedProjectRevision) -> dict[str, str]:
-        await _require_project_revision(plane, project_id, request.expected_revision)
-        _spawn(
+        if await _should_start_command(
             plane,
-            _analysis(plane).translate(project_id, expected_revision=request.expected_revision),
-            project_id=project_id,
+            project_id,
+            request.expected_revision,
             operation="translation",
-            expected_status="translating",
-        )
+        ):
+            _spawn(
+                plane,
+                _analysis(plane).translate(
+                    project_id, expected_revision=request.expected_revision
+                ),
+                project_id=project_id,
+                operation="translation",
+                expected_status="translating",
+            )
         return {
             "project_id": str(project_id),
             "status": "accepted",
@@ -620,6 +645,59 @@ async def _require_project_revision(plane: Any, project_id: UUID, revision: int)
                 retryable=False,
             )
         )
+
+
+def _command_running(plane: Any, project_id: UUID, operation: str) -> bool:
+    command = plane.director_commands.get((project_id, operation))
+    return command is not None and not command.done()
+
+
+def _command_submission_lock(
+    plane: Any,
+    project_id: UUID,
+    operation: str,
+) -> asyncio.Lock:
+    locks = getattr(plane, "director_submission_locks", None)
+    if locks is None:
+        locks = {}
+        plane.director_submission_locks = locks
+    return cast(dict[tuple[UUID, str], asyncio.Lock], locks).setdefault(
+        (project_id, operation),
+        asyncio.Lock(),
+    )
+
+
+async def _should_start_command(
+    plane: Any,
+    project_id: UUID,
+    revision: int,
+    *,
+    operation: str,
+    require_confirmed_preprocessing: bool = False,
+) -> bool:
+    if _command_running(plane, project_id, operation):
+        return False
+    try:
+        await _require_project_revision(plane, project_id, revision)
+        if require_confirmed_preprocessing:
+            project = await _store(plane).get_project(project_id)
+            if project.preprocessed_text is None or project.status not in {
+                "analyzing",
+                "role_review",
+            }:
+                raise _pipeline_error(
+                    PipelineError(
+                        ErrorCode.DIRECTOR_REVIEW_REQUIRED,
+                        "director",
+                        "confirm the preprocessing draft before analysis",
+                        retryable=False,
+                    )
+                )
+    except HTTPException:
+        if _command_running(plane, project_id, operation):
+            return False
+        raise
+    return True
 
 
 def _spawn(

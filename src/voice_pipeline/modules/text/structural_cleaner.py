@@ -21,6 +21,7 @@ _TRAILING_BLANK_LINES = re.compile(r"(?:(?:\r\n|\r|\n)[ \t]*)+\Z")
 _PARAGRAPH_BREAK = re.compile(
     r"(?:\r\n|\r|\n)[ \t]*(?:(?:\r\n|\r|\n)[ \t]*)+"
 )
+_ELLIPSIS = re.compile(r"\.{3,}|…+")
 _QUOTE_OPENERS = {"“": "”", "「": "」", "『": "』"}
 
 
@@ -64,11 +65,13 @@ class _ParagraphDraft:
 class StructuralTextCleaner:
     """Lossless-at-source, deterministic structural cleanup for director mode."""
 
-    def preserve(self, source_text: str) -> StructuralDocument:
+    def preserve(self, source_text: str, *, namespace: str = "") -> StructuralDocument:
         """Build one review paragraph without changing any source character."""
         if not source_text.strip():
             raise ValueError("source_text must not be blank")
-        paragraph_id = _digest(f"skip:0:{len(source_text)}:{source_text}")
+        paragraph_id = _digest(
+            f"{namespace}:skip:0:{len(source_text)}:{source_text}"
+        )
         draft = _ParagraphDraft(
             paragraph_id=paragraph_id,
             ordinal=0,
@@ -93,7 +96,7 @@ class StructuralTextCleaner:
             paragraphs=(paragraph,),
         )
 
-    def clean(self, source_text: str) -> StructuralDocument:
+    def clean(self, source_text: str, *, namespace: str = "") -> StructuralDocument:
         if not source_text.strip():
             raise ValueError("source_text must not be blank")
         raw_paragraphs = _raw_paragraphs(source_text)
@@ -105,7 +108,7 @@ class StructuralTextCleaner:
             zip(raw_paragraphs, normalized, strict=True)
         ):
             paragraph_id = _digest(
-                f"{ordinal}:{source_start}:{source_end}:{raw}"
+                f"{namespace}:{ordinal}:{source_start}:{source_end}:{raw}"
             )
             drafts.append(
                 _ParagraphDraft(
@@ -164,7 +167,7 @@ def _raw_paragraphs(source_text: str) -> tuple[tuple[int, int, str], ...]:
 
 
 def _normalize_paragraph(value: str) -> str:
-    return _NEWLINE.sub("\n", value)
+    return _ELLIPSIS.sub("……", _NEWLINE.sub("\n", value))
 
 
 def _balanced_quote_spans(text: str) -> tuple[tuple[int, int], ...]:

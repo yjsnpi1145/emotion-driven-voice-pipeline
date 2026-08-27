@@ -46,12 +46,28 @@ def upgrade() -> None:
                 server_default="0",
             ),
         )
+    utterance_columns = {
+        column["name"]
+        for column in sa.inspect(bind).get_columns("director_utterances")
+    }
+    if "preprocess_paragraph_id" not in utterance_columns:
+        op.add_column(
+            "director_utterances",
+            sa.Column("preprocess_paragraph_id", sa.String(length=64), nullable=True),
+        )
     director_preprocess_paragraphs.create(bind, checkfirst=True)
 
 
 def downgrade() -> None:
     bind = op.get_bind()
     director_preprocess_paragraphs.drop(bind, checkfirst=True)
+    utterance_columns = {
+        column["name"]
+        for column in sa.inspect(bind).get_columns("director_utterances")
+    }
+    if "preprocess_paragraph_id" in utterance_columns:
+        with op.batch_alter_table("director_utterances") as batch:
+            batch.drop_column("preprocess_paragraph_id")
     columns = {
         column["name"] for column in sa.inspect(bind).get_columns("director_projects")
     }
