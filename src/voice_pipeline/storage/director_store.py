@@ -131,7 +131,13 @@ class DirectorStore:
             active_analysis = await project_count(("preprocessing", "analyzing", "translating"))
             active_generation = await project_count(("generating",))
             projects_needing_review = await project_count(
-                ("role_review", "translation_review", "voice_mapping", "generation_incomplete")
+                (
+                    "preprocess_review",
+                    "role_review",
+                    "translation_review",
+                    "voice_mapping",
+                    "generation_incomplete",
+                )
             )
             unavailable = await session.scalar(
                 select(func.count())
@@ -456,6 +462,32 @@ class DirectorStore:
             details={"target": target},
         )
 
+    async def apply_review_preprocess_result(
+        self,
+        project_id: UUID,
+        paragraph_id: str,
+        *,
+        expected_project_revision: int,
+        expected_revision: int,
+        preprocessed_text: str,
+        rewrite_state: Literal["succeeded", "fallback"],
+        validation: dict[str, object] | None = None,
+    ) -> DirectorPreprocessParagraphRecord:
+        return await self._edit_preprocess_paragraph(
+            project_id,
+            paragraph_id,
+            expected_project_revision=expected_project_revision,
+            expected_revision=expected_revision,
+            preprocessed_text=preprocessed_text,
+            rewrite_state=rewrite_state,
+            operation=(
+                "preprocessing_paragraph_fallback"
+                if rewrite_state == "fallback"
+                else "preprocessing_paragraph_rewritten"
+            ),
+            validation=validation,
+        )
+
     async def _edit_preprocess_paragraph(
         self,
         project_id: UUID,
@@ -467,6 +499,7 @@ class DirectorStore:
         rewrite_state: PreprocessRewriteState,
         operation: str,
         details: dict[str, object] | None = None,
+        validation: dict[str, object] | None = None,
     ) -> DirectorPreprocessParagraphRecord:
         if not preprocessed_text.strip():
             raise PipelineError(
@@ -492,7 +525,9 @@ class DirectorStore:
                     preprocessed_text=preprocessed_text,
                     preprocessed_sha256=_sha256(preprocessed_text),
                     rewrite_state=rewrite_state,
-                    validation_json=None,
+                    validation_json=(
+                        _json(validation) if validation is not None else None
+                    ),
                     revision=expected_revision + 1,
                     updated_at_utc=_now(),
                 )
@@ -625,7 +660,9 @@ class DirectorStore:
                             director_projects.c.status,
                         ).where(
                             director_projects.c.deleted_at_utc.is_(None),
-                            director_projects.c.status.in_(["analyzing", "translating"]),
+                            director_projects.c.status.in_(
+                                ["preprocessing", "analyzing", "translating"]
+                            ),
                             director_projects.c.last_error_json.is_(None),
                         )
                     )

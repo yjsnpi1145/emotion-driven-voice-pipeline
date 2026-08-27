@@ -61,6 +61,8 @@ class RewriteDirector:
             items[0] = items[0].model_copy(
                 update={"rewritten_text": items[0].rewritten_text.strip("“”")}
             )
+        elif self.failure == "raise":
+            raise RuntimeError("fixture rewrite failure")
         return PreprocessRewriteResult(items=tuple(items))
 
 
@@ -171,3 +173,29 @@ async def test_invalid_rewrite_falls_back_to_local_paragraph(
     assert paragraph.preprocessed_text == paragraph.structural_text
     assert paragraph.validation is not None
     assert paragraph.validation["code"] == "LLM_INVALID_RESPONSE"
+
+
+@pytest.mark.asyncio
+async def test_manual_rewrite_request_falls_back_when_llm_call_fails(
+    store: DirectorStore,
+) -> None:
+    project = await store.create_project(request(mode="rewrite"))
+    service = PreprocessingService(store, RewriteDirector())
+    project = await service.run(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+    paragraph = (await store.list_preprocess_paragraphs(project.project_id)).items[0]
+    service = PreprocessingService(store, RewriteDirector("raise"))
+
+    rewritten = await service.rewrite_paragraph(
+        project.project_id,
+        paragraph.paragraph_id,
+        expected_project_revision=project.revision,
+        expected_revision=paragraph.revision,
+    )
+
+    assert rewritten.rewrite_state == "fallback"
+    assert rewritten.preprocessed_text == rewritten.structural_text
+    assert rewritten.validation is not None
+    assert rewritten.validation["code"] == "LLM_UNAVAILABLE"

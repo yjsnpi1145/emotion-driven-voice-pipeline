@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -24,6 +24,7 @@ from voice_pipeline.core.config import AppSettings
 from voice_pipeline.core.desktop_service import DesktopService
 from voice_pipeline.core.director_analysis import ScriptAnalysisService
 from voice_pipeline.core.director_generation import DirectorGenerationService
+from voice_pipeline.core.director_preprocessing import PreprocessingService
 from voice_pipeline.core.dispatcher import DurableJobDispatcher
 from voice_pipeline.core.gpu_queue import SerialGpuQueue
 from voice_pipeline.core.job_executor import JobExecutor
@@ -99,10 +100,12 @@ class ControlPlane:
         self.desktop_service: DesktopService | None = None
         self.regeneration: SegmentRegenerationService | None = None
         self.director_store: DirectorStore | None = None
+        self.director_preprocessing: PreprocessingService | None = None
         self.director_analysis: ScriptAnalysisService | None = None
         self.director_generation: DirectorGenerationService | None = None
         self.role_presets: RolePresetService | None = None
         self.director_tasks: set[asyncio.Task[object]] = set()
+        self.director_commands: dict[tuple[UUID, str], asyncio.Task[object]] = {}
 
     def attach_durable_state(self, database: Database, model_profiles: ModelProfileService) -> None:
         self.database = database
@@ -262,6 +265,10 @@ def create_app(
         )
         await plane.llm_client.start()
         plane.director_store = DirectorStore(database)
+        plane.director_preprocessing = PreprocessingService(
+            plane.director_store,
+            plane.llm_client,
+        )
         plane.director_analysis = ScriptAnalysisService(
             plane.director_store,
             plane.llm_client,

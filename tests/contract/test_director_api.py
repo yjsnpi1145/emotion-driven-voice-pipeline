@@ -8,6 +8,7 @@ import pytest
 from tests.integration_cpu.conftest import write_tone
 from tests.integration_cpu.test_chapter_pipeline import _import_profile
 from voice_pipeline.api.app import create_app
+from voice_pipeline.core.director_analysis import ScriptAnalysisService
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 
 
@@ -23,6 +24,291 @@ class _FailingAnalysis:
             "director analysis fixture failed",
             retryable=True,
         )
+
+
+class _BlockingPreprocessing:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.release = asyncio.Event()
+
+    async def run(self, project_id, *, expected_revision):
+        del project_id, expected_revision
+        self.calls += 1
+        await self.release.wait()
+
+
+class _BlockingAnalysis:
+    def __init__(self) -> None:
+        self.analysis_calls = 0
+        self.translation_calls = 0
+        self.release = asyncio.Event()
+
+    async def analyze(self, project_id, *, expected_revision):
+        del project_id, expected_revision
+        self.analysis_calls += 1
+        await self.release.wait()
+
+    async def translate(self, project_id, *, expected_revision):
+        del project_id, expected_revision
+        self.translation_calls += 1
+        await self.release.wait()
+
+
+async def _wait_project_status(client, project_id: str, expected: str):
+    project = None
+    for _ in range(200):
+        project = (await client.get(f"/api/v1/director-projects/{project_id}")).json()
+        if project["status"] == expected:
+            return project
+        await asyncio.sleep(0.01)
+    assert project is not None
+    return project
+
+
+@pytest.mark.asyncio
+async def test_director_preprocessing_api_supports_review_edit_restore_and_confirm(
+    fake_settings,
+) -> None:
+    app = create_app(fake_settings)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            project = (
+                await client.post(
+                    "/api/v1/director-projects",
+                    json={
+                        "title": "预处理 API",
+                        "source_text": "“第一句。”她低头说，“第二句。”\n\n旁白。",
+                        "source_language": "zh",
+                        "target_language": "ja",
+                        "preprocessing_mode": "rewrite",
+                    },
+                )
+            ).json()
+            started = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}/preprocess",
+                json={"expected_revision": project["revision"]},
+            )
+            assert started.status_code == 202
+            project = await _wait_project_status(
+                client,
+                project["project_id"],
+                "preprocess_review",
+            )
+            health = await client.get("/api/v1/health")
+            assert health.status_code == 200
+            assert health.json()["director"]["projects_needing_review"] == 1
+            page_response = await client.get(
+                f"/api/v1/director-projects/{project['project_id']}/preprocess",
+                params={"offset": 0, "limit": 1},
+            )
+            assert page_response.status_code == 200
+            page = page_response.json()
+            assert page["total_count"] == 2
+            assert len(page["items"]) == 1
+            assert page["next_offset"] == 1
+            paragraph = page["items"][0]
+
+            blank = await client.patch(
+                f"/api/v1/director-projects/{project['project_id']}"
+                f"/preprocess-paragraphs/{paragraph['paragraph_id']}",
+                json={
+                    "expected_project_revision": project["revision"],
+                    "expected_revision": paragraph["revision"],
+                    "preprocessed_text": " \n",
+                },
+            )
+            assert blank.status_code == 422
+            edited = await client.patch(
+                f"/api/v1/director-projects/{project['project_id']}"
+                f"/preprocess-paragraphs/{paragraph['paragraph_id']}",
+                json={
+                    "expected_project_revision": project["revision"],
+                    "expected_revision": paragraph["revision"],
+                    "preprocessed_text": "用户校对后的句子。",
+                },
+            )
+            assert edited.status_code == 200, edited.text
+            paragraph = edited.json()
+            project = (
+                await client.get(
+                    f"/api/v1/director-projects/{project['project_id']}"
+                )
+            ).json()
+            stale = await client.patch(
+                f"/api/v1/director-projects/{project['project_id']}"
+                f"/preprocess-paragraphs/{paragraph['paragraph_id']}",
+                json={
+                    "expected_project_revision": 0,
+                    "expected_revision": paragraph["revision"],
+                    "preprocessed_text": "过期修改。",
+                },
+            )
+            assert stale.status_code == 409
+            restored = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}"
+                f"/preprocess-paragraphs/{paragraph['paragraph_id']}/restore",
+                json={
+                    "expected_project_revision": project["revision"],
+                    "expected_revision": paragraph["revision"],
+                    "target": "structural",
+                },
+            )
+            assert restored.status_code == 200, restored.text
+            paragraph = restored.json()
+            project = (
+                await client.get(
+                    f"/api/v1/director-projects/{project['project_id']}"
+                )
+            ).json()
+            rewritten = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}"
+                f"/preprocess-paragraphs/{paragraph['paragraph_id']}/rewrite",
+                json={
+                    "expected_project_revision": project["revision"],
+                    "expected_revision": paragraph["revision"],
+                },
+            )
+            assert rewritten.status_code == 200, rewritten.text
+            project = (
+                await client.get(
+                    f"/api/v1/director-projects/{project['project_id']}"
+                )
+            ).json()
+            confirmed = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}"
+                "/confirm-preprocessing",
+                json={"expected_revision": project["revision"]},
+            )
+            assert confirmed.status_code == 202, confirmed.text
+            project = await _wait_project_status(
+                client,
+                project["project_id"],
+                "role_review",
+            )
+            assert project["source_text"].startswith("“第一句。”")
+
+
+@pytest.mark.asyncio
+async def test_director_preprocess_command_is_single_flight(fake_settings) -> None:
+    app = create_app(fake_settings)
+    async with app.router.lifespan_context(app):
+        blocking = _BlockingPreprocessing()
+        app.state.plane.director_preprocessing = blocking
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            project = (
+                await client.post(
+                    "/api/v1/director-projects",
+                    json={
+                        "title": "单飞",
+                        "source_text": "旁白。",
+                        "source_language": "zh",
+                        "target_language": "ja",
+                    },
+                )
+            ).json()
+            path = f"/api/v1/director-projects/{project['project_id']}/preprocess"
+            first, second = await asyncio.gather(
+                client.post(path, json={"expected_revision": project["revision"]}),
+                client.post(path, json={"expected_revision": project["revision"]}),
+            )
+            await asyncio.sleep(0)
+            assert first.status_code == 202
+            assert second.status_code == 202
+            assert blocking.calls == 1
+            blocking.release.set()
+
+
+@pytest.mark.asyncio
+async def test_director_analysis_and_translation_commands_are_single_flight(
+    fake_settings,
+) -> None:
+    app = create_app(fake_settings)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            analysis_project = (
+                await client.post(
+                    "/api/v1/director-projects",
+                    json={
+                        "title": "分析单飞",
+                        "source_text": "旁白。",
+                        "source_language": "zh",
+                        "target_language": "ja",
+                    },
+                )
+            ).json()
+            blocking = _BlockingAnalysis()
+            app.state.plane.director_analysis = blocking
+            analyze_path = (
+                f"/api/v1/director-projects/{analysis_project['project_id']}/analyze"
+            )
+            first, second = await asyncio.gather(
+                client.post(
+                    analyze_path,
+                    json={"expected_revision": analysis_project["revision"]},
+                ),
+                client.post(
+                    analyze_path,
+                    json={"expected_revision": analysis_project["revision"]},
+                ),
+            )
+            await asyncio.sleep(0)
+            assert (first.status_code, second.status_code) == (202, 202)
+            assert blocking.analysis_calls == 1
+            blocking.release.set()
+            await asyncio.sleep(0)
+
+            app.state.plane.director_analysis = ScriptAnalysisService(
+                app.state.plane.director_store,
+                app.state.plane.llm_client,
+            )
+            translation_project = (
+                await client.post(
+                    "/api/v1/director-projects",
+                    json={
+                        "title": "翻译单飞",
+                        "source_text": "旁白。",
+                        "source_language": "zh",
+                        "target_language": "ja",
+                    },
+                )
+            ).json()
+            await client.post(
+                f"/api/v1/director-projects/{translation_project['project_id']}/analyze",
+                json={"expected_revision": translation_project["revision"]},
+            )
+            translation_project = await _wait_project_status(
+                client,
+                translation_project["project_id"],
+                "role_review",
+            )
+            blocking = _BlockingAnalysis()
+            app.state.plane.director_analysis = blocking
+            translate_path = (
+                f"/api/v1/director-projects/{translation_project['project_id']}/translate"
+            )
+            first, second = await asyncio.gather(
+                client.post(
+                    translate_path,
+                    json={"expected_revision": translation_project["revision"]},
+                ),
+                client.post(
+                    translate_path,
+                    json={"expected_revision": translation_project["revision"]},
+                ),
+            )
+            await asyncio.sleep(0)
+            assert (first.status_code, second.status_code) == (202, 202)
+            assert blocking.translation_calls == 1
+            blocking.release.set()
 
 
 @pytest.mark.asyncio

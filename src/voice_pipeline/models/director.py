@@ -118,6 +118,17 @@ class DirectorPreprocessParagraphPatch(StrictModel):
     preprocessed_text: PreservedNonBlankText
 
 
+class RestoreDirectorPreprocessParagraphRequest(StrictModel):
+    expected_project_revision: int = Field(ge=0)
+    expected_revision: int = Field(ge=0)
+    target: Literal["source", "structural"]
+
+
+class RewriteDirectorPreprocessParagraphRequest(StrictModel):
+    expected_project_revision: int = Field(ge=0)
+    expected_revision: int = Field(ge=0)
+
+
 class CreateDirectorRole(StrictModel):
     canonical_name: NonBlankText
     kind: DirectorRoleKind

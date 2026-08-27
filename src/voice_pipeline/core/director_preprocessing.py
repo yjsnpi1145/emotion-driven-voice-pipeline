@@ -9,7 +9,10 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from voice_pipeline.core.errors import ErrorCode, PipelineError
-from voice_pipeline.models.director import DirectorProjectRecord
+from voice_pipeline.models.director import (
+    DirectorPreprocessParagraphRecord,
+    DirectorProjectRecord,
+)
 from voice_pipeline.models.director_llm import (
     PreprocessRewriteResult,
     PreprocessRewriteUnit,
@@ -80,6 +83,99 @@ class PreprocessingService:
             expected_revision=project.revision,
         )
 
+    async def rewrite_paragraph(
+        self,
+        project_id: UUID,
+        paragraph_id: str,
+        *,
+        expected_project_revision: int,
+        expected_revision: int,
+    ) -> DirectorPreprocessParagraphRecord:
+        project = await self._store.get_project(project_id)
+        if project.status != "preprocess_review":
+            raise PipelineError(
+                ErrorCode.DIRECTOR_STATE_CONFLICT,
+                "director",
+                f"cannot rewrite preprocessing paragraph while project is {project.status}",
+                retryable=False,
+            )
+        if project.preprocessing_mode != "rewrite":
+            raise PipelineError(
+                ErrorCode.DIRECTOR_STATE_CONFLICT,
+                "director",
+                "paragraph rewrite is available only in rewrite preprocessing mode",
+                retryable=False,
+            )
+        paragraph = await self._store.get_preprocess_paragraph(
+            project_id,
+            paragraph_id,
+        )
+        document = self._cleaner.clean(paragraph.structural_text)
+        if len(document.paragraphs) != 1:
+            raise PipelineError(
+                ErrorCode.INVALID_INPUT,
+                "director",
+                "stored preprocessing paragraph has an invalid structure",
+                retryable=False,
+            )
+        structural = document.paragraphs[0]
+        units = tuple(
+            PreprocessRewriteUnit(
+                unit_id=unit.unit_id,
+                text=unit.text,
+                context=unit.context,
+            )
+            for unit in structural.units
+        )
+        try:
+            result = await self._director.rewrite_preprocess_paragraph(
+                paragraph_id=paragraph_id,
+                units=units,
+            )
+            rewritten = validate_preprocess_rewrite(structural, result)
+        except asyncio.CancelledError:
+            raise
+        except PipelineError as exc:
+            return await self._store.apply_review_preprocess_result(
+                project_id,
+                paragraph_id,
+                expected_project_revision=expected_project_revision,
+                expected_revision=expected_revision,
+                preprocessed_text=paragraph.structural_text,
+                rewrite_state="fallback",
+                validation=exc.as_dict(),
+            )
+        except ValidationError as exc:
+            error = _schema_error(paragraph_id, exc)
+            return await self._store.apply_review_preprocess_result(
+                project_id,
+                paragraph_id,
+                expected_project_revision=expected_project_revision,
+                expected_revision=expected_revision,
+                preprocessed_text=paragraph.structural_text,
+                rewrite_state="fallback",
+                validation=error.as_dict(),
+            )
+        except Exception as exc:
+            error = _request_error(paragraph_id, exc)
+            return await self._store.apply_review_preprocess_result(
+                project_id,
+                paragraph_id,
+                expected_project_revision=expected_project_revision,
+                expected_revision=expected_revision,
+                preprocessed_text=paragraph.structural_text,
+                rewrite_state="fallback",
+                validation=error.as_dict(),
+            )
+        return await self._store.apply_review_preprocess_result(
+            project_id,
+            paragraph_id,
+            expected_project_revision=expected_project_revision,
+            expected_revision=expected_revision,
+            preprocessed_text=rewritten,
+            rewrite_state="succeeded",
+        )
+
     async def _rewrite_staged_paragraph(
         self,
         project: DirectorProjectRecord,
@@ -115,35 +211,11 @@ class PreprocessingService:
             await self._fallback(project, paragraph, exc)
             return
         except ValidationError as exc:
-            error = PipelineError(
-                ErrorCode.LLM_INVALID_RESPONSE,
-                "llm",
-                "LLM preprocessing JSON does not match the required schema",
-                retryable=False,
-                details={
-                    "paragraph_id": paragraph.paragraph_id,
-                    "schema_errors": [
-                        {
-                            "path": ".".join(str(part) for part in item["loc"]),
-                            "type": item["type"],
-                        }
-                        for item in exc.errors()[:20]
-                    ],
-                },
-            )
+            error = _schema_error(paragraph.paragraph_id, exc)
             await self._fallback(project, paragraph, error)
             return
         except Exception as exc:
-            error = PipelineError(
-                ErrorCode.LLM_UNAVAILABLE,
-                "llm",
-                "LLM preprocessing request failed",
-                retryable=True,
-                details={
-                    "paragraph_id": paragraph.paragraph_id,
-                    "error_type": type(exc).__name__,
-                },
-            )
+            error = _request_error(paragraph.paragraph_id, exc)
             await self._fallback(project, paragraph, error)
             return
         await self._store.save_preprocess_result(
@@ -170,6 +242,38 @@ class PreprocessingService:
             rewrite_state="fallback",
             validation=error.as_dict(),
         )
+
+
+def _schema_error(paragraph_id: str, error: ValidationError) -> PipelineError:
+    return PipelineError(
+        ErrorCode.LLM_INVALID_RESPONSE,
+        "llm",
+        "LLM preprocessing JSON does not match the required schema",
+        retryable=False,
+        details={
+            "paragraph_id": paragraph_id,
+            "schema_errors": [
+                {
+                    "path": ".".join(str(part) for part in item["loc"]),
+                    "type": item["type"],
+                }
+                for item in error.errors()[:20]
+            ],
+        },
+    )
+
+
+def _request_error(paragraph_id: str, error: Exception) -> PipelineError:
+    return PipelineError(
+        ErrorCode.LLM_UNAVAILABLE,
+        "llm",
+        "LLM preprocessing request failed",
+        retryable=True,
+        details={
+            "paragraph_id": paragraph_id,
+            "error_type": type(error).__name__,
+        },
+    )
 
 
 def validate_preprocess_rewrite(
