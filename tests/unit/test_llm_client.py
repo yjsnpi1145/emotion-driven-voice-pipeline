@@ -211,7 +211,15 @@ async def test_script_analysis_requests_classifications_and_materializes_local_s
     system_prompt = request_body["messages"][0]["content"]
     user_payload = json.loads(request_body["messages"][1]["content"])
     assert set(user_payload) == {"chunk_id", "units"}
-    assert all(set(unit) == {"unit_id", "source_text"} for unit in user_payload["units"])
+    assert all(
+        set(unit) == {"unit_id", "source_text", "context"}
+        for unit in user_payload["units"]
+    )
+    assert [unit["context"] for unit in user_payload["units"]] == [
+        unit.context for unit in units
+    ]
+    assert "quoted_dialogue" in system_prompt
+    assert "quote_bridge_narration" in system_prompt
     assert "source_start" not in system_prompt
     assert "source_end" not in system_prompt
     assert [item.source_text for item in result.utterances] == [unit.source_text for unit in units]

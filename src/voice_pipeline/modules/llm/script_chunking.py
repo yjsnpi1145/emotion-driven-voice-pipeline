@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from typing import Literal
 
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.models.director_llm import (
@@ -8,11 +9,14 @@ from voice_pipeline.models.director_llm import (
     ChunkAnalysisResult,
     ScriptAnalysisUnit,
     ScriptChunk,
+    UnitAnalysis,
     UnitAnalysisResult,
 )
 
 _SAFE_BOUNDARIES = frozenset("。！？.!?；;\n")
 _DEFAULT_UNIT_CHARS = 160
+_QUOTE_CLOSERS = {"“": "”", "「": "」", "『": "』"}
+_AnalysisContext = Literal["general", "quoted_dialogue", "quote_bridge_narration"]
 
 
 def split_script(source_text: str, max_chars: int = 2400) -> tuple[ScriptChunk, ...]:
@@ -55,16 +59,99 @@ def build_analysis_units(
     if max_unit_chars < 8:
         raise ValueError("max_unit_chars must be at least 8")
     text = chunk.source_text
+    ranges: list[tuple[int, int, _AnalysisContext]] = []
+    for local_start, local_end, context in _analysis_context_ranges(text):
+        for start, end in _segment_analysis_range(
+            text,
+            local_start,
+            local_end,
+            max_unit_chars=max_unit_chars,
+            prefer_safe_boundaries=context != "quoted_dialogue",
+        ):
+            ranges.append((start, end, context))
+
+    return tuple(
+        ScriptAnalysisUnit(
+            unit_id=f"{chunk.chunk_id}:u{ordinal:04d}",
+            source_start=chunk.source_start + local_start,
+            source_end=chunk.source_start + local_end,
+            source_text=text[local_start:local_end],
+            context=context,
+        )
+        for ordinal, (local_start, local_end, context) in enumerate(ranges)
+    )
+
+
+def _analysis_context_ranges(text: str) -> tuple[tuple[int, int, _AnalysisContext], ...]:
+    quoted = _balanced_quote_spans(text)
+    if not quoted:
+        return ((0, len(text), "general"),)
+
+    ranges: list[tuple[int, int, _AnalysisContext]] = []
+    cursor = 0
+    for index, (start, end) in enumerate(quoted):
+        if cursor < start:
+            gap = text[cursor:start]
+            is_bridge = (
+                index > 0 and bool(gap.strip()) and "\n" not in gap and "\r" not in gap
+            )
+            ranges.append(
+                (cursor, start, "quote_bridge_narration" if is_bridge else "general")
+            )
+        ranges.append((start, end, "quoted_dialogue"))
+        cursor = end
+    if cursor < len(text):
+        ranges.append((cursor, len(text), "general"))
+    return tuple(ranges)
+
+
+def _balanced_quote_spans(text: str) -> tuple[tuple[int, int], ...]:
+    stack: list[tuple[str, int]] = []
+    spans: list[tuple[int, int]] = []
+    for index, character in enumerate(text):
+        if character == '"':
+            if stack and stack[-1][0] == '"':
+                _, start = stack.pop()
+                if not stack:
+                    spans.append((start, index + 1))
+            else:
+                stack.append(('"', index))
+            continue
+        closer = _QUOTE_CLOSERS.get(character)
+        if closer is not None:
+            stack.append((closer, index))
+            continue
+        if stack and character == stack[-1][0]:
+            _, start = stack.pop()
+            if not stack:
+                spans.append((start, index + 1))
+    return tuple(spans)
+
+
+def _segment_analysis_range(
+    text: str,
+    range_start: int,
+    range_end: int,
+    *,
+    max_unit_chars: int,
+    prefer_safe_boundaries: bool,
+) -> tuple[tuple[int, int], ...]:
+    if range_start >= range_end:
+        return ()
     raw: list[tuple[int, int]] = []
-    start = 0
-    for index, character in enumerate(text, start=1):
-        if character in _SAFE_BOUNDARIES or index - start >= max_unit_chars:
+    start = range_start
+    for index in range(range_start + 1, range_end + 1):
+        character = text[index - 1]
+        if (
+            (prefer_safe_boundaries and character in _SAFE_BOUNDARIES)
+            or index - start >= max_unit_chars
+        ):
             raw.append((start, index))
             start = index
-    if start < len(text):
-        raw.append((start, len(text)))
+    if start < range_end:
+        raw.append((start, range_end))
     if not raw:
-        raw.append((0, len(text)))
+        raw.append((range_start, range_end))
 
     merged: list[tuple[int, int]] = []
     pending_blank_start: int | None = None
@@ -79,23 +166,14 @@ def build_analysis_units(
         merged.append((actual_start, end))
         pending_blank_start = None
     if pending_blank_start is not None:
-        if merged and len(text) - merged[-1][0] <= max_unit_chars:
+        if merged and range_end - merged[-1][0] <= max_unit_chars:
             previous_start, _ = merged[-1]
-            merged[-1] = (previous_start, len(text))
+            merged[-1] = (previous_start, range_end)
         else:
-            merged.append((pending_blank_start, len(text)))
+            merged.append((pending_blank_start, range_end))
     if not merged:
-        merged.append((0, len(text)))
-
-    return tuple(
-        ScriptAnalysisUnit(
-            unit_id=f"{chunk.chunk_id}:u{ordinal:04d}",
-            source_start=chunk.source_start + local_start,
-            source_end=chunk.source_start + local_end,
-            source_text=text[local_start:local_end],
-        )
-        for ordinal, (local_start, local_end) in enumerate(merged)
-    )
+        merged.append((range_start, range_end))
+    return tuple(merged)
 
 
 def materialize_unit_analysis(
@@ -108,23 +186,58 @@ def materialize_unit_analysis(
     actual_ids = tuple(item.unit_id for item in result.units)
     if actual_ids != expected_ids:
         raise _invalid("analysis unit IDs must match the supplied units exactly and in order")
+    constrained = tuple(
+        _constrain_unit_annotation(unit, annotation)
+        for unit, annotation in zip(units, result.units, strict=True)
+    )
     materialized = ChunkAnalysisResult(
         utterances=tuple(
             AnalyzedUtterance(
                 source_start=unit.source_start,
                 source_end=unit.source_end,
                 source_text=unit.source_text,
-                kind=annotation.kind,
-                temporary_role_name=annotation.temporary_role_name,
-                role_aliases=annotation.role_aliases,
+                kind=kind,
+                temporary_role_name=temporary_role_name,
+                role_aliases=role_aliases,
                 role_confidence=annotation.role_confidence,
-                speak_enabled=annotation.speak_enabled,
+                speak_enabled=speak_enabled,
             )
-            for unit, annotation in zip(units, result.units, strict=True)
+            for unit, annotation, (
+                kind,
+                temporary_role_name,
+                role_aliases,
+                speak_enabled,
+            ) in zip(units, result.units, constrained, strict=True)
         )
     )
     validate_chunk_analysis(chunk, materialized)
     return materialized
+
+
+def _constrain_unit_annotation(
+    unit: ScriptAnalysisUnit,
+    annotation: UnitAnalysis,
+) -> tuple[
+    Literal["dialogue", "narration", "stage_direction"],
+    str | None,
+    tuple[str, ...],
+    bool,
+]:
+    if unit.context == "quoted_dialogue":
+        return (
+            "dialogue",
+            annotation.temporary_role_name,
+            annotation.role_aliases,
+            True,
+        )
+    if unit.context == "quote_bridge_narration":
+        return ("narration", None, (), True)
+    return (
+        annotation.kind,
+        annotation.temporary_role_name,
+        annotation.role_aliases,
+        annotation.speak_enabled,
+    )
 
 
 def _validate_analysis_units(chunk: ScriptChunk, units: tuple[ScriptAnalysisUnit, ...]) -> None:
