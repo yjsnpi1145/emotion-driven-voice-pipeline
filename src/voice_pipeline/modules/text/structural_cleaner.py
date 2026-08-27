@@ -64,6 +64,35 @@ class _ParagraphDraft:
 class StructuralTextCleaner:
     """Lossless-at-source, deterministic structural cleanup for director mode."""
 
+    def preserve(self, source_text: str) -> StructuralDocument:
+        """Build one review paragraph without changing any source character."""
+        if not source_text.strip():
+            raise ValueError("source_text must not be blank")
+        paragraph_id = _digest(f"skip:0:{len(source_text)}:{source_text}")
+        draft = _ParagraphDraft(
+            paragraph_id=paragraph_id,
+            ordinal=0,
+            source_start=0,
+            source_end=len(source_text),
+            source_text=source_text,
+            structural_text=source_text,
+            document_start=0,
+            document_end=len(source_text),
+        )
+        paragraph = StructuralParagraph(
+            paragraph_id=paragraph_id,
+            ordinal=0,
+            source_start=0,
+            source_end=len(source_text),
+            source_text=source_text,
+            structural_text=source_text,
+            units=_paragraph_units(draft, _balanced_quote_spans(source_text)),
+        )
+        return StructuralDocument(
+            structural_text=source_text,
+            paragraphs=(paragraph,),
+        )
+
     def clean(self, source_text: str) -> StructuralDocument:
         if not source_text.strip():
             raise ValueError("source_text must not be blank")
@@ -257,4 +286,3 @@ def _merge_formatting(
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
-

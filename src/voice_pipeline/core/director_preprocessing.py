@@ -62,7 +62,11 @@ class PreprocessingService:
             project_id,
             expected_revision=expected_revision,
         )
-        document = self._cleaner.clean(project.source_text)
+        document = (
+            self._cleaner.preserve(project.source_text)
+            if project.preprocessing_mode == "skip"
+            else self._cleaner.clean(project.source_text)
+        )
         await self._store.stage_preprocess_document(
             project_id,
             expected_revision=project.revision,

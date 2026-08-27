@@ -116,6 +116,25 @@ async def test_structural_mode_does_not_call_llm(store: DirectorStore) -> None:
 
 
 @pytest.mark.asyncio
+async def test_skip_mode_preserves_source_text_exactly(store: DirectorStore) -> None:
+    source = "\n  第一段。\r\n\r\n\r\n第二段。  \n"
+    project = await store.create_project(request(mode="skip", source=source))
+    director = RewriteDirector()
+
+    result = await PreprocessingService(store, director).run(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+
+    assert result.structural_text == source
+    assert result.preprocessed_text == source
+    assert director.calls == []
+    page = await store.list_preprocess_paragraphs(project.project_id)
+    assert len(page.items) == 1
+    assert page.items[0].preprocessed_text == source
+
+
+@pytest.mark.asyncio
 async def test_rewrite_mode_preserves_stable_unit_contract(store: DirectorStore) -> None:
     project = await store.create_project(request(mode="rewrite"))
     director = RewriteDirector()
