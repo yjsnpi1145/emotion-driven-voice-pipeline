@@ -12,6 +12,10 @@ export function buildAssignmentPatch(rows, selectedIds, roleId) {
   };
 }
 
+export function canEditRoleReview(status) {
+  return status === "role_review" || status === "translation_review";
+}
+
 export function contiguousMergePair(rows, selectedIds) {
   const selected = rows
     .filter((row) => selectedIds.has(row.utterance_id))

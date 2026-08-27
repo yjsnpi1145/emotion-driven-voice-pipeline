@@ -109,6 +109,24 @@ async def test_director_api_stages_analysis_review_and_translation(fake_settings
                     break
                 await asyncio.sleep(0.01)
             assert project["status"] == "translation_review"
+            translated_rows = (
+                await client.get(
+                    f"/api/v1/director-projects/{project['project_id']}/utterances"
+                )
+            ).json()
+            spoken_row = next(item for item in translated_rows if item["speak_enabled"])
+            recovered = await client.patch(
+                f"/api/v1/director-utterances/{spoken_row['utterance_id']}",
+                json={
+                    "expected_revision": spoken_row["revision"],
+                    "role_confirmed": True,
+                },
+            )
+            assert recovered.status_code == 200, recovered.text
+            project = (
+                await client.get(f"/api/v1/director-projects/{project['project_id']}")
+            ).json()
+            assert project["status"] == "role_review"
             health = await client.get("/api/v1/health")
             assert health.status_code == 200
             assert health.json()["director"] == {
