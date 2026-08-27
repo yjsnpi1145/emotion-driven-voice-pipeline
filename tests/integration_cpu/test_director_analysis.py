@@ -48,6 +48,19 @@ class ClassificationOnlyDirector(FakeDirector):
         return materialize_unit_analysis(chunk, units, annotations)
 
 
+class CapturingDirector(FakeDirector):
+    def __init__(self) -> None:
+        self.translation_inputs = []
+
+    async def translate_utterances(self, *, target_language, utterances, **kwargs):
+        self.translation_inputs.extend(utterances)
+        return await super().translate_utterances(
+            target_language=target_language,
+            utterances=utterances,
+            **kwargs,
+        )
+
+
 @pytest.fixture
 async def resources(tmp_path: Path):
     runtime = tmp_path / "runtime"
@@ -146,39 +159,84 @@ async def test_analysis_cache_requires_the_current_contract_metadata(
         ordinal=0,
         chunk=chunk,
         result=result,
-        llm_fingerprint="runtime-director-v1",
-        prompt_version="director-analysis-v1",
-        schema_version=1,
+        llm_fingerprint="runtime-director-unit-ids-v2",
+        prompt_version="director-analysis-units-v2",
+        schema_version=2,
     )
 
     assert (
         await resources.load_analysis_chunk(
             project.project_id,
             chunk,
-            llm_fingerprint="runtime-director-unit-ids-v2",
-            prompt_version="director-analysis-units-v2",
-            schema_version=2,
+            llm_fingerprint="runtime-director-quote-units-v3",
+            prompt_version="director-analysis-quote-units-v3",
+            schema_version=3,
         )
         is None
     )
+
+    director = CountingDirector()
+    service = ScriptAnalysisService(resources, director, max_chunk_chars=100)
+    await service.analyze(project.project_id, expected_revision=project.revision)
+    assert director.analysis_calls == 1
 
     await resources.save_analysis_chunk(
         project.project_id,
         ordinal=0,
         chunk=chunk,
         result=result,
-        llm_fingerprint="runtime-director-unit-ids-v2",
-        prompt_version="director-analysis-units-v2",
-        schema_version=2,
+        llm_fingerprint="runtime-director-quote-units-v3",
+        prompt_version="director-analysis-quote-units-v3",
+        schema_version=3,
     )
     cached = await resources.load_analysis_chunk(
         project.project_id,
         chunk,
-        llm_fingerprint="runtime-director-unit-ids-v2",
-        prompt_version="director-analysis-units-v2",
-        schema_version=2,
+        llm_fingerprint="runtime-director-quote-units-v3",
+        prompt_version="director-analysis-quote-units-v3",
+        schema_version=3,
     )
     assert cached == result
+
+
+@pytest.mark.asyncio
+async def test_translation_uses_edited_working_text_instead_of_source(
+    resources: DirectorStore,
+) -> None:
+    source = "甲：原始台词。"
+    project = await resources.create_project(
+        CreateDirectorProjectRequest(
+            title="可编辑台词",
+            source_text=source,
+            source_language="zh",
+            target_language="ja",
+        )
+    )
+    director = CapturingDirector()
+    service = ScriptAnalysisService(resources, director)
+    project = await service.analyze(project.project_id, expected_revision=project.revision)
+    utterance = (await resources.list_utterances(project.project_id))[0]
+    updated = await resources.patch_utterance(
+        utterance.utterance_id,
+        expected_revision=utterance.revision,
+        working_text="甲：修改后才进入翻译的台词。",
+    )
+    project = await resources.get_project(project.project_id)
+    project = await resources.confirm_role_review(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+
+    await service.translate(project.project_id, expected_revision=project.revision)
+    stored = (await resources.list_utterances(project.project_id))[0]
+
+    assert updated.source_text == source
+    assert [item.source_text for item in director.translation_inputs] == [
+        "甲：修改后才进入翻译的台词。"
+    ]
+    assert stored.source_text == source
+    assert stored.working_text == "甲：修改后才进入翻译的台词。"
+    assert stored.synthesis_text == "甲：修改后才进入翻译的台词。"
 
 
 @pytest.mark.asyncio
