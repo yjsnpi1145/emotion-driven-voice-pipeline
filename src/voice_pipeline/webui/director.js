@@ -3,6 +3,7 @@ import {
   contiguousMergePair,
   toggleSelection,
 } from "./director-dnd.js";
+import { syncLazyEditor } from "./director-lazy-editor.js";
 import {
   directorActivityView,
   directorOperationLabels,
@@ -561,6 +562,34 @@ function translatedEditor(utterance) {
   return form;
 }
 
+function lazyTranslatedEditor(utterance) {
+  const details = document.createElement("details");
+  details.className = "director-translation-details";
+  const summary = document.createElement("summary");
+  let editor = null;
+  const updateSummary = () => {
+    summary.textContent = directorState.dirtyTranslations.has(utterance.utterance_id)
+      ? "编辑译文与情绪 · 有未保存修改"
+      : "编辑译文与情绪";
+  };
+  details.append(summary);
+  details.ontoggle = () => {
+    editor = syncLazyEditor({
+      open: details.open,
+      mounted: editor,
+      mount: () => {
+        const mounted = translatedEditor(utterance);
+        details.append(mounted);
+        return mounted;
+      },
+      unmount: (mounted) => mounted.remove(),
+    });
+    updateSummary();
+  };
+  updateSummary();
+  return details;
+}
+
 function renderUtterances() {
   const root = $("#director-utterance-list");
   const fragment = document.createDocumentFragment();
@@ -707,7 +736,9 @@ function renderUtterances() {
     updateWorkingState();
     controls.append(select, speak, confirm, split);
     card.append(heading, workingEditor, controls, sourceDetails);
-    if (editableTranslation && utterance.speak_enabled) card.append(translatedEditor(utterance));
+    if (editableTranslation && utterance.speak_enabled) {
+      card.append(lazyTranslatedEditor(utterance));
+    }
     fragment.append(card);
   }
   if (!visible.length) {
