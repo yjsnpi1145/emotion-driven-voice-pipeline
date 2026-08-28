@@ -73,24 +73,29 @@ class DirectorGenerationService:
             item for item in await self._directors.list_utterances(project_id) if item.speak_enabled
         ]
         roles = {item.role_id: item for item in await self._directors.list_roles(project_id)}
-        if not utterances:
-            raise PipelineError(
-                ErrorCode.DIRECTOR_REVIEW_REQUIRED,
-                "director_generation",
-                "project has no spoken utterances",
-                retryable=False,
-            )
         preset_by_role: dict[UUID, RolePresetRecord] = {}
+        mapped_utterances: list[DirectorUtteranceRecord] = []
         for utterance in utterances:
             if utterance.role_id is None or utterance.role_id not in roles:
                 raise _preset_blocker("spoken utterance has no role", utterance)
             role = roles[utterance.role_id]
+            if not role.dubbing_enabled:
+                continue
             if role.preset_id is None:
                 raise _preset_blocker("spoken role has no role preset", utterance)
             preset = await self._presets.resolve(role.preset_id)
             if preset.status != "ready":
                 raise _preset_blocker("spoken role preset is unavailable", utterance)
             preset_by_role[role.role_id] = preset
+            mapped_utterances.append(utterance)
+        utterances = mapped_utterances
+        if not utterances:
+            raise PipelineError(
+                ErrorCode.DIRECTOR_REVIEW_REQUIRED,
+                "director_generation",
+                "project has no mapped spoken utterances",
+                retryable=False,
+            )
         adjusted_utterances: list[DirectorUtteranceRecord] = []
         for utterance in utterances:
             role_id = utterance.role_id

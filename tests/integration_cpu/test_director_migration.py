@@ -24,7 +24,7 @@ def storage_settings(tmp_path: Path) -> StorageSettings:
 async def test_director_migration_creates_all_tables(tmp_path: Path) -> None:
     database = await Database.open(storage_settings(tmp_path), instance_id=uuid4(), migrate=True)
     try:
-        assert await database.alembic_revision() == "0006_director_preprocessing"
+        assert await database.alembic_revision() == "0007_director_role_dubbing"
         async with database.read_session() as session:
             rows = await session.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
             names = {str(row[0]) for row in rows}
@@ -84,7 +84,7 @@ async def test_director_working_text_migration_backfills_existing_source(tmp_pat
 
     database = await Database.open(settings, instance_id=uuid4(), migrate=True)
     try:
-        assert await database.alembic_revision() == "0006_director_preprocessing"
+        assert await database.alembic_revision() == "0007_director_role_dubbing"
         async with database.read_session() as session:
             row = (
                 await session.execute(

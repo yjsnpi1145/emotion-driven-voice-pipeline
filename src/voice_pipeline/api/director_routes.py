@@ -460,6 +460,7 @@ def build_director_router(plane: Any) -> APIRouter:
                     role_id,
                     expected_revision=request.expected_revision,
                     preset_id=request.preset_id,
+                    dubbing_enabled=request.mapping_mode == "preset",
                 )
             )
         except KeyError as exc:

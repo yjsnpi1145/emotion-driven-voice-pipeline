@@ -7,12 +7,33 @@ import pytest
 from pydantic import ValidationError
 
 from voice_pipeline.models.director import (
+    BindRolePresetRequest,
     CreateDirectorProjectRequest,
     CreateRolePresetRequest,
     DirectorPreprocessParagraphPatch,
     DirectorUtterancePatch,
     DirectorUtteranceRecord,
 )
+
+
+def test_role_preset_mapping_supports_explicit_skip() -> None:
+    request = BindRolePresetRequest(
+        expected_revision=3,
+        mapping_mode="skip",
+        preset_id=None,
+    )
+
+    assert request.mapping_mode == "skip"
+    assert request.preset_id is None
+
+
+def test_role_preset_mapping_requires_consistent_mode_and_preset() -> None:
+    with pytest.raises(ValidationError):
+        BindRolePresetRequest(
+            expected_revision=3,
+            mapping_mode="preset",
+            preset_id=None,
+        )
 
 
 def valid_utterance() -> dict[str, object]:

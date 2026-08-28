@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import and_, delete, func, insert, or_, select, update
 from sqlalchemy.engine import CursorResult
 
 from voice_pipeline.core.errors import ErrorCode, PipelineError
@@ -1824,8 +1824,16 @@ class DirectorStore:
         role_id: UUID,
         *,
         expected_revision: int,
-        preset_id: UUID,
+        preset_id: UUID | None,
+        dubbing_enabled: bool = True,
     ) -> DirectorRoleRecord:
+        if dubbing_enabled != (preset_id is not None):
+            raise PipelineError(
+                ErrorCode.INVALID_INPUT,
+                "director",
+                "enabled role mapping requires a preset; skipped mapping forbids one",
+                retryable=False,
+            )
         async with self._database.write_session() as session:
             row = (
                 (
@@ -1840,25 +1848,30 @@ class DirectorStore:
                 raise KeyError(f"unknown director role: {role_id}")
             if int(row["revision"]) != expected_revision:
                 raise _version_conflict()
-            ready_preset = (
-                await session.execute(
-                    select(role_presets.c.preset_id)
-                    .where(role_presets.c.preset_id == str(preset_id))
-                    .where(role_presets.c.status == "ready")
-                )
-            ).scalar_one_or_none()
-            if ready_preset is None:
-                raise PipelineError(
-                    ErrorCode.ROLE_PRESET_UNAVAILABLE,
-                    "director",
-                    "selected role preset is not ready",
-                    retryable=False,
-                )
+            if dubbing_enabled:
+                ready_preset = (
+                    await session.execute(
+                        select(role_presets.c.preset_id)
+                        .where(role_presets.c.preset_id == str(preset_id))
+                        .where(role_presets.c.status == "ready")
+                    )
+                ).scalar_one_or_none()
+                if ready_preset is None:
+                    raise PipelineError(
+                        ErrorCode.ROLE_PRESET_UNAVAILABLE,
+                        "director",
+                        "selected role preset is not ready",
+                        retryable=False,
+                    )
             project_id = UUID(str(row["project_id"]))
             await session.execute(
                 update(director_roles)
                 .where(director_roles.c.role_id == str(role_id))
-                .values(preset_id=str(preset_id), revision=director_roles.c.revision + 1)
+                .values(
+                    preset_id=str(preset_id) if preset_id is not None else None,
+                    dubbing_enabled=int(dubbing_enabled),
+                    revision=director_roles.c.revision + 1,
+                )
             )
             missing = int(
                 (
@@ -1872,7 +1885,15 @@ class DirectorStore:
                         )
                         .where(director_utterances.c.project_id == str(project_id))
                         .where(director_utterances.c.speak_enabled == 1)
-                        .where(director_roles.c.preset_id.is_(None))
+                        .where(
+                            or_(
+                                director_roles.c.role_id.is_(None),
+                                and_(
+                                    director_roles.c.dubbing_enabled == 1,
+                                    director_roles.c.preset_id.is_(None),
+                                ),
+                            )
+                        )
                     )
                 ).scalar_one()
             )
@@ -1893,7 +1914,10 @@ class DirectorStore:
                 object_id=role_id,
                 before_revision=expected_revision,
                 after_revision=expected_revision + 1,
-                details={"preset_id": str(preset_id)},
+                details={
+                    "preset_id": str(preset_id) if preset_id is not None else None,
+                    "dubbing_enabled": dubbing_enabled,
+                },
             )
         roles = await self.list_roles(project_id)
         return next(item for item in roles if item.role_id == role_id)
@@ -2509,6 +2533,7 @@ def _role(row: dict[str, Any]) -> DirectorRoleRecord:
         aliases=tuple(json.loads(str(row["aliases_json"]))),
         confidence=float(row["confidence"]),
         preset_id=UUID(str(row["preset_id"])) if row.get("preset_id") else None,
+        dubbing_enabled=bool(row.get("dubbing_enabled", True)),
         revision=int(row["revision"]),
     )
 
