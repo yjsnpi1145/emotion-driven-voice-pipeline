@@ -1254,6 +1254,42 @@ function renderGenerationProgress() {
     const state = document.createElement("strong");
     state.textContent = item.status;
     row.append(label, state);
+    if (item.reference_mode === "pooled" && item.reference_pool) {
+      const emotionLabels = {
+        joy: "愉悦", anger: "愤怒", sadness: "悲伤", fear: "恐惧",
+        disgust: "厌恶", melancholy: "忧郁", surprise: "惊讶", calm: "平静",
+      };
+      const poolBadge = document.createElement("span");
+      poolBadge.className = "director-pool-badge";
+      const currentEmotion = emotionLabels[item.reference_emotion_bucket]
+        || item.reference_emotion_bucket;
+      if (item.reference_degraded_from) {
+        const originalEmotion = emotionLabels[item.reference_degraded_from]
+          || item.reference_degraded_from;
+        poolBadge.textContent = `已降级：${originalEmotion} → ${currentEmotion}`;
+      } else {
+        poolBadge.textContent = `情绪池：${currentEmotion}`;
+      }
+      const poolDetails = document.createElement("details");
+      poolDetails.className = "director-pool-details";
+      const poolSummary = document.createElement("summary");
+      poolSummary.textContent = `参考文本 · 版本 ${item.reference_pool.revision + 1}`;
+      const prompt = document.createElement("p");
+      prompt.textContent = item.reference_pool.prompt_text;
+      poolDetails.append(poolSummary, prompt);
+      const rebuild = document.createElement("button");
+      rebuild.type = "button";
+      rebuild.className = "director-inline-button";
+      rebuild.textContent = "重建池参考";
+      rebuild.onclick = () => busy(rebuild, "提交中…", async () => {
+        await api(`/api/v1/director-generations/${generation.generation_id}/utterances/${item.utterance_id}/rebuild-pooled-reference`, {
+          method: "POST",
+        });
+        notify("已安排重建池参考；原参考会保留到新版本成功");
+        await selectProject(directorState.project.project_id);
+      }).catch((error) => notify(error, true));
+      row.append(poolBadge, poolDetails, rebuild);
+    }
     if (item.error?.message) {
       const error = document.createElement("small");
       error.textContent = item.error.message;

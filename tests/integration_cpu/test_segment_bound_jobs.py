@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
 
 from tests.integration_cpu.conftest import write_tone
 from voice_pipeline.api.app import create_app
+from voice_pipeline.models.persistence import ReferenceInputOverride, SegmentReferenceJobRequest
 
 
 async def _wait(client: httpx.AsyncClient, job_id: str) -> dict[str, object]:
@@ -47,6 +49,44 @@ async def _create_segment(client: httpx.AsyncClient) -> str:
     )
     assert segment.status_code == 201
     return segment.json()["segment_id"]
+
+
+@pytest.mark.asyncio
+async def test_director_reference_override_freezes_pool_inputs_without_editing_segment(
+    fake_settings, tmp_path
+) -> None:
+    base_voice = tmp_path / "voice.wav"
+    write_tone(base_voice, seconds=5.0)
+    app = create_app(fake_settings)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            segment_id = UUID(await _create_segment(client))
+            before = await app.state.plane.segment_store.get_segment(segment_id)
+            override = ReferenceInputOverride(
+                ref_text_cn="我完全没有想到，事情竟然会变成这样。",
+                emotion_vector=(0, 0, 0, 0, 0, 0, 0.6, 0.2),
+                seed=1234,
+            )
+
+            context = await app.state.plane.segment_jobs.submit_reference(
+                segment_id,
+                SegmentReferenceJobRequest(
+                    request_id=uuid4(),
+                    base_voice_path=base_voice.resolve(),
+                ),
+                reference_override=override,
+            )
+
+            job = await app.state.plane.registry.get(context.job_id)
+            after = await app.state.plane.segment_store.get_segment(segment_id)
+            assert job.request_snapshot["ref_text_cn"] == override.ref_text_cn
+            assert job.request_snapshot["emotion_vector"] == list(override.emotion_vector)
+            assert job.request_snapshot["seed"] == 1234
+            assert after.ref_text_cn == before.ref_text_cn
+            assert after.current_emotion_vector == before.current_emotion_vector
+            assert after.seed == before.seed
 
 
 @pytest.mark.asyncio

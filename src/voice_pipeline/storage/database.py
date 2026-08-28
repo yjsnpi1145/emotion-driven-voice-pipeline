@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import (
 from voice_pipeline.core.config import StorageSettings
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 
-PACKAGED_HEAD = "0007_director_role_dubbing"
+PACKAGED_HEAD = "0008_director_reference_pool"
 
 
 class ControlInstanceLock:
