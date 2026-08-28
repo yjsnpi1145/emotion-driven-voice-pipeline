@@ -13,6 +13,7 @@ import soundfile as sf
 from tests.integration_cpu.conftest import write_tone
 from tests.integration_cpu.test_chapter_pipeline import _import_profile
 from voice_pipeline.api.app import create_app
+from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.models.director import DirectorUtteranceRecord
 from voice_pipeline.models.persistence import (
     CreateDubbingTaskRequest,
@@ -37,6 +38,328 @@ class _TextDurationIndexClient(FakeIndexTTSClient):
             subtype="PCM_16",
         )
         return probe_wav(output_path, require_reference_window=False)
+
+
+class _RejectPoolIndexClient(FakeIndexTTSClient):
+    async def synthesize(self, request, output_path):
+        self.calls += 1
+        raise PipelineError(
+            ErrorCode.QUALITY_VAD_FAILED,
+            "quality",
+            f"no speech for {request.text}",
+            retryable=False,
+        )
+
+
+class _RejectSurpriseIndexClient(FakeIndexTTSClient):
+    async def synthesize(self, request, output_path):
+        if request.text == "我完全没有想到，事情竟然会变成这样。":
+            self.calls += 1
+            raise PipelineError(
+                ErrorCode.QUALITY_VAD_FAILED,
+                "quality",
+                "surprise reference has no speech",
+                retryable=False,
+            )
+        return await super().synthesize(request, output_path)
+
+
+async def _short_pool_case(plane):
+    task = await plane.segment_store.create_task(
+        CreateDubbingTaskRequest(
+            title="失败短句",
+            source_text="嗯？",
+            target_language="ja",
+            output_spec=OutputAudioSpec(),
+        )
+    )
+    vector = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0)
+    segment = await plane.segment_store.create_segment(
+        task.task_id,
+        CreateSegmentRequest(
+            ordinal=0,
+            source_start=0,
+            source_end=2,
+            source_text="嗯？",
+            synthesis_text="うん？",
+            llm_emotion_vector=vector,
+            ref_text_cn="嗯？",
+            speed_factor=1.0,
+            pause_after_ms=0,
+            seed=9876,
+        ),
+    )
+    utterance = DirectorUtteranceRecord(
+        utterance_id=uuid4(),
+        project_id=uuid4(),
+        ordinal=0,
+        source_start=0,
+        source_end=2,
+        source_text="嗯？",
+        working_text="嗯？",
+        kind="dialogue",
+        speak_enabled=True,
+        role_id=uuid4(),
+        role_confidence=1.0,
+        role_confirmed=True,
+        synthesis_text="うん？",
+        ref_text_cn="嗯？",
+        emotion_vector=vector,
+        speed_factor=1.0,
+        pause_after_ms=0,
+        seed=9876,
+        revision=0,
+    )
+    return segment, utterance
+
+
+@pytest.mark.asyncio
+async def test_failed_emotion_pool_degrades_to_calm(fake_settings, tmp_path, monkeypatch) -> None:
+    actor = tmp_path / "actor.wav"
+    write_tone(actor, 12.0)
+    index = _RejectSurpriseIndexClient()
+    app = create_app(fake_settings, index_client=index)
+
+    async with app.router.lifespan_context(app):
+        plane = app.state.plane
+
+        async def ignore_generation_item(*args, **kwargs):
+            del args, kwargs
+
+        monkeypatch.setattr(plane.director_store, "set_generation_item", ignore_generation_item)
+        segment, utterance = await _short_pool_case(plane)
+
+        prepared = await plane.director_generation._prepare_reference(
+            generation_id=uuid4(),
+            segment=segment,
+            utterance=utterance,
+            base_voice=actor,
+        )
+
+        assert prepared.pool_entry.emotion_bucket == "calm"
+        assert prepared.degraded_from == "surprise"
+        assert index.calls == 4
+
+
+@pytest.mark.asyncio
+async def test_same_voice_and_emotion_reuse_pool_blob_without_second_index_inference(
+    fake_settings, tmp_path, monkeypatch
+) -> None:
+    actor = tmp_path / "actor.wav"
+    write_tone(actor, 12.0)
+    index = FakeIndexTTSClient()
+    app = create_app(fake_settings, index_client=index)
+
+    async with app.router.lifespan_context(app):
+        plane = app.state.plane
+
+        async def ignore_generation_item(*args, **kwargs):
+            del args, kwargs
+
+        monkeypatch.setattr(plane.director_store, "set_generation_item", ignore_generation_item)
+        first_segment, first_utterance = await _short_pool_case(plane)
+        second_segment, second_utterance = await _short_pool_case(plane)
+
+        first = await plane.director_generation._prepare_reference(
+            generation_id=uuid4(),
+            segment=first_segment,
+            utterance=first_utterance,
+            base_voice=actor,
+        )
+        second = await plane.director_generation._prepare_reference(
+            generation_id=uuid4(),
+            segment=second_segment,
+            utterance=second_utterance,
+            base_voice=actor,
+        )
+
+        assert index.calls == 1
+        assert first.pool_entry.entry_id == second.pool_entry.entry_id
+        assert first.segment.active_ref_version_id != second.segment.active_ref_version_id
+
+
+@pytest.mark.asyncio
+async def test_pool_exhaustion_preserves_exact_quality_error(
+    fake_settings, tmp_path, monkeypatch
+) -> None:
+    actor = tmp_path / "actor.wav"
+    write_tone(actor, 12.0)
+    index = _RejectPoolIndexClient()
+    app = create_app(fake_settings, index_client=index)
+
+    async with app.router.lifespan_context(app):
+        plane = app.state.plane
+
+        async def ignore_generation_item(*args, **kwargs):
+            del args, kwargs
+
+        monkeypatch.setattr(
+            plane.director_store,
+            "set_generation_item",
+            ignore_generation_item,
+        )
+        segment, utterance = await _short_pool_case(plane)
+
+        with pytest.raises(PipelineError) as captured:
+            await plane.director_generation._prepare_reference(
+                generation_id=uuid4(),
+                segment=segment,
+                utterance=utterance,
+                base_voice=actor,
+            )
+
+        assert captured.value.code == ErrorCode.QUALITY_VAD_FAILED
+        assert captured.value.stage == "quality"
+        assert index.calls == 6
+
+
+@pytest.mark.asyncio
+async def test_director_short_utterance_uses_emotion_pool_without_llm_expansion(
+    fake_settings, tmp_path, monkeypatch
+) -> None:
+    fake_settings.model_library.models_root = tmp_path / "library"
+    fake_settings.model_library.allowed_import_roots = [tmp_path / "models"]
+    actor = tmp_path / "actor.wav"
+    write_tone(actor, 12.0)
+    index = FakeIndexTTSClient()
+    app = create_app(fake_settings, index_client=index)
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            async def must_not_expand(**kwargs):
+                raise AssertionError(f"short references must not use LLM correction: {kwargs}")
+
+            monkeypatch.setattr(
+                app.state.plane.llm_client,
+                "correct_reference_text",
+                must_not_expand,
+            )
+            profile_id = await _import_profile(client, tmp_path)
+            project = (
+                await client.post(
+                    "/api/v1/director-projects",
+                    json={
+                        "title": "短句情绪池",
+                        "source_text": "甲：“嗯？”",
+                        "source_language": "zh",
+                        "target_language": "ja",
+                        "preprocessing_mode": "structural",
+                    },
+                )
+            ).json()
+            await client.post(
+                f"/api/v1/director-projects/{project['project_id']}/preprocess",
+                json={"expected_revision": project["revision"]},
+            )
+            project = await _wait_project(client, project["project_id"], "preprocess_review")
+            await client.post(
+                f"/api/v1/director-projects/{project['project_id']}/confirm-preprocessing",
+                json={"expected_revision": project["revision"]},
+            )
+            project = await _wait_project(client, project["project_id"], "role_review")
+            project = (
+                await client.post(
+                    f"/api/v1/director-projects/{project['project_id']}/confirm-roles",
+                    json={"expected_revision": project["revision"]},
+                )
+            ).json()
+            await client.post(
+                f"/api/v1/director-projects/{project['project_id']}/translate",
+                json={"expected_revision": project["revision"]},
+            )
+            project = await _wait_project(client, project["project_id"], "translation_review")
+            rows = (
+                await client.get(
+                    f"/api/v1/director-projects/{project['project_id']}/utterances"
+                )
+            ).json()
+            spoken = next(
+                row for row in rows if row["speak_enabled"] and "嗯" in row["source_text"]
+            )
+            vector = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0]
+            patched = await client.patch(
+                f"/api/v1/director-utterances/{spoken['utterance_id']}",
+                json={
+                    "expected_revision": spoken["revision"],
+                    "synthesis_text": "うん？",
+                    "ref_text_cn": "嗯？",
+                    "emotion_vector": vector,
+                },
+            )
+            assert patched.status_code == 200, patched.text
+            project = (
+                await client.get(f"/api/v1/director-projects/{project['project_id']}")
+            ).json()
+            project = (
+                await client.post(
+                    f"/api/v1/director-projects/{project['project_id']}/confirm-translation",
+                    json={"expected_revision": project["revision"]},
+                )
+            ).json()
+            preset = (
+                await client.post(
+                    "/api/v1/role-presets",
+                    json={
+                        "name": "短句演员",
+                        "base_voice_path": str(actor),
+                        "model_profile_id": profile_id,
+                        "default_speed": 1.0,
+                    },
+                )
+            ).json()
+            roles = (
+                await client.get(f"/api/v1/director-projects/{project['project_id']}/roles")
+            ).json()
+            for role in roles:
+                mapped = await client.post(
+                    f"/api/v1/director-roles/{role['role_id']}/preset",
+                    json={
+                        "expected_revision": role["revision"],
+                        "preset_id": preset["preset_id"],
+                    },
+                )
+                assert mapped.status_code == 200, mapped.text
+            project = (
+                await client.get(f"/api/v1/director-projects/{project['project_id']}")
+            ).json()
+            started = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}/start-generation",
+                json={"expected_revision": project["revision"]},
+            )
+            assert started.status_code == 202, started.text
+            project = await _wait_project(client, project["project_id"], "succeeded", limit=800)
+            progress = (
+                await client.get(f"/api/v1/director-projects/{project['project_id']}/progress")
+            ).json()
+            item = next(
+                candidate
+                for candidate in progress["items"]
+                if candidate["utterance_id"] == spoken["utterance_id"]
+            )
+            assert item["reference_mode"] == "pooled"
+            assert item["reference_emotion_bucket"] == "surprise"
+            assert item["reference_degraded_from"] is None
+            assert item["reference_pool_entry_id"]
+            stored = next(
+                row
+                for row in await app.state.plane.director_store.list_utterances(
+                    project["project_id"]
+                )
+                if str(row.utterance_id) == spoken["utterance_id"]
+            )
+            assert stored.ref_text_cn == "嗯？"
+            assert list(stored.emotion_vector) == vector
+            segment = await app.state.plane.segment_store.get_segment(stored.segment_id)
+            version = await app.state.plane.version_store.get_version(
+                segment.active_ref_version_id
+            )
+            assert version.input_snapshot["ref_text_cn"] == (
+                "我完全没有想到，事情竟然会变成这样。"
+            )
+            assert version.input_snapshot["emotion_vector"] == [0, 0, 0, 0, 0, 0, 0.6, 0.2]
+            assert index.calls == len(progress["items"])
 
 
 @pytest.mark.asyncio

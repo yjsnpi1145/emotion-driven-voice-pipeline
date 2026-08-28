@@ -3,10 +3,18 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
+from voice_pipeline.core.director_reference_pool import (
+    EmotionBucket,
+    build_pool_family_key,
+    is_short_reference,
+    reference_spec,
+    select_emotion_bucket,
+)
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.core.gpu_queue import SerialGpuQueue
 from voice_pipeline.core.pipeline import SynthesisService
@@ -18,6 +26,7 @@ from voice_pipeline.models.director import (
     DirectorGenerationItemRecord,
     DirectorGenerationRecord,
     DirectorProjectRecord,
+    DirectorReferencePoolEntry,
     DirectorRoleRecord,
     DirectorUtteranceRecord,
     RolePresetRecord,
@@ -26,17 +35,20 @@ from voice_pipeline.models.persistence import (
     CreateDubbingTaskRequest,
     CreateSegmentRequest,
     OutputAudioSpec,
+    ReferenceInputOverride,
     SegmentGsvJobRequest,
     SegmentInputsPatch,
     SegmentRecord,
     SegmentReferenceJobRequest,
 )
 from voice_pipeline.modules.audio.composer import ComposeInput, compose_final
+from voice_pipeline.modules.audio.wav_probe import sha256_file
 from voice_pipeline.modules.llm.director import ReferenceTextDirector
 from voice_pipeline.modules.llm.models import DirectedSegment
 from voice_pipeline.storage.artifact_store import ArtifactStore
 from voice_pipeline.storage.director_store import DirectorStore
 from voice_pipeline.storage.job_store import SqliteJobStore
+from voice_pipeline.storage.reference_pool_store import ReferencePoolStore
 from voice_pipeline.storage.segment_store import SegmentStore
 from voice_pipeline.storage.version_store import VersionStore
 
@@ -60,6 +72,8 @@ class DirectorGenerationService:
         jobs_root: Path,
         max_reference_corrections: int,
         notify_jobs: Callable[[], Awaitable[None]],
+        reference_pool: ReferencePoolStore,
+        index_fingerprint: Callable[[], Any],
     ) -> None:
         self._directors = directors
         self._presets = presets
@@ -74,7 +88,10 @@ class DirectorGenerationService:
         self._jobs_root = jobs_root
         self._max_reference_corrections = max_reference_corrections
         self._notify_jobs = notify_jobs
+        self._reference_pool = reference_pool
+        self._index_fingerprint = index_fingerprint
         self._active: dict[UUID, asyncio.Task[None]] = {}
+        self._pool_locks: dict[str, asyncio.Lock] = {}
 
     async def start(self, project_id: UUID, *, expected_revision: int) -> DirectorGenerationRecord:
         project = await self._directors.get_project(project_id)
@@ -328,27 +345,13 @@ class DirectorGenerationService:
                         status="reference_running",
                     )
                     segment = await self._segments.get_segment(segment_id)
-                    segment = await self._resolve_reference_text(
-                        segment,
-                        utterance,
-                        self._presets.audio_path(preset),
+                    prepared = await self._prepare_reference(
+                        generation_id=generation_id,
+                        segment=segment,
+                        utterance=utterance,
+                        base_voice=self._presets.audio_path(preset),
                     )
-                    context = await self._segment_jobs.submit_reference(
-                        segment.segment_id,
-                        SegmentReferenceJobRequest(
-                            request_id=uuid4(),
-                            base_voice_path=self._presets.audio_path(preset),
-                        ),
-                    )
-                    await self._directors.set_generation_item(
-                        generation_id,
-                        utterance.utterance_id,
-                        status="reference_running",
-                        reference_job_id=context.job_id,
-                    )
-                    await self._notify_jobs()
-                    await self._await_job(context.job_id)
-                    segment = await self._segments.get_segment(segment.segment_id)
+                    segment = prepared.segment
                     await self._directors.attach_utterance_versions(
                         utterance.utterance_id,
                         reference_version_id=segment.active_ref_version_id,
@@ -357,6 +360,15 @@ class DirectorGenerationService:
                         generation_id,
                         utterance.utterance_id,
                         status="reference_ready",
+                        reference_job_id=prepared.job_id,
+                        reference_mode=("pooled" if prepared.pool_entry else "independent"),
+                        reference_pool_entry_id=(
+                            prepared.pool_entry.entry_id if prepared.pool_entry else None
+                        ),
+                        reference_emotion_bucket=(
+                            prepared.pool_entry.emotion_bucket if prepared.pool_entry else None
+                        ),
+                        reference_degraded_from=prepared.degraded_from,
                     )
                 except BaseException as exc:
                     if isinstance(exc, asyncio.CancelledError):
@@ -508,6 +520,235 @@ class DirectorGenerationService:
                     return current
         raise AssertionError("reference resolution loop must return or raise")
 
+    async def _prepare_reference(
+        self,
+        *,
+        generation_id: UUID,
+        segment: SegmentRecord,
+        utterance: DirectorUtteranceRecord,
+        base_voice: Path,
+    ) -> _PreparedReference:
+        if is_short_reference(segment.ref_text_cn):
+            return await self._prepare_pooled_reference(
+                generation_id=generation_id,
+                segment=segment,
+                utterance=utterance,
+                base_voice=base_voice,
+            )
+        try:
+            resolved = await self._resolve_reference_text(segment, utterance, base_voice)
+        except PipelineError as exc:
+            if exc.code != ErrorCode.REFERENCE_DURATION_INVALID:
+                raise
+            return await self._prepare_pooled_reference(
+                generation_id=generation_id,
+                segment=segment,
+                utterance=utterance,
+                base_voice=base_voice,
+            )
+        context = await self._segment_jobs.submit_reference(
+            resolved.segment_id,
+            SegmentReferenceJobRequest(request_id=uuid4(), base_voice_path=base_voice),
+        )
+        await self._directors.set_generation_item(
+            generation_id,
+            utterance.utterance_id,
+            status="reference_running",
+            reference_job_id=context.job_id,
+            reference_mode="independent",
+        )
+        await self._notify_jobs()
+        await self._await_job(context.job_id)
+        return _PreparedReference(
+            segment=await self._segments.get_segment(resolved.segment_id),
+            job_id=context.job_id,
+        )
+
+    async def _prepare_pooled_reference(
+        self,
+        *,
+        generation_id: UUID,
+        segment: SegmentRecord,
+        utterance: DirectorUtteranceRecord,
+        base_voice: Path,
+    ) -> _PreparedReference:
+        bucket = select_emotion_bucket(segment.current_emotion_vector)
+        try:
+            return await self._prepare_pool_bucket(
+                generation_id=generation_id,
+                segment=segment,
+                utterance=utterance,
+                base_voice=base_voice,
+                bucket=bucket,
+                degraded_from=None,
+            )
+        except _PoolAttemptsExhausted as exhausted:
+            if bucket == "calm":
+                raise exhausted.last_error from exhausted
+            try:
+                return await self._prepare_pool_bucket(
+                    generation_id=generation_id,
+                    segment=segment,
+                    utterance=utterance,
+                    base_voice=base_voice,
+                    bucket="calm",
+                    degraded_from=bucket,
+                )
+            except _PoolAttemptsExhausted as calm_exhausted:
+                raise calm_exhausted.last_error from calm_exhausted
+
+    async def _prepare_pool_bucket(
+        self,
+        *,
+        generation_id: UUID,
+        segment: SegmentRecord,
+        utterance: DirectorUtteranceRecord,
+        base_voice: Path,
+        bucket: EmotionBucket,
+        degraded_from: EmotionBucket | None,
+    ) -> _PreparedReference:
+        fingerprint = self._index_fingerprint()
+        output_spec = OutputAudioSpec()
+        base_voice_sha256 = sha256_file(base_voice)
+        family_key = build_pool_family_key(
+            base_voice_sha256=base_voice_sha256,
+            bucket=bucket,
+            engine_fingerprint=fingerprint,
+            output_spec=output_spec,
+        )
+        lock = self._pool_locks.setdefault(family_key, asyncio.Lock())
+        async with lock:
+            ready = await self._reference_pool.latest_ready(family_key)
+            if ready is not None:
+                try:
+                    job_id, refreshed = await self._submit_pool_job(
+                        generation_id=generation_id,
+                        segment=segment,
+                        utterance=utterance,
+                        base_voice=base_voice,
+                        entry=ready,
+                        degraded_from=degraded_from,
+                    )
+                    return _PreparedReference(
+                        segment=refreshed,
+                        job_id=job_id,
+                        pool_entry=ready,
+                        degraded_from=degraded_from,
+                    )
+                except PipelineError as exc:
+                    if not _is_pool_retryable(exc):
+                        raise
+            revision = await self._reference_pool.next_revision(family_key)
+            last_error: PipelineError | None = None
+            for attempt in range(3):
+                spec = reference_spec(bucket, revision=revision, attempt=attempt)
+                entry, claimed = await self._reference_pool.begin_attempt(
+                    family_key=family_key,
+                    base_voice_sha256=base_voice_sha256,
+                    spec=spec,
+                    engine_fingerprint=fingerprint.model_dump(mode="json"),
+                    output_spec=output_spec.model_dump(mode="json"),
+                    degraded_from=degraded_from,
+                )
+                if not claimed:
+                    if entry.status == "ready":
+                        job_id, refreshed = await self._submit_pool_job(
+                            generation_id=generation_id,
+                            segment=segment,
+                            utterance=utterance,
+                            base_voice=base_voice,
+                            entry=entry,
+                            degraded_from=degraded_from,
+                        )
+                        return _PreparedReference(
+                            segment=refreshed,
+                            job_id=job_id,
+                            pool_entry=entry,
+                            degraded_from=degraded_from,
+                        )
+                    continue
+                try:
+                    job_id, refreshed = await self._submit_pool_job(
+                        generation_id=generation_id,
+                        segment=segment,
+                        utterance=utterance,
+                        base_voice=base_voice,
+                        entry=entry,
+                        degraded_from=degraded_from,
+                    )
+                except PipelineError as exc:
+                    await self._reference_pool.mark_failed(
+                        entry.entry_id,
+                        reference_job_id=_job_id_from_error(exc),
+                        error=exc.as_dict(),
+                    )
+                    if not _is_pool_retryable(exc):
+                        raise
+                    last_error = exc
+                    continue
+                if refreshed.active_ref_version_id is None:
+                    raise PipelineError(
+                        ErrorCode.VERSION_NOT_READY,
+                        "director_reference_pool",
+                        "pooled reference job succeeded without an active version",
+                        retryable=False,
+                    )
+                version = await self._versions.get_version(refreshed.active_ref_version_id)
+                ready = await self._reference_pool.mark_ready(
+                    entry.entry_id,
+                    reference_job_id=job_id,
+                    reference_version_id=version.version_id,
+                    blob_sha256=version.blob_sha256,
+                    quality_result=cast(dict[str, object], version.quality_result),
+                )
+                return _PreparedReference(
+                    segment=refreshed,
+                    job_id=job_id,
+                    pool_entry=ready,
+                    degraded_from=degraded_from,
+                )
+            if last_error is None:
+                last_error = PipelineError(
+                    ErrorCode.VERSION_CONFLICT,
+                    "director_reference_pool",
+                    "reference pool attempts are owned by another generation",
+                    retryable=True,
+                )
+            raise _PoolAttemptsExhausted(last_error)
+
+    async def _submit_pool_job(
+        self,
+        *,
+        generation_id: UUID,
+        segment: SegmentRecord,
+        utterance: DirectorUtteranceRecord,
+        base_voice: Path,
+        entry: DirectorReferencePoolEntry,
+        degraded_from: EmotionBucket | None,
+    ) -> tuple[UUID, SegmentRecord]:
+        context = await self._segment_jobs.submit_reference(
+            segment.segment_id,
+            SegmentReferenceJobRequest(request_id=uuid4(), base_voice_path=base_voice),
+            reference_override=ReferenceInputOverride(
+                ref_text_cn=entry.prompt_text,
+                emotion_vector=entry.emotion_vector,
+                seed=entry.seed,
+            ),
+        )
+        await self._directors.set_generation_item(
+            generation_id,
+            utterance.utterance_id,
+            status="reference_running",
+            reference_job_id=context.job_id,
+            reference_mode="pooled",
+            reference_pool_entry_id=entry.entry_id,
+            reference_emotion_bucket=entry.emotion_bucket,
+            reference_degraded_from=degraded_from,
+        )
+        await self._notify_jobs()
+        await self._await_job(context.job_id)
+        return context.job_id, await self._segments.get_segment(segment.segment_id)
+
     async def _materialize(
         self, project: DirectorProjectRecord, utterances: list[DirectorUtteranceRecord]
     ) -> dict[UUID, UUID]:
@@ -572,12 +813,19 @@ class DirectorGenerationService:
                 return
             if record.status in {"failed", "cancelled", "interrupted"}:
                 error = record.error or {}
+                try:
+                    code = ErrorCode(str(error.get("code")))
+                except ValueError:
+                    code = ErrorCode.ENGINE_UNAVAILABLE
+                original_details = error.get("details")
+                details = dict(original_details) if isinstance(original_details, dict) else {}
+                details.update({"job_id": str(job_id), "status": record.status})
                 raise PipelineError(
-                    ErrorCode.ENGINE_UNAVAILABLE,
-                    "director_generation",
+                    code,
+                    str(error.get("stage", "director_generation")),
                     str(error.get("message", "utterance generation failed")),
                     retryable=bool(error.get("retryable", False)),
-                    details={"job_id": str(job_id), "status": record.status},
+                    details=details,
                 )
             await asyncio.sleep(0.02)
 
@@ -644,6 +892,42 @@ def _preset_blocker(message: str, utterance: DirectorUtteranceRecord) -> Pipelin
         retryable=False,
         details={"utterance_id": str(utterance.utterance_id)},
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedReference:
+    segment: SegmentRecord
+    job_id: UUID
+    pool_entry: DirectorReferencePoolEntry | None = None
+    degraded_from: EmotionBucket | None = None
+
+
+class _PoolAttemptsExhausted(RuntimeError):
+    def __init__(self, last_error: PipelineError) -> None:
+        super().__init__(last_error.message)
+        self.last_error = last_error
+
+
+_POOL_RETRYABLE_CODES = {
+    ErrorCode.REFERENCE_DURATION_OUT_OF_RANGE,
+    ErrorCode.REFERENCE_DURATION_INVALID,
+    ErrorCode.QUALITY_VAD_FAILED,
+    ErrorCode.QUALITY_TEXT_MISMATCH,
+    ErrorCode.AUDIO_SILENT,
+    ErrorCode.INVALID_AUDIO,
+}
+
+
+def _is_pool_retryable(error: PipelineError) -> bool:
+    return error.code in _POOL_RETRYABLE_CODES
+
+
+def _job_id_from_error(error: PipelineError) -> UUID | None:
+    raw = error.details.get("job_id")
+    try:
+        return UUID(str(raw)) if raw else None
+    except ValueError:
+        return None
 
 
 def _director_reference_correction_budget(director: Any, *, fallback: int) -> int:
