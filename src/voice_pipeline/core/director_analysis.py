@@ -198,6 +198,77 @@ class ScriptAnalysisService:
             items=items,
         )
 
+    async def direct_current_performance(
+        self,
+        project_id: UUID,
+        *,
+        expected_revision: int,
+        performance_direction: str | None,
+    ) -> tuple[EmotionDirectionResultItem, ...]:
+        """Re-evaluate only vector, speed and pause for already translated rows."""
+        project = await self._store.get_project(project_id)
+        if project.revision != expected_revision:
+            raise PipelineError(
+                ErrorCode.VERSION_CONFLICT,
+                "director",
+                "director data changed; refresh before reapplying performance direction",
+                retryable=False,
+            )
+        allowed = {
+            "translation_review",
+            "voice_mapping",
+            "ready",
+            "generation_incomplete",
+            "succeeded",
+        }
+        if project.status not in allowed:
+            raise PipelineError(
+                ErrorCode.DIRECTOR_STATE_CONFLICT,
+                "director",
+                f"cannot reapply performance direction while project is {project.status}",
+                retryable=False,
+            )
+        timeline = await self._store.list_utterances(project_id)
+        roles = await self._store.list_roles(project_id)
+        inputs = build_emotion_inputs(
+            utterances=timeline,
+            role_names={item.role_id: item.canonical_name for item in roles},
+            reviewed_source=await self._store.analysis_text(project_id),
+        )
+        batches = [
+            inputs[index : index + self._translation_batch_size]
+            for index in range(0, len(inputs), self._translation_batch_size)
+        ]
+        results = await _gather_fail_fast(
+            *(
+                self._director.direct_emotions(
+                    performance_direction=performance_direction,
+                    utterances=batch,
+                )
+                for batch in batches
+            )
+        )
+        directions = tuple(item for result in results for item in result.items)
+        expected_keys = tuple((item.utterance_id, item.revision) for item in inputs)
+        direction_keys = tuple((item.utterance_id, item.revision) for item in directions)
+        if (
+            len(set(direction_keys)) != len(direction_keys)
+            or set(direction_keys) != set(expected_keys)
+        ):
+            raise PipelineError(
+                ErrorCode.LLM_INVALID_RESPONSE,
+                "llm",
+                "emotion direction IDs or revisions do not match current utterances",
+                retryable=False,
+            )
+        by_key = {(item.utterance_id, item.revision): item for item in directions}
+        return tuple(
+            by_key[key].model_copy(
+                update={"emotion_vector": normalize_directed_vector(by_key[key].emotion_vector)}
+            )
+            for key in expected_keys
+        )
+
 
 _ResultT = TypeVar("_ResultT")
 

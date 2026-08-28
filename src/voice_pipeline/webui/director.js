@@ -4,7 +4,16 @@ import {
   contiguousMergePair,
   toggleSelection,
 } from "./director-dnd.js?v=20260828a";
-import { syncLazyEditor } from "./director-lazy-editor.js?v=20260828a";
+import {
+  buildAdjustmentPayload,
+  changedAdjustmentFields,
+  createAdjustmentDraft,
+  deriveAdjustmentAvailability,
+  emotionVectorTotal,
+  isEmotionVectorValid,
+  normalizeAdjustmentNumber,
+  preserveAdjustmentDraft,
+} from "./director-adjustment.js?v=20260828a";
 import {
   directorActivityView,
   directorOperationLabels,
@@ -35,6 +44,9 @@ const directorState = {
   polling: false,
   dirtyWorkingTexts: new Map(),
   dirtyTranslations: new Map(),
+  activeAdjustmentId: null,
+  adjustmentReturnFocus: null,
+  performanceDirectionDirty: false,
   preprocessItems: [],
   preprocessTotal: 0,
   preprocessNextOffset: null,
@@ -160,7 +172,8 @@ function restorePreprocessSession(projectId) {
 
 function hasUnsavedDirectorChanges() {
   return hasUnsavedDirectorDrafts(directorState)
-    || directorState.dirtyPreprocessTexts.size > 0;
+    || directorState.dirtyPreprocessTexts.size > 0
+    || directorState.performanceDirectionDirty;
 }
 
 async function loadProjects({ preserveSelection = true } = {}) {
@@ -212,6 +225,8 @@ async function selectProject(projectId) {
     persistPreprocessSession();
     directorState.dirtyWorkingTexts.clear();
     directorState.dirtyTranslations.clear();
+    directorState.activeAdjustmentId = null;
+    directorState.performanceDirectionDirty = false;
     restorePreprocessSession(projectId);
   }
   const token = ++directorState.refreshToken;
@@ -281,6 +296,35 @@ function renderDirector() {
   renderRoles();
   renderUtterances();
   renderGenerationProgress();
+  renderPerformanceDirection();
+  refreshOpenAdjustmentDialog();
+}
+
+function renderPerformanceDirection() {
+  const project = directorState.project;
+  const panel = $("#director-performance-panel");
+  if (!project) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+  const input = $("#director-performance-direction");
+  const button = $("#director-save-performance");
+  const busyStatus = ["preprocessing", "analyzing", "translating", "generating"].includes(
+    project.status,
+  );
+  const needsReapply = [
+    "translation_review", "voice_mapping", "ready", "generation_incomplete", "succeeded",
+  ].includes(project.status);
+  if (!directorState.performanceDirectionDirty) input.value = project.performance_direction || "";
+  input.disabled = busyStatus;
+  button.disabled = busyStatus || !directorState.performanceDirectionDirty;
+  button.textContent = needsReapply ? "重新应用到全部语句" : "保存指导";
+  $("#director-performance-status").textContent = busyStatus
+    ? "当前任务运行中，完成后可编辑"
+    : needsReapply
+      ? "保存后仅重算情绪、语速和停顿；已有音频会进入待重新生成状态"
+      : "仅影响后续 LLM 的情绪向量、语速和句后停顿";
 }
 
 function preprocessParagraphCard(paragraph) {
@@ -859,135 +903,166 @@ function roleSelect(utterance) {
   return select;
 }
 
-function translatedEditor(utterance) {
-  const form = document.createElement("form");
-  form.className = "director-translation-editor";
-  const target = document.createElement("textarea");
-  target.name = "synthesis_text";
-  target.rows = 2;
-  const draft = directorState.dirtyTranslations.get(utterance.utterance_id);
-  target.value = draft?.synthesis_text ?? utterance.synthesis_text ?? "";
-  target.placeholder = "目标语言配音文本";
-  const reference = document.createElement("textarea");
-  reference.name = "ref_text_cn";
-  reference.rows = 2;
-  reference.value = draft?.ref_text_cn ?? utterance.ref_text_cn ?? "";
-  reference.placeholder = "IndexTTS2 中文情绪参考文本";
-  const speed = document.createElement("input");
-  speed.name = "speed_factor";
-  speed.type = "number";
-  speed.min = "0.5";
-  speed.max = "2";
-  speed.step = "0.05";
-  speed.value = draft?.speed_factor ?? utterance.speed_factor;
-  const pause = document.createElement("input");
-  pause.name = "pause_after_ms";
-  pause.type = "number";
-  pause.min = "0";
-  pause.max = "30000";
-  pause.step = "50";
-  pause.value = draft?.pause_after_ms ?? utterance.pause_after_ms;
-  const emotionBox = document.createElement("fieldset");
-  emotionBox.className = "director-emotion-vector";
-  const legend = document.createElement("legend");
-  legend.textContent = "八维情绪向量（LLM 基准，可微调）";
-  emotionBox.append(legend);
-  const emotionValues = draft?.emotion_vector ?? utterance.emotion_vector ?? Array(8).fill(0);
-  const emotionInputs = emotionLabels.map((label, index) => {
-    const input = document.createElement("input");
-    input.type = "number";
-    input.min = "0";
-    input.max = "1";
-    input.step = "0.01";
-    input.value = emotionValues[index] ?? 0;
-    emotionBox.append(labeledControl(label, input));
-    return input;
-  });
-  const updateEmotionTotal = () => {
-    const total = emotionInputs.reduce((sum, input) => sum + Number(input.value || 0), 0);
-    legend.textContent = `八维情绪向量（LLM 基准，可微调）· 合计 ${total.toFixed(2)} / 0.80`;
-    emotionBox.dataset.valid = String(total <= 0.800001);
-  };
-  updateEmotionTotal();
-  const save = document.createElement("button");
-  save.type = "submit";
-  save.className = "secondary-button";
-  save.textContent = "保存译文";
-  form.append(
-    labeledControl("目标语言文本", target),
-    labeledControl("中文情绪参考", reference),
-    labeledControl("语速（1.0 使用预设默认）", speed),
-    labeledControl("句后停顿（ms）", pause),
-    emotionBox,
-    save,
-  );
-  const rememberDraft = () => {
-    updateEmotionTotal();
-    directorState.dirtyTranslations.set(utterance.utterance_id, {
-      synthesis_text: target.value,
-      ref_text_cn: reference.value,
-      speed_factor: speed.value,
-      pause_after_ms: pause.value,
-      emotion_vector: emotionInputs.map((input) => input.value),
-    });
-  };
-  for (const control of [target, reference, speed, pause, ...emotionInputs]) {
-    control.oninput = rememberDraft;
-  }
-  form.onsubmit = async (event) => {
-    event.preventDefault();
-    await busy(save, "保存中…", async () => {
-      await api(`/api/v1/director-utterances/${utterance.utterance_id}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          expected_revision: utterance.revision,
-          synthesis_text: target.value,
-          ref_text_cn: reference.value,
-          speed_factor: Number(speed.value),
-          pause_after_ms: Number(pause.value),
-          emotion_vector: emotionInputs.map((input) => Number(input.value)),
-        }),
-      });
-      directorState.dirtyTranslations.delete(utterance.utterance_id);
-      notify("语句译文已保存");
-      await selectProject(directorState.project.project_id);
-    }).catch((error) => notify(error, true));
-  };
-  return form;
+function progressItemFor(utteranceId) {
+  return directorState.progress?.items?.find((item) => item.utterance_id === utteranceId) || null;
 }
 
-function lazyTranslatedEditor(utterance) {
-  const details = document.createElement("details");
-  details.className = "director-translation-details";
-  const summary = document.createElement("summary");
-  let editor = null;
-  const updateSummary = () => {
-    summary.textContent = directorState.dirtyTranslations.has(utterance.utterance_id)
-      ? "编辑译文与情绪 · 有未保存修改"
-      : "编辑译文与情绪";
+function adjustmentControls() {
+  return {
+    synthesis: $("#director-adjustment-synthesis"),
+    reference: $("#director-adjustment-reference"),
+    speedRange: $("#director-adjustment-speed-range"),
+    speed: $("#director-adjustment-speed"),
+    pause: $("#director-adjustment-pause"),
+    emotions: [...document.querySelectorAll("[data-director-emotion-number]")],
+    emotionRanges: [...document.querySelectorAll("[data-director-emotion-range]")],
   };
-  details.append(summary);
-  details.ontoggle = () => {
-    editor = syncLazyEditor({
-      open: details.open,
-      mounted: editor,
-      mount: () => {
-        const mounted = translatedEditor(utterance);
-        details.append(mounted);
-        return mounted;
-      },
-      unmount: (mounted) => mounted.remove(),
-    });
-    updateSummary();
+}
+
+function currentAdjustmentDraft() {
+  const utterance = directorState.utterances.find(
+    (item) => item.utterance_id === directorState.activeAdjustmentId,
+  );
+  if (!utterance) return null;
+  return {
+    utterance,
+    draft: directorState.dirtyTranslations.get(utterance.utterance_id)
+      || createAdjustmentDraft(utterance),
   };
-  updateSummary();
-  return details;
+}
+
+function readAdjustmentDraft() {
+  const controls = adjustmentControls();
+  return {
+    synthesis_text: controls.synthesis.value,
+    ref_text_cn: controls.reference.value,
+    speed_factor: controls.speed.value,
+    pause_after_ms: controls.pause.value,
+    emotion_vector: controls.emotions.map((input) => input.value),
+  };
+}
+
+function renderAdjustmentEmotionTotal() {
+  const fieldset = $(".director-adjustment-emotions");
+  const total = emotionVectorTotal(adjustmentControls().emotions.map((input) => input.value));
+  const valid = total <= 0.800001;
+  fieldset.dataset.valid = String(valid);
+  $("#director-adjustment-emotion-total").textContent = `合计 ${total.toFixed(2)} / 0.80`;
+  return valid;
+}
+
+function rememberAdjustmentDraft() {
+  if (!directorState.activeAdjustmentId) return;
+  const current = currentAdjustmentDraft();
+  if (!current) return;
+  const draft = readAdjustmentDraft();
+  const dirty = changedAdjustmentFields(current.utterance, draft).length > 0;
+  if (dirty) directorState.dirtyTranslations.set(current.utterance.utterance_id, draft);
+  else directorState.dirtyTranslations.delete(current.utterance.utterance_id);
+  renderAdjustmentEmotionTotal();
+  renderAdjustmentAvailability(current.utterance, draft);
+}
+
+function assignAudio(playerSelector, versionSelector, versionId) {
+  const player = $(playerSelector);
+  const label = $(versionSelector);
+  if (versionId) {
+    const next = `/api/v1/versions/${versionId}/audio`;
+    if (!player.src.endsWith(next)) player.src = next;
+    player.hidden = false;
+    label.textContent = String(versionId).slice(0, 8);
+  } else {
+    player.removeAttribute("src");
+    player.load();
+    player.hidden = true;
+    label.textContent = "暂无";
+  }
+}
+
+function renderAdjustmentAvailability(utterance, draft) {
+  const item = progressItemFor(utterance.utterance_id);
+  const fields = changedAdjustmentFields(utterance, draft);
+  const availability = deriveAdjustmentAvailability(
+    directorState.project,
+    item,
+    fields,
+    Boolean(utterance.reference_version_id),
+  );
+  for (const button of document.querySelectorAll("[data-adjustment-action]")) {
+    button.disabled = !availability[button.dataset.adjustmentAction];
+  }
+  const state = $("#director-adjustment-state");
+  state.textContent = item?.status || (directorState.project.current_generation_id ? "等待生成" : "尚未生成");
+  state.dataset.state = item?.status === "ready" ? "ready" : item?.status === "failed" ? "degraded" : "active";
+  const messages = [];
+  if (fields.length) messages.push(`未保存：${fields.join("、")}`);
+  if (availability.gsvEscalatesToBoth) messages.push("生成 GSV 时将先重建参考音频");
+  if (item?.error?.message) messages.push(`上次失败：${item.error.message}`);
+  if (!directorState.project.current_generation_id && directorState.project.status !== "translation_review") {
+    messages.push("当前阶段不能保存调整；请完成音色映射并开始生成");
+  }
+  $("#director-adjustment-message").textContent = messages.join(" · ") || "修改后选择下方操作。";
+}
+
+function populateAdjustmentDialog(utterance, { preserveDirty = true } = {}) {
+  const saved = createAdjustmentDraft(utterance);
+  const existing = directorState.dirtyTranslations.get(utterance.utterance_id);
+  const draft = preserveAdjustmentDraft(existing || saved, saved, preserveDirty && Boolean(existing));
+  const controls = adjustmentControls();
+  $("#director-adjustment-title").textContent = `调整配音 · #${utterance.ordinal + 1}`;
+  $("#director-adjustment-meta").textContent = `${kindLabels[utterance.kind] || utterance.kind} · 语句修订 ${utterance.revision}`;
+  $("#director-adjustment-source").value = utterance.source_text;
+  $("#director-adjustment-working").value = utterance.working_text;
+  controls.synthesis.value = draft.synthesis_text;
+  controls.reference.value = draft.ref_text_cn;
+  controls.speed.value = draft.speed_factor;
+  controls.speedRange.value = draft.speed_factor;
+  controls.pause.value = draft.pause_after_ms;
+  controls.emotions.forEach((input, index) => { input.value = draft.emotion_vector[index] ?? "0"; });
+  controls.emotionRanges.forEach((input, index) => { input.value = draft.emotion_vector[index] ?? "0"; });
+  assignAudio("#director-adjustment-reference-audio", "#director-adjustment-reference-version", utterance.reference_version_id);
+  assignAudio("#director-adjustment-gsv-audio", "#director-adjustment-gsv-version", utterance.gsv_version_id);
+  renderAdjustmentEmotionTotal();
+  renderAdjustmentAvailability(utterance, draft);
+}
+
+function openAdjustmentDialog(utterance) {
+  const dialog = $("#director-adjustment-dialog");
+  directorState.activeAdjustmentId = utterance.utterance_id;
+  directorState.adjustmentReturnFocus = document.activeElement;
+  populateAdjustmentDialog(utterance);
+  if (!dialog.open) dialog.showModal();
+  $("#director-adjustment-synthesis").focus();
+}
+
+function refreshOpenAdjustmentDialog() {
+  const dialog = $("#director-adjustment-dialog");
+  if (!dialog?.open || !directorState.activeAdjustmentId) return;
+  const utterance = directorState.utterances.find(
+    (item) => item.utterance_id === directorState.activeAdjustmentId,
+  );
+  if (utterance) populateAdjustmentDialog(utterance);
+}
+
+function closeAdjustmentDialog() {
+  const dialog = $("#director-adjustment-dialog");
+  const dirty = directorState.activeAdjustmentId
+    && directorState.dirtyTranslations.has(directorState.activeAdjustmentId);
+  if (dirty && !window.confirm("这句配音有未保存的调整，仍要关闭吗？")) return;
+  dialog.close();
+  const focus = directorState.adjustmentReturnFocus;
+  directorState.activeAdjustmentId = null;
+  directorState.adjustmentReturnFocus = null;
+  if (focus?.isConnected) focus.focus();
 }
 
 function renderUtterances() {
   const root = $("#director-utterance-list");
   const fragment = document.createDocumentFragment();
-  const editableTranslation = directorState.project.status === "translation_review";
+  const adjustableStatuses = new Set([
+    "translation_review", "voice_mapping", "ready", "generating",
+    "generation_incomplete", "succeeded",
+  ]);
   const filter = $("#director-utterance-filter").value;
   const visible = directorState.utterances.filter((utterance) => {
     if (filter === "needs_confirmation") return utterance.speak_enabled && !utterance.role_confirmed;
@@ -1095,6 +1170,13 @@ function renderUtterances() {
     split.className = "director-inline-button";
     split.textContent = "在原文光标处拆分";
     split.onclick = () => splitUtterance(utterance, source.selectionStart);
+    const adjust = document.createElement("button");
+    adjust.type = "button";
+    adjust.className = "director-inline-button director-adjustment-open";
+    adjust.textContent = directorState.dirtyTranslations.has(utterance.utterance_id)
+      ? "调整配音 · 未保存" : "调整配音";
+    adjust.hidden = !utterance.speak_enabled || !adjustableStatuses.has(directorState.project.status);
+    adjust.onclick = () => openAdjustmentDialog(utterance);
     const updateWorkingState = () => {
       const dirty = isWorkingTextDirty(
         { ...utterance, working_text: savedWorkingText },
@@ -1136,11 +1218,8 @@ function renderUtterances() {
       await selectProject(directorState.project.project_id);
     }).catch((error) => notify(error, true));
     updateWorkingState();
-    controls.append(select, speak, confirm, split);
+    controls.append(select, speak, confirm, split, adjust);
     card.append(heading, workingEditor, controls, sourceDetails);
-    if (editableTranslation && utterance.speak_enabled) {
-      card.append(lazyTranslatedEditor(utterance));
-    }
     fragment.append(card);
   }
   if (!visible.length) {
@@ -1439,6 +1518,7 @@ $("#director-project-form").onsubmit = async (event) => {
         target_language: data.get("target_language"),
         preprocessing_mode: data.get("preprocessing_mode"),
         narration_enabled: data.get("narration_enabled") === "on",
+        performance_direction: String(data.get("performance_direction") || "").trim() || null,
       }),
     });
     await api(`/api/v1/director-projects/${project.project_id}/preprocess`, {
@@ -1531,6 +1611,148 @@ $("#director-narration-enabled").onchange = async (event) => {
   } catch (error) { notify(error, true); }
 };
 
+$("#director-performance-direction").oninput = () => {
+  if (!directorState.project) return;
+  directorState.performanceDirectionDirty = (
+    $("#director-performance-direction").value !== (directorState.project.performance_direction || "")
+  );
+  renderPerformanceDirection();
+};
+
+$("#director-save-performance").onclick = (event) => busy(
+  event.currentTarget,
+  "保存中…",
+  async () => {
+    const project = directorState.project;
+    const value = $("#director-performance-direction").value.trim();
+    const needsReapply = [
+      "translation_review", "voice_mapping", "ready", "generation_incomplete", "succeeded",
+    ].includes(project.status);
+    if (needsReapply && !window.confirm(
+      `将为 ${directorState.utterances.filter((item) => item.speak_enabled).length} 条配音语句重新计算情绪、语速和停顿，并使已有音频待重新生成。继续吗？`,
+    )) return;
+    await api(`/api/v1/director-projects/${project.project_id}/performance-direction`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        expected_revision: project.revision,
+        performance_direction: value || null,
+        reapply: needsReapply,
+      }),
+    });
+    directorState.performanceDirectionDirty = false;
+    notify(needsReapply ? "已重新应用全局表演指导" : "全局表演指导已保存");
+    await selectProject(project.project_id);
+  },
+).catch((error) => notify(error, true));
+
+function initializeAdjustmentDialog() {
+  const emotionRoot = $("#director-adjustment-emotion-controls");
+  const fragment = document.createDocumentFragment();
+  emotionLabels.forEach((label, index) => {
+    const row = document.createElement("label");
+    row.className = "director-emotion-control";
+    const name = document.createElement("span");
+    name.textContent = label;
+    const range = document.createElement("input");
+    range.type = "range";
+    range.min = "0";
+    range.max = "1";
+    range.step = "0.01";
+    range.dataset.directorEmotionRange = String(index);
+    const numberInput = document.createElement("input");
+    numberInput.type = "number";
+    numberInput.min = "0";
+    numberInput.max = "1";
+    numberInput.step = "0.01";
+    numberInput.dataset.directorEmotionNumber = String(index);
+    range.oninput = () => {
+      numberInput.value = range.value;
+      rememberAdjustmentDraft();
+    };
+    numberInput.oninput = () => {
+      range.value = String(normalizeAdjustmentNumber("emotion", numberInput.value));
+      rememberAdjustmentDraft();
+    };
+    numberInput.onchange = () => {
+      numberInput.value = String(normalizeAdjustmentNumber("emotion", numberInput.value));
+      range.value = numberInput.value;
+      rememberAdjustmentDraft();
+    };
+    row.append(name, range, numberInput);
+    fragment.append(row);
+  });
+  emotionRoot.replaceChildren(fragment);
+
+  const controls = adjustmentControls();
+  controls.synthesis.oninput = rememberAdjustmentDraft;
+  controls.reference.oninput = rememberAdjustmentDraft;
+  controls.pause.oninput = rememberAdjustmentDraft;
+  controls.speedRange.oninput = () => {
+    controls.speed.value = controls.speedRange.value;
+    rememberAdjustmentDraft();
+  };
+  controls.speed.oninput = () => {
+    controls.speedRange.value = String(normalizeAdjustmentNumber("speed_factor", controls.speed.value));
+    rememberAdjustmentDraft();
+  };
+  controls.speed.onchange = () => {
+    controls.speed.value = String(normalizeAdjustmentNumber("speed_factor", controls.speed.value));
+    controls.speedRange.value = controls.speed.value;
+    rememberAdjustmentDraft();
+  };
+  controls.pause.onchange = () => {
+    controls.pause.value = String(normalizeAdjustmentNumber("pause_after_ms", controls.pause.value));
+    rememberAdjustmentDraft();
+  };
+
+  const dialog = $("#director-adjustment-dialog");
+  $("#director-adjustment-close").onclick = closeAdjustmentDialog;
+  dialog.oncancel = (event) => {
+    event.preventDefault();
+    closeAdjustmentDialog();
+  };
+  $("#director-adjustment-form").onsubmit = async (event) => {
+    event.preventDefault();
+    const action = event.submitter?.dataset.adjustmentAction;
+    if (!action) return;
+    const current = currentAdjustmentDraft();
+    if (!current) return;
+    const draft = readAdjustmentDraft();
+    if (!draft.synthesis_text.trim() || !draft.ref_text_cn.trim()) {
+      notify("目标语言文本和中文参考文本不能为空", true);
+      return;
+    }
+    if (!isEmotionVectorValid(draft.emotion_vector)) {
+      notify("八维情绪向量合计必须小于或等于 0.80", true);
+      return;
+    }
+    const button = event.submitter;
+    await busy(button, "提交中…", async () => {
+      const result = await api(
+        `/api/v1/director-projects/${directorState.project.project_id}/utterances/${current.utterance.utterance_id}/adjust`,
+        {
+          method: "POST",
+          body: JSON.stringify(buildAdjustmentPayload(
+            current.utterance,
+            draft,
+            action,
+            directorState.project.revision,
+          )),
+        },
+      );
+      directorState.dirtyTranslations.delete(current.utterance.utterance_id);
+      await selectProject(directorState.project.project_id);
+      const escalation = result.effective_action !== result.requested_action
+        ? `；已自动升级为 ${result.effective_action}` : "";
+      $("#director-adjustment-message").textContent = `操作已接受${escalation}，可关闭窗口或等待状态刷新。`;
+      notify(`配音调整已提交${escalation}`);
+    }).catch((error) => {
+      $("#director-adjustment-message").textContent = error.message;
+      notify(error, true);
+    });
+  };
+}
+
 $("#director-merge-selected").onclick = () => mergeSelected().catch((error) => notify(error, true));
 $("#director-clear-selection").onclick = () => {
   directorState.selected = new Set();
@@ -1559,6 +1781,7 @@ window.directorWorkbench = {
 };
 
 async function initializeDirector() {
+  initializeAdjustmentDialog();
   try {
     await Promise.all([loadProjects({ preserveSelection: false }), loadPresets(), loadProfiles()]);
   } catch (error) { notify(error, true); }

@@ -199,6 +199,32 @@ async def test_director_adjustment_saves_translation_review_utterance(fake_setti
                 ).json()
                 if item["speak_enabled"]
             )
+            original_text = utterance["synthesis_text"]
+            original_reference = utterance["ref_text_cn"]
+            reapplied = await client.patch(
+                f"/api/v1/director-projects/{project['project_id']}"
+                "/performance-direction",
+                json={
+                    "expected_revision": project["revision"],
+                    "performance_direction": "整体表演更平静，短句继承上下文。",
+                    "reapply": True,
+                },
+            )
+            assert reapplied.status_code == 200, reapplied.text
+            project = reapplied.json()
+            refreshed_rows = (
+                await client.get(
+                    f"/api/v1/director-projects/{project['project_id']}/utterances"
+                )
+            ).json()
+            refreshed = next(
+                item for item in refreshed_rows
+                if item["utterance_id"] == utterance["utterance_id"]
+            )
+            assert refreshed["revision"] == utterance["revision"] + 1
+            assert refreshed["synthesis_text"] == original_text
+            assert refreshed["ref_text_cn"] == original_reference
+            utterance = refreshed
             payload = {
                 "expected_project_revision": project["revision"],
                 "expected_utterance_revision": utterance["revision"],

@@ -135,6 +135,9 @@
                 <form id="director-project-form" class="stack-form" novalidate>
                   <label>项目标题 <input name="title" value="新导演项目" required /></label>
                   <label>原文 <textarea name="source_text" rows="10" required placeholder="粘贴文章、小说或剧本；原文顺序会被严格保留"></textarea></label>
+                  <label>全局表演指导（可选）
+                    <textarea name="performance_direction" rows="3" maxlength="2000" placeholder="例如：人物整体语气偏平静，避免夸张；后半段逐渐压抑。仅影响情绪、语速和停顿。"></textarea>
+                  </label>
                   <div class="field-row">
                     <label>原文语言
                       <select name="source_language"><option value="auto">自动识别</option><option value="zh">中文</option><option value="ja">日语</option><option value="en">英语</option><option value="ko">韩语</option><option value="yue">粤语</option></select>
@@ -168,6 +171,17 @@
                   <span class="quality-switch" aria-hidden="true"></span>
                 </label>
               </header>
+              <details id="director-performance-panel" class="director-performance-panel" hidden>
+                <summary>全局表演指导</summary>
+                <div class="director-performance-editor">
+                  <label for="director-performance-direction">指导内容（最多 2000 字）</label>
+                  <textarea id="director-performance-direction" rows="3" maxlength="2000" placeholder="未填写时由 LLM 根据上下文决定情绪、语速和停顿"></textarea>
+                  <div class="button-row end">
+                    <span id="director-performance-status" class="help">仅影响情绪向量、语速和句后停顿</span>
+                    <button id="director-save-performance" type="button" class="secondary-button">保存指导</button>
+                  </div>
+                </div>
+              </details>
               <section id="director-llm-activity-console" class="llm-activity-console director-llm-activity-console" aria-label="导演模式 LLM 实时输出">
                 <div class="llm-activity-heading">
                   <div><p class="eyebrow">LLM Monitor</p><strong>导演模式实时输出</strong></div>
@@ -291,6 +305,60 @@
         </section>
       </main>
     </div>
+
+    <dialog id="director-adjustment-dialog" class="director-adjustment-dialog" aria-labelledby="director-adjustment-title">
+      <form id="director-adjustment-form" method="dialog">
+        <header class="director-adjustment-header">
+          <div>
+            <p class="eyebrow">Utterance Control</p>
+            <h2 id="director-adjustment-title">调整配音</h2>
+            <p id="director-adjustment-meta" class="muted"></p>
+          </div>
+          <button id="director-adjustment-close" class="icon-button" type="button" aria-label="关闭调整窗口">×</button>
+        </header>
+        <div class="director-adjustment-body">
+          <section class="director-adjustment-context" aria-label="原文上下文">
+            <label>原始切片 <textarea id="director-adjustment-source" rows="2" readonly></textarea></label>
+            <label>配音工作文本 <textarea id="director-adjustment-working" rows="2" readonly></textarea></label>
+          </section>
+          <section class="director-adjustment-fields">
+            <label>目标语言配音文本 <textarea id="director-adjustment-synthesis" name="synthesis_text" rows="3" required></textarea></label>
+            <label>IndexTTS2 中文情绪参考文本 <textarea id="director-adjustment-reference" name="ref_text_cn" rows="3" required></textarea></label>
+            <div class="director-linked-control">
+              <label for="director-adjustment-speed-range">语速</label>
+              <input id="director-adjustment-speed-range" type="range" min="0.5" max="2" step="0.05" />
+              <input id="director-adjustment-speed" name="speed_factor" type="number" min="0.5" max="2" step="0.05" />
+            </div>
+            <label>句后停顿（ms） <input id="director-adjustment-pause" name="pause_after_ms" type="number" min="0" max="30000" step="50" /></label>
+          </section>
+          <fieldset class="director-adjustment-emotions">
+            <legend>八维情绪向量 · <span id="director-adjustment-emotion-total">合计 0.00 / 0.80</span></legend>
+            <div id="director-adjustment-emotion-controls"></div>
+          </fieldset>
+          <section class="director-adjustment-audio" aria-label="当前音频版本">
+            <article>
+              <div class="director-adjustment-audio-heading"><strong>当前参考音频</strong><code id="director-adjustment-reference-version">暂无</code></div>
+              <audio id="director-adjustment-reference-audio" controls preload="metadata"></audio>
+            </article>
+            <article>
+              <div class="director-adjustment-audio-heading"><strong>当前 GSV 音频</strong><code id="director-adjustment-gsv-version">暂无</code></div>
+              <audio id="director-adjustment-gsv-audio" controls preload="metadata"></audio>
+            </article>
+          </section>
+          <section id="director-adjustment-operation" class="director-adjustment-operation" aria-live="polite">
+            <span id="director-adjustment-state" class="status-chip">尚未生成</span>
+            <p id="director-adjustment-message" class="help">修改后选择下方操作。</p>
+          </section>
+        </div>
+        <footer class="director-adjustment-footer">
+          <button type="submit" class="secondary-button" data-adjustment-action="save">保存</button>
+          <button type="submit" class="secondary-button" data-adjustment-action="reference">保存并生成参考</button>
+          <button type="submit" class="secondary-button" data-adjustment-action="gsv">保存并生成 GSV</button>
+          <button type="submit" class="primary-button" data-adjustment-action="both">保存并全部重新生成</button>
+          <button type="submit" class="secondary-button" data-adjustment-action="recompose">仅重新拼接</button>
+        </footer>
+      </form>
+    </dialog>
 
     <section id="shutdown-overlay" class="shutdown-overlay" role="status" aria-live="assertive" hidden>
       <div id="shutdown-message" class="shutdown-card" tabindex="-1">

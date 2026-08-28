@@ -36,6 +36,7 @@ from voice_pipeline.models.director import (
     UpdateDirectorPerformanceDirection,
     UpdateRolePresetRequest,
 )
+from voice_pipeline.models.director_llm import EmotionDirectionResultItem
 from voice_pipeline.modules.audio.wav_probe import sha256_file
 from voice_pipeline.storage.director_store import DirectorStore
 from voice_pipeline.storage.reference_pool_store import ReferencePoolStore
@@ -65,12 +66,47 @@ def build_director_router(plane: Any) -> APIRouter:
         request: UpdateDirectorPerformanceDirection,
     ) -> dict[str, Any]:
         try:
+            directions: tuple[EmotionDirectionResultItem, ...] = ()
+            if request.reapply:
+                directions = await _analysis(plane).direct_current_performance(
+                    project_id,
+                    expected_revision=request.expected_revision,
+                    performance_direction=request.performance_direction,
+                )
             project = await _store(plane).update_performance_direction(
                 project_id,
                 expected_revision=request.expected_revision,
                 performance_direction=request.performance_direction,
                 reapply=request.reapply,
             )
+            if request.reapply:
+                for direction in directions:
+                    project = await _store(plane).get_project(project_id)
+                    utterance = await _store(plane).get_utterance(
+                        direction.utterance_id
+                    )
+                    if utterance.synthesis_text is None or utterance.ref_text_cn is None:
+                        raise PipelineError(
+                            ErrorCode.DIRECTOR_STATE_CONFLICT,
+                            "director",
+                            "translated utterance is missing text required for performance reapply",
+                            retryable=False,
+                        )
+                    await _generation(plane).adjust_utterance(
+                        project_id,
+                        utterance.utterance_id,
+                        AdjustDirectorUtteranceRequest(
+                            expected_project_revision=project.revision,
+                            expected_utterance_revision=utterance.revision,
+                            synthesis_text=utterance.synthesis_text,
+                            ref_text_cn=utterance.ref_text_cn,
+                            emotion_vector=direction.emotion_vector,
+                            speed_factor=direction.speed_factor,
+                            pause_after_ms=direction.pause_after_ms,
+                            action="save",
+                        ),
+                    )
+                project = await _store(plane).get_project(project_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="director project not found") from exc
         except PipelineError as exc:

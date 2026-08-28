@@ -31,6 +31,9 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
             director_lazy_editor_script = await client.get(
                 "/ui/director-lazy-editor.js"
             )
+            director_adjustment_script = await client.get(
+                "/ui/director-adjustment.js"
+            )
             shutdown_script = await client.get("/ui/service-shutdown.js")
             stage_script = await client.get("/ui/stage-progress.js")
             selection_script = await client.get("/ui/selection-state.js")
@@ -83,6 +86,13 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'id="director-preset-form"' in page.text
     assert 'id="director-utterance-list"' in page.text
     assert 'id="director-utterance-filter"' in page.text
+    assert 'name="performance_direction"' in page.text
+    assert 'maxlength="2000"' in page.text
+    assert 'id="director-adjustment-dialog"' in page.text
+    assert 'id="director-adjustment-reference-audio"' in page.text
+    assert 'id="director-adjustment-gsv-audio"' in page.text
+    for action in ("save", "reference", "gsv", "both", "recompose"):
+        assert f'data-adjustment-action="{action}"' in page.text
     assert 'name="max_parallel_requests"' in page.text
     assert 'id="system-health-grid"' in page.text
     assert 'id="open-model-library"' in page.text
@@ -187,7 +197,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "/recompose" in director_script.text
     assert 'from "./director-dnd.js?v=20260828a"' in director_script.text
     assert "canEditRoleReview" in director_script.text
-    assert 'from "./director-lazy-editor.js?v=20260828a"' in director_script.text
+    assert 'from "./director-lazy-editor.js?v=20260828a"' not in director_script.text
     assert 'from "./director-llm-activity.js?v=20260828a"' in director_script.text
     assert 'from "./director-preprocessing.js?v=20260828a"' in director_script.text
     assert "/api/v1/llm/activity" in director_script.text
@@ -197,15 +207,16 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert director_preprocessing_script.status_code == 200
     assert director_working_text_script.status_code == 200
     assert director_lazy_editor_script.status_code == 200
+    assert director_adjustment_script.status_code == 200
     assert "script_analysis" in director_activity_script.text
     assert "cast_reconciliation" in director_activity_script.text
     assert "script_translation" in director_activity_script.text
     assert "script_preprocessing" in director_activity_script.text
     assert "dirtyTranslations" in director_script.text
-    assert "function lazyTranslatedEditor(utterance)" in director_script.text
-    assert "details.ontoggle" in director_script.text
-    assert "编辑译文与情绪" in director_script.text
-    assert "card.append(lazyTranslatedEditor(utterance))" in director_script.text
+    assert 'from "./director-adjustment.js?v=20260828a"' in director_script.text
+    assert "function openAdjustmentDialog(utterance)" in director_script.text
+    assert "调整配音" in director_script.text
+    assert "card.append(lazyTranslatedEditor(utterance))" not in director_script.text
     assert "card.append(translatedEditor(utterance))" not in director_script.text
     assert "stopDirectorActivity" in director_script.text
     assert "buildAssignmentPatch" in director_dnd_script.text
@@ -253,7 +264,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert ".shutdown-overlay" in stylesheet.text
     assert ".director-layout" in stylesheet.text
     assert ".director-utterance-card" in stylesheet.text
-    assert ".director-translation-details" in stylesheet.text
+    assert ".director-adjustment-dialog" in stylesheet.text
     assert 'preload="metadata"' in script.text
     assert 'preload="none"' not in script.text
     assert 'player.preload = "metadata"' in script.text
