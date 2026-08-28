@@ -1052,6 +1052,69 @@ async def test_director_generation_uses_role_presets_and_completes(fake_settings
             assert finished_save.status_code == 200, finished_save.text
             project = await _wait_status(client, project["project_id"], "succeeded", limit=500)
 
+            # A previously accepted partial composition may retain historical failures.
+            # Local regeneration of a ready sentence must preserve those omissions and
+            # still publish a new composition.
+            historical_failure = next(
+                item
+                for item in items
+                if item.utterance_id != adjusted_after.utterance_id
+            )
+            historical_segment_id = next(
+                row.segment_id
+                for row in await app.state.plane.director_store.list_utterances(
+                    project["project_id"]
+                )
+                if row.utterance_id == historical_failure.utterance_id
+            )
+            assert historical_segment_id is not None
+            async with app.state.plane.database.write_session() as session:
+                await session.execute(
+                    update(segments)
+                    .where(segments.c.segment_id == str(historical_segment_id))
+                    .values(active_gsv_version_id=None)
+                )
+            await app.state.plane.director_store.set_generation_item(
+                generation.generation_id,
+                historical_failure.utterance_id,
+                status="failed",
+                error={"code": "ACCEPTED_OMISSION"},
+            )
+            adjusted_after = next(
+                row
+                for row in await app.state.plane.director_store.list_utterances(
+                    project["project_id"]
+                )
+                if row.utterance_id == adjusted_after.utterance_id
+            )
+            accepted_omission_adjustment = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}"
+                f"/utterances/{adjusted_after.utterance_id}/adjust",
+                json={
+                    "expected_project_revision": project["revision"],
+                    "expected_utterance_revision": adjusted_after.revision,
+                    "synthesis_text": adjusted_after.synthesis_text,
+                    "ref_text_cn": adjusted_after.ref_text_cn,
+                    "emotion_vector": list(adjusted_after.emotion_vector),
+                    "speed_factor": adjusted_after.speed_factor,
+                    "pause_after_ms": adjusted_after.pause_after_ms,
+                    "action": "gsv",
+                },
+            )
+            assert accepted_omission_adjustment.status_code == 200
+            project = await _wait_status(
+                client, project["project_id"], "succeeded", limit=500
+            )
+            assert project["status"] == "succeeded"
+            omission_items = await app.state.plane.director_store.list_generation_items(
+                generation.generation_id
+            )
+            assert next(
+                item
+                for item in omission_items
+                if item.utterance_id == historical_failure.utterance_id
+            ).status == "failed"
+
             await app.state.plane.director_store.set_generation_item(
                 generation.generation_id,
                 items[0].utterance_id,

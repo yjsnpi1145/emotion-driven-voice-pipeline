@@ -481,7 +481,12 @@ class DirectorGenerationService:
 
     async def _compose_current_generation(self, generation: DirectorGenerationRecord) -> None:
         items = await self._directors.list_generation_items(generation.generation_id)
-        if any(item.status != "ready" for item in items):
+        accepted_failures = generation.final_relative_path is not None
+        if any(
+            item.status != "ready"
+            and not (accepted_failures and item.status == "failed")
+            for item in items
+        ):
             await self._directors.finish_generation(
                 generation.generation_id,
                 succeeded=False,
@@ -499,11 +504,40 @@ class DirectorGenerationService:
             for row in await self._directors.list_utterances(generation.project_id)
         }
         utterances = [by_id[item.utterance_id] for item in items]
-        materialized = {
-            row.utterance_id: row.segment_id
-            for row in utterances
-            if row.segment_id is not None
-        }
+        materialized: dict[UUID, UUID] = {}
+        for item, row in zip(items, utterances, strict=True):
+            if row.segment_id is None:
+                continue
+            segment = await self._segments.get_segment(row.segment_id)
+            if segment.active_gsv_version_id is None:
+                if item.status == "ready":
+                    await self._directors.finish_generation(
+                        generation.generation_id,
+                        succeeded=False,
+                        final_relative_path=generation.final_relative_path,
+                        error={
+                            "code": "DIRECTOR_ITEMS_INCOMPLETE",
+                            "stage": "director_adjustment",
+                            "message": "a ready Director utterance has no active GSV version",
+                            "retryable": True,
+                        },
+                    )
+                    return
+                continue
+            materialized[row.utterance_id] = row.segment_id
+        if not materialized:
+            await self._directors.finish_generation(
+                generation.generation_id,
+                succeeded=False,
+                final_relative_path=generation.final_relative_path,
+                error={
+                    "code": "DIRECTOR_ITEMS_INCOMPLETE",
+                    "stage": "director_adjustment",
+                    "message": "no Director utterance has a ready GSV version",
+                    "retryable": True,
+                },
+            )
+            return
         await self._compose(generation.generation_id, materialized, utterances)
 
     async def resume(self, project_id: UUID, *, expected_revision: int) -> DirectorGenerationRecord:
