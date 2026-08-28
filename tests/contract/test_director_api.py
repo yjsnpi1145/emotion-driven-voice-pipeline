@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
 from uuid import UUID
+from zipfile import ZipFile
 
 import httpx
 import pytest
@@ -612,16 +614,34 @@ async def test_director_generation_uses_role_presets_and_completes(fake_settings
             roles = (
                 await client.get(f"/api/v1/director-projects/{project['project_id']}/roles")
             ).json()
-            for role in roles:
+            skipped_role_id = roles[0]["role_id"]
+            for index, role in enumerate(roles):
                 bound = await client.post(
                     f"/api/v1/director-roles/{role['role_id']}/preset",
-                    json={"expected_revision": role["revision"], "preset_id": preset_id},
+                    json=(
+                        {
+                            "expected_revision": role["revision"],
+                            "mapping_mode": "skip",
+                            "preset_id": None,
+                        }
+                        if index == 0
+                        else {
+                            "expected_revision": role["revision"],
+                            "mapping_mode": "preset",
+                            "preset_id": preset_id,
+                        }
+                    ),
                 )
                 assert bound.status_code == 200
+                assert bound.json()["dubbing_enabled"] is (index != 0)
             project = (
                 await client.get(f"/api/v1/director-projects/{project['project_id']}")
             ).json()
             assert project["status"] == "ready"
+            pending_archive = await client.get(
+                f"/api/v1/director-projects/{project['project_id']}/sentence-audio.zip"
+            )
+            assert pending_archive.status_code == 409
             submitted = await client.post(
                 f"/api/v1/director-projects/{project['project_id']}/start-generation",
                 json={"expected_revision": project["revision"]},
@@ -632,6 +652,9 @@ async def test_director_generation_uses_role_presets_and_completes(fake_settings
             generated_rows = await app.state.plane.director_store.list_utterances(
                 project["project_id"]
             )
+            skipped_rows = [row for row in generated_rows if str(row.role_id) == skipped_role_id]
+            assert skipped_rows
+            assert all(row.segment_id is None for row in skipped_rows)
             generated_segments = [
                 await app.state.plane.segment_store.get_segment(row.segment_id)
                 for row in generated_rows
@@ -681,6 +704,13 @@ async def test_director_generation_uses_role_presets_and_completes(fake_settings
             audio = await client.get(f"/api/v1/director-projects/{project['project_id']}/audio")
             assert audio.status_code == 200
             assert audio.content.startswith(b"RIFF")
+            archive = await client.get(
+                f"/api/v1/director-projects/{project['project_id']}/sentence-audio.zip"
+            )
+            assert archive.status_code == 200
+            with ZipFile(BytesIO(archive.content)) as bundle:
+                assert bundle.namelist()
+                assert all(name.endswith(".wav") for name in bundle.namelist())
 
 
 async def _wait_status(client, project_id: str, expected: str, *, limit: int = 100):

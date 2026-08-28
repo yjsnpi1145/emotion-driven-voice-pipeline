@@ -144,6 +144,7 @@ class DirectorRoleRecord(StrictModel):
     aliases: tuple[str, ...]
     confidence: float = Field(ge=0.0, le=1.0)
     preset_id: UUID | None = None
+    dubbing_enabled: bool = True
     revision: int = Field(ge=0)
 
 
@@ -242,7 +243,16 @@ class ExpectedProjectRevision(StrictModel):
 
 class BindRolePresetRequest(StrictModel):
     expected_revision: int = Field(ge=0)
-    preset_id: UUID
+    mapping_mode: Literal["preset", "skip"] = "preset"
+    preset_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_mapping(self) -> BindRolePresetRequest:
+        if self.mapping_mode == "preset" and self.preset_id is None:
+            raise ValueError("preset mapping requires preset_id")
+        if self.mapping_mode == "skip" and self.preset_id is not None:
+            raise ValueError("skip mapping forbids preset_id")
+        return self
 
 
 class DirectorRolePatch(StrictModel):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Column,
     Float,
@@ -511,6 +512,7 @@ director_roles = Table(
     Column("kind", String(16), nullable=False),
     Column("aliases_json", Text, nullable=False),
     Column("confidence", Float, nullable=False),
+    Column("dubbing_enabled", Boolean, nullable=False, server_default="1"),
     Column(
         "preset_id",
         String(36),

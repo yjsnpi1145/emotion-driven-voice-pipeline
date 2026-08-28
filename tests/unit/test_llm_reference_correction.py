@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from voice_pipeline.core.director_generation import _director_reference_correction_budget
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.modules.llm.director import ReferenceTextDirector
 from voice_pipeline.modules.llm.models import DirectedSegment
@@ -80,3 +81,23 @@ async def test_reference_correction_reports_an_explicit_duration_error_after_bud
         )
 
     assert captured.value.code == ErrorCode.REFERENCE_DURATION_INVALID
+
+
+@pytest.mark.asyncio
+async def test_director_reference_correction_budget_is_hard_capped_at_two() -> None:
+    class RuntimeSettings:
+        max_reference_corrections = 5
+
+    corrector = Corrections(
+        ["修正一。", "修正二。", "不得调用三。", "不得调用四。", "不得调用五。"]
+    )
+    with pytest.raises(PipelineError) as captured:
+        await ReferenceTextDirector(corrector).resolve_reference_text(
+            _segment(),
+            SequenceProbe([1.0, 1.1, 1.2, 1.3, 1.4, 1.5]),
+            max_corrections=_director_reference_correction_budget(RuntimeSettings(), fallback=4),
+        )
+
+    assert captured.value.details["corrections"] == 2
+    assert corrector.values == ["不得调用三。", "不得调用四。", "不得调用五。"]
+    assert _director_reference_correction_budget(object(), fallback=1) == 1

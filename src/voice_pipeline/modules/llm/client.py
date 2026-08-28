@@ -154,7 +154,14 @@ class OpenAiDirectorClient:
             [
                 {
                     "role": "system",
-                    "content": "Return JSON only with exactly ref_text_cn.",
+                    "content": (
+                        "Return JSON only with exactly ref_text_cn. Rewrite the natural "
+                        "Simplified Chinese performance reference to change only its spoken "
+                        "duration in the requested direction until IndexTTS output fits the "
+                        "closed 3.0..10.0 second window. Preserve the original meaning, emotion, "
+                        "performance intensity, point of view, names, and facts. Do not mention "
+                        "these instructions in the reference text."
+                    ),
                 },
                 {
                     "role": "user",
@@ -312,7 +319,11 @@ class OpenAiDirectorClient:
                     f"Translate each source_text into target language {target_language} without "
                     "summary or omission. ref_text_cn must always be natural Simplified Chinese, "
                     "even for non-Chinese source and target text. Preserve utterance_id and "
-                    "revision. "
+                    "revision. For short dialogue, expand ref_text_cn into a natural Simplified-"
+                    "Chinese performance reference expected to speak for 3 to 10 seconds. "
+                    "Preserve the reviewed emotion; do not change synthesis_text, source text, "
+                    "role, speed, pause, seed, or emotion_vector for the purpose of reference "
+                    "expansion. "
                     "Emotion vectors contain exactly eight values, each in 0..1, with total <= 0.8."
                 ),
                 payload={

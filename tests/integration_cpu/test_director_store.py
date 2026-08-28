@@ -93,6 +93,45 @@ async def test_publish_analysis_requires_exact_contiguous_source_coverage(store:
 
 
 @pytest.mark.asyncio
+async def test_explicit_role_skip_is_distinct_from_unconfigured_mapping(
+    store: DirectorStore,
+) -> None:
+    source = "甲说你好。"
+    project = await store.create_project(project_request(source))
+    project = await confirmed_for_analysis(store, project)
+    project = await store.publish_analysis(
+        project.project_id,
+        expected_revision=project.revision,
+        roles=(CreateDirectorRole(canonical_name="甲", kind="character"),),
+        utterances=(
+            CreateDirectorUtterance(
+                ordinal=0,
+                source_start=0,
+                source_end=len(source),
+                source_text=source,
+                kind="dialogue",
+                speak_enabled=True,
+                role_name="甲",
+            ),
+        ),
+    )
+    role = (await store.list_roles(project.project_id))[0]
+    assert role.dubbing_enabled is True
+    assert role.preset_id is None
+
+    skipped = await store.bind_role_preset(
+        role.role_id,
+        expected_revision=role.revision,
+        preset_id=None,
+        dubbing_enabled=False,
+    )
+
+    assert skipped.dubbing_enabled is False
+    assert skipped.preset_id is None
+    assert (await store.get_project(project.project_id)).status == "ready"
+
+
+@pytest.mark.asyncio
 async def test_preprocessing_document_is_revisioned_editable_and_confirmable(
     store: DirectorStore,
 ) -> None:

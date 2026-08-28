@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Coroutine
+from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
@@ -460,6 +461,7 @@ def build_director_router(plane: Any) -> APIRouter:
                     role_id,
                     expected_revision=request.expected_revision,
                     preset_id=request.preset_id,
+                    dubbing_enabled=request.mapping_mode == "preset",
                 )
             )
         except KeyError as exc:
@@ -592,6 +594,35 @@ def build_director_router(plane: Any) -> APIRouter:
         if not path.is_file() or path.is_symlink():
             raise HTTPException(status_code=409, detail="director audio is unavailable")
         return FileResponse(path, media_type="audio/wav")
+
+    @router.get("/api/v1/director-projects/{project_id}/sentence-audio.zip")
+    async def generation_sentence_archive(project_id: UUID) -> FileResponse:
+        try:
+            generation, _ = await _generation(plane).get_for_project(project_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="director project not found") from exc
+        if (
+            generation is None
+            or generation.status != "succeeded"
+            or generation.final_relative_path is None
+        ):
+            raise HTTPException(status_code=409, detail="director sentence audio is not ready")
+        try:
+            archive_path = _resolve_sentence_archive_path(
+                plane.artifact_store.root,
+                generation.final_relative_path,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409, detail="director sentence audio path is invalid"
+            ) from exc
+        if not archive_path.is_file() or archive_path.is_symlink():
+            raise HTTPException(status_code=409, detail="director sentence audio is unavailable")
+        return FileResponse(
+            archive_path,
+            media_type="application/zip",
+            filename=f"director-{project_id}-sentences.zip",
+        )
 
     return router
 
@@ -779,6 +810,11 @@ def _public_project(record: DirectorProjectRecord) -> dict[str, Any]:
         if record.status == "succeeded"
         else None
     )
+    payload["sentence_audio_url"] = (
+        f"/api/v1/director-projects/{record.project_id}/sentence-audio.zip"
+        if record.status == "succeeded"
+        else None
+    )
     return payload
 
 
@@ -792,11 +828,45 @@ def _public_generation(record: Any) -> dict[str, Any]:
         if record.status == "succeeded"
         else None
     )
+    payload["sentence_audio_url"] = (
+        f"/api/v1/director-projects/{record.project_id}/sentence-audio.zip"
+        if record.status == "succeeded"
+        else None
+    )
     return cast(dict[str, Any], payload)
 
 
 def _dump(record: Any) -> dict[str, Any]:
     return cast(dict[str, Any], record.model_dump(mode="json"))
+
+
+def _resolve_sentence_archive_path(root: Path, final_relative_path: str) -> Path:
+    root = root.resolve()
+    directors_root = (root / "directors").resolve()
+    final_candidate = root / final_relative_path
+    archive_candidate = final_candidate.parent / "sentences.zip"
+    final_path = final_candidate.resolve()
+    archive_path = archive_candidate.resolve()
+    final_path.relative_to(directors_root)
+    archive_path.relative_to(directors_root)
+    if _path_chain_contains_symlink(final_candidate, root) or _path_chain_contains_symlink(
+        archive_candidate, root
+    ):
+        raise ValueError("director sentence audio path contains a symlink")
+    return archive_path
+
+
+def _path_chain_contains_symlink(candidate: Path, root: Path) -> bool:
+    current = candidate
+    while True:
+        if current.is_symlink():
+            return True
+        if current == root:
+            return False
+        parent = current.parent
+        if parent == current:
+            raise ValueError("director sentence audio path is outside the artifact root")
+        current = parent
 
 
 def _pipeline_error(error: PipelineError) -> HTTPException:

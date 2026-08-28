@@ -3,12 +3,17 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 from voice_pipeline.core.errors import ErrorCode, PipelineError
+from voice_pipeline.core.gpu_queue import SerialGpuQueue
+from voice_pipeline.core.pipeline import SynthesisService
+from voice_pipeline.core.reference_duration_probe import ServiceReferenceDurationProbe
 from voice_pipeline.core.role_preset_service import RolePresetService
 from voice_pipeline.core.segment_job_service import SegmentJobService
+from voice_pipeline.core.sentence_archive import SentenceArchiveEntry, write_sentence_archive
 from voice_pipeline.models.director import (
     DirectorGenerationItemRecord,
     DirectorGenerationRecord,
@@ -22,9 +27,13 @@ from voice_pipeline.models.persistence import (
     CreateSegmentRequest,
     OutputAudioSpec,
     SegmentGsvJobRequest,
+    SegmentInputsPatch,
+    SegmentRecord,
     SegmentReferenceJobRequest,
 )
 from voice_pipeline.modules.audio.composer import ComposeInput, compose_final
+from voice_pipeline.modules.llm.director import ReferenceTextDirector
+from voice_pipeline.modules.llm.models import DirectedSegment
 from voice_pipeline.storage.artifact_store import ArtifactStore
 from voice_pipeline.storage.director_store import DirectorStore
 from voice_pipeline.storage.job_store import SqliteJobStore
@@ -45,6 +54,11 @@ class DirectorGenerationService:
         segment_jobs: SegmentJobService,
         versions: VersionStore,
         artifacts: ArtifactStore,
+        director: Any,
+        synthesis: SynthesisService,
+        queue: SerialGpuQueue,
+        jobs_root: Path,
+        max_reference_corrections: int,
         notify_jobs: Callable[[], Awaitable[None]],
     ) -> None:
         self._directors = directors
@@ -54,6 +68,11 @@ class DirectorGenerationService:
         self._segment_jobs = segment_jobs
         self._versions = versions
         self._artifacts = artifacts
+        self._director = director
+        self._synthesis = synthesis
+        self._queue = queue
+        self._jobs_root = jobs_root
+        self._max_reference_corrections = max_reference_corrections
         self._notify_jobs = notify_jobs
         self._active: dict[UUID, asyncio.Task[None]] = {}
 
@@ -73,24 +92,29 @@ class DirectorGenerationService:
             item for item in await self._directors.list_utterances(project_id) if item.speak_enabled
         ]
         roles = {item.role_id: item for item in await self._directors.list_roles(project_id)}
-        if not utterances:
-            raise PipelineError(
-                ErrorCode.DIRECTOR_REVIEW_REQUIRED,
-                "director_generation",
-                "project has no spoken utterances",
-                retryable=False,
-            )
         preset_by_role: dict[UUID, RolePresetRecord] = {}
+        mapped_utterances: list[DirectorUtteranceRecord] = []
         for utterance in utterances:
             if utterance.role_id is None or utterance.role_id not in roles:
                 raise _preset_blocker("spoken utterance has no role", utterance)
             role = roles[utterance.role_id]
+            if not role.dubbing_enabled:
+                continue
             if role.preset_id is None:
                 raise _preset_blocker("spoken role has no role preset", utterance)
             preset = await self._presets.resolve(role.preset_id)
             if preset.status != "ready":
                 raise _preset_blocker("spoken role preset is unavailable", utterance)
             preset_by_role[role.role_id] = preset
+            mapped_utterances.append(utterance)
+        utterances = mapped_utterances
+        if not utterances:
+            raise PipelineError(
+                ErrorCode.DIRECTOR_REVIEW_REQUIRED,
+                "director_generation",
+                "project has no mapped spoken utterances",
+                retryable=False,
+            )
         adjusted_utterances: list[DirectorUtteranceRecord] = []
         for utterance in utterances:
             role_id = utterance.role_id
@@ -303,8 +327,14 @@ class DirectorGenerationService:
                         utterance.utterance_id,
                         status="reference_running",
                     )
+                    segment = await self._segments.get_segment(segment_id)
+                    segment = await self._resolve_reference_text(
+                        segment,
+                        utterance,
+                        self._presets.audio_path(preset),
+                    )
                     context = await self._segment_jobs.submit_reference(
-                        segment_id,
+                        segment.segment_id,
                         SegmentReferenceJobRequest(
                             request_id=uuid4(),
                             base_voice_path=self._presets.audio_path(preset),
@@ -318,7 +348,7 @@ class DirectorGenerationService:
                     )
                     await self._notify_jobs()
                     await self._await_job(context.job_id)
-                    segment = await self._segments.get_segment(segment_id)
+                    segment = await self._segments.get_segment(segment.segment_id)
                     await self._directors.attach_utterance_versions(
                         utterance.utterance_id,
                         reference_version_id=segment.active_ref_version_id,
@@ -425,15 +455,69 @@ class DirectorGenerationService:
                 error=_error_payload(exc),
             )
 
+    async def _resolve_reference_text(
+        self,
+        segment: SegmentRecord,
+        utterance: DirectorUtteranceRecord,
+        base_voice: Path,
+    ) -> SegmentRecord:
+        resolver = ReferenceTextDirector(self._director)
+        current = segment
+        for conflict_attempt in range(2):
+            directed = DirectedSegment(
+                ordinal=utterance.ordinal,
+                source_start=utterance.source_start,
+                source_end=utterance.source_end,
+                emotion_description="保持当前情绪向量和表演强度",
+                emotion_vector=current.current_emotion_vector,
+                synthesis_text=current.synthesis_text,
+                ref_text_cn=current.ref_text_cn,
+                pause_after_ms=current.pause_after_ms,
+                speed_factor=current.speed_factor,
+                seed=current.seed,
+            )
+            resolved = await resolver.resolve_reference_text(
+                directed,
+                ServiceReferenceDurationProbe(
+                    synthesis=self._synthesis,
+                    queue=self._queue,
+                    jobs_root=self._jobs_root / "director-reference-probes",
+                    base_voice=base_voice,
+                ),
+                max_corrections=_director_reference_correction_budget(
+                    self._director,
+                    fallback=self._max_reference_corrections,
+                ),
+            )
+            if resolved.ref_text_cn == current.ref_text_cn:
+                return current
+            try:
+                return await self._segments.patch_inputs(
+                    current.segment_id,
+                    SegmentInputsPatch(
+                        expected_ref_draft_revision=current.ref_draft_revision,
+                        expected_gsv_draft_revision=current.gsv_draft_revision,
+                        ref_text_cn=resolved.ref_text_cn,
+                    ),
+                )
+            except PipelineError as exc:
+                if exc.code != ErrorCode.VERSION_CONFLICT:
+                    raise
+                current = await self._segments.get_segment(current.segment_id)
+                if conflict_attempt == 1:
+                    return current
+        raise AssertionError("reference resolution loop must return or raise")
+
     async def _materialize(
         self, project: DirectorProjectRecord, utterances: list[DirectorUtteranceRecord]
     ) -> dict[UUID, UUID]:
+        desired_ids = {item.utterance_id for item in utterances}
         existing = {
             item.utterance_id: item.segment_id
             for item in await self._directors.list_utterances(project.project_id)
-            if item.speak_enabled and item.segment_id is not None
+            if item.utterance_id in desired_ids and item.segment_id is not None
         }
-        if len(existing) == len(utterances):
+        if set(existing) == desired_ids:
             return {key: value for key, value in existing.items() if value is not None}
         task = await self._segments.create_task(
             CreateDubbingTaskRequest(
@@ -443,8 +527,10 @@ class DirectorGenerationService:
                 output_spec=OutputAudioSpec(),
             )
         )
-        mapping: dict[UUID, UUID] = {}
+        mapping = {key: value for key, value in existing.items() if value is not None}
         for ordinal, utterance in enumerate(utterances):
+            if utterance.utterance_id in mapping:
+                continue
             if (
                 utterance.synthesis_text is None
                 or utterance.ref_text_cn is None
@@ -502,6 +588,7 @@ class DirectorGenerationService:
         utterances: list[DirectorUtteranceRecord],
     ) -> None:
         inputs: list[ComposeInput] = []
+        archive_entries: list[SentenceArchiveEntry] = []
         for ordinal, utterance in enumerate(utterances):
             segment = await self._segments.get_segment(materialized[utterance.utterance_id])
             if segment.active_gsv_version_id is None:
@@ -512,15 +599,23 @@ class DirectorGenerationService:
                     retryable=False,
                 )
             version = await self._versions.get_version(segment.active_gsv_version_id)
+            blob_path = (self._artifacts.root / version.blob_relative_path).resolve()
             inputs.append(
                 ComposeInput(
                     ordinal=ordinal,
                     segment_id=segment.segment_id,
                     gsv_version_id=version.version_id,
                     gsv_content_sha256=version.blob_sha256,
-                    blob_path=(self._artifacts.root / version.blob_relative_path).resolve(),
+                    blob_path=blob_path,
                     pause_after_ms=segment.pause_after_ms,
                     state=version.state,
+                )
+            )
+            archive_entries.append(
+                SentenceArchiveEntry(
+                    ordinal=ordinal,
+                    source_text=utterance.source_text,
+                    audio_path=blob_path,
                 )
             )
         output_dir = self._artifacts.root / "directors" / str(generation_id)
@@ -532,6 +627,7 @@ class DirectorGenerationService:
             output_path=output_dir / "final.wav",
             timeline_path=output_dir / "timeline.json",
         )
+        write_sentence_archive(tuple(archive_entries), output_dir / "sentences.zip")
         await self._directors.finish_generation(
             generation_id,
             succeeded=True,
@@ -548,6 +644,11 @@ def _preset_blocker(message: str, utterance: DirectorUtteranceRecord) -> Pipelin
         retryable=False,
         details={"utterance_id": str(utterance.utterance_id)},
     )
+
+
+def _director_reference_correction_budget(director: Any, *, fallback: int) -> int:
+    configured = int(getattr(director, "max_reference_corrections", fallback))
+    return max(0, min(2, configured))
 
 
 def _error_payload(error: BaseException) -> dict[str, Any]:

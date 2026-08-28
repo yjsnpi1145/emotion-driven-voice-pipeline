@@ -1,14 +1,128 @@
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
+from uuid import uuid4
+from zipfile import ZipFile
 
 import httpx
+import numpy as np
 import pytest
+import soundfile as sf
 
 from tests.integration_cpu.conftest import write_tone
 from tests.integration_cpu.test_chapter_pipeline import _import_profile
 from voice_pipeline.api.app import create_app
+from voice_pipeline.models.director import DirectorUtteranceRecord
+from voice_pipeline.models.persistence import (
+    CreateDubbingTaskRequest,
+    CreateSegmentRequest,
+    OutputAudioSpec,
+)
+from voice_pipeline.modules.audio.wav_probe import probe_wav
+from voice_pipeline.modules.indextts.fake import FakeIndexTTSClient
 from voice_pipeline.modules.text.speakability import is_speakable_text
+
+
+class _TextDurationIndexClient(FakeIndexTTSClient):
+    async def synthesize(self, request, output_path):
+        self.calls += 1
+        duration = 1.0 if request.text == "诶？" else 4.0
+        sample_rate = 22_050
+        t = np.arange(int(duration * sample_rate)) / sample_rate
+        sf.write(
+            output_path,
+            (0.2 * np.sin(2 * np.pi * 220 * t)).astype(np.float32),
+            sample_rate,
+            subtype="PCM_16",
+        )
+        return probe_wav(output_path, require_reference_window=False)
+
+
+@pytest.mark.asyncio
+async def test_director_reference_resolution_persists_only_expanded_reference_text(
+    fake_settings, tmp_path, monkeypatch
+) -> None:
+    actor = tmp_path / "actor.wav"
+    write_tone(actor, 12.0)
+    index = _TextDurationIndexClient()
+    app = create_app(fake_settings, index_client=index)
+    expanded = "咦？我刚才似乎听见了什么声音，让我再仔细确认一下。"
+
+    async with app.router.lifespan_context(app):
+        plane = app.state.plane
+
+        async def correct_reference_text(*, current, direction, emotion_description):
+            assert current == "诶？"
+            assert direction == "lengthen"
+            assert emotion_description
+            return expanded
+
+        monkeypatch.setattr(
+            plane.llm_client,
+            "correct_reference_text",
+            correct_reference_text,
+        )
+        task = await plane.segment_store.create_task(
+            CreateDubbingTaskRequest(
+                title="短对白参考修正",
+                source_text="诶？",
+                target_language="ja",
+                output_spec=OutputAudioSpec(),
+            )
+        )
+        vector = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.1)
+        segment = await plane.segment_store.create_segment(
+            task.task_id,
+            CreateSegmentRequest(
+                ordinal=0,
+                source_start=0,
+                source_end=2,
+                source_text="诶？",
+                synthesis_text="え？",
+                llm_emotion_vector=vector,
+                ref_text_cn="诶？",
+                speed_factor=1.15,
+                pause_after_ms=650,
+                seed=9876,
+            ),
+        )
+        utterance = DirectorUtteranceRecord(
+            utterance_id=uuid4(),
+            project_id=uuid4(),
+            ordinal=0,
+            source_start=0,
+            source_end=2,
+            source_text="诶？",
+            working_text="诶？",
+            kind="dialogue",
+            speak_enabled=True,
+            role_id=uuid4(),
+            role_confidence=1.0,
+            role_confirmed=True,
+            synthesis_text="え？",
+            ref_text_cn="诶？",
+            emotion_vector=vector,
+            speed_factor=1.15,
+            pause_after_ms=650,
+            seed=9876,
+            revision=0,
+        )
+
+        resolved = await plane.director_generation._resolve_reference_text(
+            segment,
+            utterance,
+            actor,
+        )
+
+        assert index.calls == 2
+        assert resolved.ref_text_cn == expanded
+        assert resolved.source_text == segment.source_text
+        assert resolved.synthesis_text == segment.synthesis_text
+        assert resolved.current_emotion_vector == segment.current_emotion_vector
+        assert resolved.speed_factor == segment.speed_factor
+        assert resolved.pause_after_ms == segment.pause_after_ms
+        assert resolved.seed == segment.seed
 
 
 @pytest.mark.asyncio
@@ -183,6 +297,17 @@ async def test_director_end_to_end_uses_confirmed_preprocessing_and_filters_punc
             audio = await client.get(f"/api/v1/director-projects/{project['project_id']}/audio")
             assert audio.status_code == 200
             assert audio.content.startswith(b"RIFF")
+            archive = await client.get(
+                f"/api/v1/director-projects/{project['project_id']}/sentence-audio.zip"
+            )
+            assert archive.status_code == 200
+            assert archive.headers["content-type"] == "application/zip"
+            with ZipFile(BytesIO(archive.content)) as bundle:
+                assert bundle.namelist() == [
+                    f"{index + 1:04d}_{row.source_text.strip()}.wav"
+                    for index, row in enumerate(spoken_generated)
+                ]
+                assert all(bundle.read(name).startswith(b"RIFF") for name in bundle.namelist())
 
 
 async def _wait_project(client, project_id: str, status: str, *, limit: int = 100):
