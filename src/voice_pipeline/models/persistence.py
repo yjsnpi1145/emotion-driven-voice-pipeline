@@ -135,6 +135,14 @@ class SegmentReferenceJobRequest(StrictModel):
     activate_on_success: bool = True
 
 
+class ReferenceInputOverride(StrictModel):
+    """Director-only frozen reference inputs that do not edit the reviewed segment."""
+
+    ref_text_cn: ChineseReferenceText
+    emotion_vector: EmotionVector
+    seed: int
+
+
 class SegmentReferenceRegenerationRequest(StrictModel):
     request_id: UUID
     base_voice_path: Path | None = None
