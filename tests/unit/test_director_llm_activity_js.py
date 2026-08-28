@@ -101,6 +101,34 @@ console.log(JSON.stringify(directorOperationLabels.script_preprocessing));
     assert json.loads(result.stdout) == "文本预处理"
 
 
+def test_director_emotion_direction_is_visible_with_user_facing_label() -> None:
+    script = f"""
+import {{ directorActivityView, directorOperationLabels }} from {json.dumps(MODULE.as_uri())};
+const event = {{
+  sequence:1,
+  operation_id:'emotion',
+  operation:'emotion_direction',
+  kind:'response',
+  message:'response',
+  content:'{{"items":[]}}',
+  created_at_utc:'2026-08-27T10:00:00Z',
+}};
+const view = directorActivityView({{active:true, events:[event]}});
+const payload = {{events:view.events, label:directorOperationLabels.emotion_direction}};
+console.log(JSON.stringify(payload));
+"""
+    result = subprocess.run(
+        ["node", "--input-type=module", "--eval", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    payload = json.loads(result.stdout)
+    assert [item["operation"] for item in payload["events"]] == ["emotion_direction"]
+    assert payload["label"] == "上下文情绪"
+
+
 def test_director_activity_view_preserves_events_when_endpoint_is_unavailable() -> None:
     script = f"""
 import {{ directorActivityView }} from {json.dumps(MODULE.as_uri())};

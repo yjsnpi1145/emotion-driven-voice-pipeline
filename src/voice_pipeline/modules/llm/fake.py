@@ -8,6 +8,9 @@ from voice_pipeline.models.director_llm import (
     CandidateRoleAssignment,
     CastReconciliationResult,
     ChunkAnalysisResult,
+    EmotionDirectionInput,
+    EmotionDirectionResult,
+    EmotionDirectionResultItem,
     PreprocessRewriteItem,
     PreprocessRewriteResult,
     PreprocessRewriteUnit,
@@ -200,6 +203,24 @@ class FakeDirector:
                     emotion_vector=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3),
                     speed_factor=1.0,
                     pause_after_ms=400,
+                )
+                for item in utterances
+            )
+        )
+
+    async def direct_emotions(
+        self,
+        *,
+        utterances: tuple[EmotionDirectionInput, ...],
+        activity_id: UUID | None = None,
+    ) -> EmotionDirectionResult:
+        del activity_id
+        return EmotionDirectionResult(
+            items=tuple(
+                EmotionDirectionResultItem(
+                    utterance_id=item.utterance_id,
+                    revision=item.revision,
+                    emotion_vector=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3),
                 )
                 for item in utterances
             )
