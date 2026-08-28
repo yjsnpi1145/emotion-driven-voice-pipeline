@@ -24,7 +24,7 @@ def storage_settings(tmp_path: Path) -> StorageSettings:
 async def test_director_migration_creates_all_tables(tmp_path: Path) -> None:
     database = await Database.open(storage_settings(tmp_path), instance_id=uuid4(), migrate=True)
     try:
-        assert await database.alembic_revision() == "0008_director_reference_pool"
+        assert await database.alembic_revision() == "0009_director_performance_controls"
         async with database.read_session() as session:
             rows = await session.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
             names = {str(row[0]) for row in rows}
@@ -56,6 +56,7 @@ async def test_director_migration_creates_all_tables(tmp_path: Path) -> None:
             "preprocessed_text",
             "preprocess_revision",
         } <= project_columns
+        assert "performance_direction" in project_columns
         assert {
             "reference_mode",
             "reference_pool_entry_id",
@@ -95,7 +96,7 @@ async def test_director_working_text_migration_backfills_existing_source(tmp_pat
 
     database = await Database.open(settings, instance_id=uuid4(), migrate=True)
     try:
-        assert await database.alembic_revision() == "0008_director_reference_pool"
+        assert await database.alembic_revision() == "0009_director_performance_controls"
         async with database.read_session() as session:
             row = (
                 await session.execute(

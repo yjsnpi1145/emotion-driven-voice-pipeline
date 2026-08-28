@@ -66,6 +66,7 @@ class DirectorStore:
                     target_language=request.target_language,
                     narration_enabled=int(request.narration_enabled),
                     preprocessing_mode=request.preprocessing_mode,
+                    performance_direction=request.performance_direction,
                     structural_text=None,
                     preprocessed_text=None,
                     status="draft",
@@ -114,6 +115,46 @@ class DirectorStore:
                 .all()
             )
         return [_project(dict(row)) for row in rows]
+
+    async def update_performance_direction(
+        self,
+        project_id: UUID,
+        *,
+        expected_revision: int,
+        performance_direction: str | None,
+        reapply: bool,
+    ) -> DirectorProjectRecord:
+        async with self._database.write_session() as session:
+            project = await _locked_project(session, project_id)
+            _require_revision(project, expected_revision)
+            status = str(project["status"])
+            editable_without_reapply = {"draft", "preprocess_review", "role_review"}
+            if status not in editable_without_reapply and not reapply:
+                raise _state_conflict(status, "edit performance direction")
+            if status in {"preprocessing", "analyzing", "translating", "generating"}:
+                raise _state_conflict(status, "edit performance direction")
+            await session.execute(
+                update(director_projects)
+                .where(director_projects.c.project_id == str(project_id))
+                .where(director_projects.c.revision == expected_revision)
+                .values(
+                    performance_direction=performance_direction,
+                    revision=director_projects.c.revision + 1,
+                    updated_at_utc=_now(),
+                )
+            )
+            await _append_event(
+                session,
+                project_id,
+                operation="performance_direction_updated",
+                before_revision=expected_revision,
+                after_revision=expected_revision + 1,
+                details={
+                    "reapply": reapply,
+                    "has_direction": performance_direction is not None,
+                },
+            )
+        return await self.get_project(project_id)
 
     async def health_counts(self) -> dict[str, int]:
         """Return path-free operational counts for the control-plane health payload."""
@@ -2483,6 +2524,7 @@ def _project(row: dict[str, Any]) -> DirectorProjectRecord:
         target_language=str(row["target_language"]),  # type: ignore[arg-type]
         narration_enabled=bool(row["narration_enabled"]),
         preprocessing_mode=str(row["preprocessing_mode"]),  # type: ignore[arg-type]
+        performance_direction=cast(str | None, row.get("performance_direction")),
         structural_text=cast(str | None, row.get("structural_text")),
         preprocessed_text=cast(str | None, row.get("preprocessed_text")),
         status=str(row["status"]),  # type: ignore[arg-type]

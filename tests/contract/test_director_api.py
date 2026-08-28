@@ -7,14 +7,14 @@ from zipfile import ZipFile
 
 import httpx
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from tests.integration_cpu.conftest import write_tone
 from tests.integration_cpu.test_chapter_pipeline import _import_profile
 from voice_pipeline.api.app import create_app
 from voice_pipeline.core.director_analysis import ScriptAnalysisService
 from voice_pipeline.core.errors import ErrorCode, PipelineError
-from voice_pipeline.storage.orm import segments
+from voice_pipeline.storage.orm import director_edit_events, segments
 
 
 class _FailingAnalysis:
@@ -86,6 +86,72 @@ async def _confirm_and_wait_for_roles(client, project: dict) -> dict:
     )
     assert response.status_code == 202, response.text
     return await _wait_project_status(client, project["project_id"], "role_review")
+
+
+@pytest.mark.asyncio
+async def test_director_project_persists_revisioned_performance_direction(fake_settings) -> None:
+    app = create_app(fake_settings)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            created = await client.post(
+                "/api/v1/director-projects",
+                json={
+                    "title": "表演指导",
+                    "source_text": "甲：我没事。",
+                    "source_language": "zh",
+                    "target_language": "ja",
+                    "performance_direction": "  整体偏平静，避免夸张。  ",
+                },
+            )
+            assert created.status_code == 201, created.text
+            project = created.json()
+            assert project["performance_direction"] == "整体偏平静，避免夸张。"
+
+            too_long = await client.post(
+                "/api/v1/director-projects",
+                json={
+                    "title": "过长指导",
+                    "source_text": "甲：你好。",
+                    "source_language": "zh",
+                    "target_language": "ja",
+                    "performance_direction": "静" * 2001,
+                },
+            )
+            assert too_long.status_code == 422
+
+            updated = await client.patch(
+                f"/api/v1/director-projects/{project['project_id']}/performance-direction",
+                json={
+                    "expected_revision": project["revision"],
+                    "performance_direction": "  \n",
+                    "reapply": False,
+                },
+            )
+            assert updated.status_code == 200, updated.text
+            assert updated.json()["performance_direction"] is None
+            assert updated.json()["revision"] == project["revision"] + 1
+            async with app.state.plane.database.read_session() as session:
+                audit = (
+                    await session.execute(
+                        select(director_edit_events.c.operation).where(
+                            director_edit_events.c.project_id == project["project_id"]
+                        )
+                    )
+                ).scalars().all()
+            assert "performance_direction_updated" in audit
+
+            stale = await client.patch(
+                f"/api/v1/director-projects/{project['project_id']}/performance-direction",
+                json={
+                    "expected_revision": project["revision"],
+                    "performance_direction": "过期修改",
+                    "reapply": False,
+                },
+            )
+            assert stale.status_code == 409
 
 
 @pytest.mark.asyncio

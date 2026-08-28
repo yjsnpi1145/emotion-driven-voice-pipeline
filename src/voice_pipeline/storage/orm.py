@@ -386,6 +386,7 @@ director_projects = Table(
     Column("target_language", String(8), nullable=False),
     Column("narration_enabled", Integer, nullable=False, server_default="1"),
     Column("preprocessing_mode", String(16), nullable=False, server_default="structural"),
+    Column("performance_direction", Text, nullable=True),
     Column("structural_text", Text, nullable=True),
     Column("preprocessed_text", Text, nullable=True),
     Column("status", String(32), nullable=False),

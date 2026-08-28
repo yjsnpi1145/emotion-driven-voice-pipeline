@@ -63,6 +63,15 @@ class CreateDirectorProjectRequest(StrictModel):
     target_language: LanguageCode
     narration_enabled: bool = True
     preprocessing_mode: PreprocessMode = "structural"
+    performance_direction: str | None = Field(default=None, max_length=2_000)
+
+    @field_validator("performance_direction", mode="before")
+    @classmethod
+    def normalize_performance_direction(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        return normalized or None
 
 
 class DirectorProjectRecord(StrictModel):
@@ -74,6 +83,7 @@ class DirectorProjectRecord(StrictModel):
     target_language: LanguageCode
     narration_enabled: bool
     preprocessing_mode: PreprocessMode
+    performance_direction: str | None = None
     structural_text: str | None = None
     preprocessed_text: str | None = None
     status: DirectorProjectStatus
@@ -251,6 +261,20 @@ class MergeDirectorUtterancesRequest(StrictModel):
 
 class ExpectedProjectRevision(StrictModel):
     expected_revision: int = Field(ge=0)
+
+
+class UpdateDirectorPerformanceDirection(StrictModel):
+    expected_revision: int = Field(ge=0)
+    performance_direction: str | None = Field(default=None, max_length=2_000)
+    reapply: bool = False
+
+    @field_validator("performance_direction", mode="before")
+    @classmethod
+    def normalize_performance_direction(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        return normalized or None
 
 
 class BindRolePresetRequest(StrictModel):

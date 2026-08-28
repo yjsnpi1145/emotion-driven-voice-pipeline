@@ -32,6 +32,7 @@ from voice_pipeline.models.director import (
     RolePresetRecord,
     SplitDirectorRoleRequest,
     SplitDirectorUtteranceRequest,
+    UpdateDirectorPerformanceDirection,
     UpdateRolePresetRequest,
 )
 from voice_pipeline.modules.audio.wav_probe import sha256_file
@@ -56,6 +57,24 @@ def build_director_router(plane: Any) -> APIRouter:
             return _public_project(await _store(plane).get_project(project_id))
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="director project not found") from exc
+
+    @router.patch("/api/v1/director-projects/{project_id}/performance-direction")
+    async def update_performance_direction(
+        project_id: UUID,
+        request: UpdateDirectorPerformanceDirection,
+    ) -> dict[str, Any]:
+        try:
+            project = await _store(plane).update_performance_direction(
+                project_id,
+                expected_revision=request.expected_revision,
+                performance_direction=request.performance_direction,
+                reapply=request.reapply,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="director project not found") from exc
+        except PipelineError as exc:
+            raise _pipeline_error(exc) from exc
+        return _public_project(project)
 
     @router.delete("/api/v1/director-projects/{project_id}")
     async def delete_project(project_id: UUID, request: ExpectedProjectRevision) -> dict[str, str]:
