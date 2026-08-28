@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import Field, model_validator
 
+from voice_pipeline.models.director import UtteranceKind
 from voice_pipeline.models.schemas import (
     ChineseReferenceText,
     EmotionVector,
@@ -144,3 +145,31 @@ class TranslationResultItem(StrictModel):
 
 class ScriptTranslationResult(StrictModel):
     items: tuple[TranslationResultItem, ...]
+
+
+class EmotionContextUnit(StrictModel):
+    ordinal: int = Field(ge=0)
+    role_name: str | None = None
+    kind: UtteranceKind
+    speak_enabled: bool
+    text: PreservedNonBlankText
+
+
+class EmotionDirectionInput(StrictModel):
+    utterance_id: UUID
+    revision: int = Field(ge=0)
+    role_name: str | None = None
+    source_text: PreservedNonBlankText
+    scene_context: PreservedNonBlankText
+    previous_units: tuple[EmotionContextUnit, ...] = ()
+    next_units: tuple[EmotionContextUnit, ...] = ()
+
+
+class EmotionDirectionResultItem(StrictModel):
+    utterance_id: UUID
+    revision: int = Field(ge=0)
+    emotion_vector: EmotionVector
+
+
+class EmotionDirectionResult(StrictModel):
+    items: tuple[EmotionDirectionResultItem, ...]
