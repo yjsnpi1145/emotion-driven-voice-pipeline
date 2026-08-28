@@ -33,7 +33,7 @@ Generation filters out utterances whose assigned role has `dubbing_enabled=false
 
 ### Sentence ZIP export
 
-After all mapped utterances have ready GSV versions, generation writes `sentences.zip` next to the generated `final.wav`. ZIP entries use the immutable Chinese `source_text` and the generation ordinal. The ZIP contains the ready GSV WAV blobs directly and excludes skipped roles by construction.
+After all mapped utterances have ready GSV versions, generation writes `sentences.zip` next to the generated `final.wav`. ZIP entries use the immutable Chinese `source_text` and the generation ordinal. Each standalone ZIP WAV is rendered from the ready GSV blob with that utterance's configured `pause_after_ms` appended as trailing silence, so playback does not stop abruptly at the last voiced frame. The immutable ready GSV blob is never modified. Skipped roles remain excluded by construction.
 
 The generation API adds a sentence-archive download endpoint with path-containment and symlink checks equivalent to the mixed-WAV endpoint. The WebUI shows both download controls after successful generation.
 

@@ -8,7 +8,7 @@
 
 ### 采用：服务端按需生成临时 ZIP
 
-后端读取章节的持久化分块顺序和每段当前 GSV 指针，验证不可变音频后在受管 artifact 根目录创建临时 ZIP。`FileResponse` 完成传输后删除临时文件。
+后端读取章节的持久化分块顺序和每段当前 GSV 指针，验证不可变音频后在受管 artifact 根目录创建临时 ZIP。每个独立 WAV 副本在末尾追加该分块配置的 `pause_after_ms` 静音，避免单独播放时在最后一个发声帧处突兀停止；源 GSV artifact 保持不变。清单保留源 artifact 的 `content_sha256`，并另外记录实际 ZIP WAV 的 `export_content_sha256` 和 `tail_padding_ms`。`FileResponse` 完成传输后删除临时文件。
 
 优点：浏览器不需要把所有 WAV 读进内存；ZIP 内容由后端的版本指针和哈希校验统一保证；不新增第三方依赖。缺点：每次下载都需要重新压缩。
 
@@ -43,7 +43,7 @@ manifest.json
 - `run_id`
 - `title`
 - `created_at_utc`
-- 有序 `segments` 数组；每项包含 `ordinal`、`segment_id`、`version_id`、`file_name`、`content_sha256`、`synthesis_text`、`target_language` 和 `ref_version_id`
+- 有序 `segments` 数组；每项包含 `ordinal`、`segment_id`、`version_id`、`file_name`、源 artifact 的 `content_sha256`、实际 ZIP WAV 的 `export_content_sha256`、`tail_padding_ms`、`synthesis_text`、`target_language` 和 `ref_version_id`。新增的导出哈希与尾静音字段属于 `schema_version: 1` 的向后兼容可选扩展。
 
 清单不得包含 artifact 根目录、模型路径、基础音色路径或其他本地绝对路径。
 

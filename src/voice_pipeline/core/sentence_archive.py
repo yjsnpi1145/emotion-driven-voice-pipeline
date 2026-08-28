@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
-import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
+
+from voice_pipeline.core.errors import ErrorCode, PipelineError
+from voice_pipeline.modules.audio.wav_export import append_trailing_silence
 
 _WINDOWS_INVALID = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
@@ -18,6 +21,8 @@ class SentenceArchiveEntry:
     ordinal: int
     source_text: str
     audio_path: Path
+    pause_after_ms: int = 0
+    source_content_sha256: str | None = None
 
 
 def sanitize_sentence_filename(
@@ -46,16 +51,66 @@ def write_sentence_archive(
     try:
         with ZipFile(partial, mode="x", compression=ZIP_DEFLATED) as bundle:
             for entry in entries:
-                if not entry.audio_path.is_file() or entry.audio_path.is_symlink():
-                    raise FileNotFoundError(entry.audio_path)
+                details = {"ordinal": entry.ordinal}
+                if entry.audio_path.is_symlink():
+                    raise PipelineError(
+                        ErrorCode.ARTIFACT_CORRUPT,
+                        "sentence_archive",
+                        "sentence audio source is a symlink",
+                        retryable=False,
+                        details=details,
+                    )
+                if not entry.audio_path.is_file():
+                    raise PipelineError(
+                        ErrorCode.ARTIFACT_MISSING,
+                        "sentence_archive",
+                        "sentence audio source is missing",
+                        retryable=False,
+                        details=details,
+                    )
                 info = ZipInfo(
                     sanitize_sentence_filename(entry.ordinal, entry.source_text),
                     date_time=_FIXED_ZIP_TIME,
                 )
                 info.compress_type = ZIP_DEFLATED
                 info.external_attr = 0o600 << 16
-                with entry.audio_path.open("rb") as source, bundle.open(info, "w") as target:
-                    shutil.copyfileobj(source, target)
+                try:
+                    source_wav = entry.audio_path.read_bytes()
+                except OSError as exc:
+                    raise PipelineError(
+                        ErrorCode.ARTIFACT_MISSING,
+                        "sentence_archive",
+                        "sentence audio source became unavailable",
+                        retryable=True,
+                        details=details,
+                    ) from exc
+                if (
+                    entry.source_content_sha256 is not None
+                    and hashlib.sha256(source_wav).hexdigest()
+                    != entry.source_content_sha256
+                ):
+                    raise PipelineError(
+                        ErrorCode.ARTIFACT_CORRUPT,
+                        "sentence_archive",
+                        "sentence audio source changed before export",
+                        retryable=True,
+                        details=details,
+                    )
+                try:
+                    exported_wav = append_trailing_silence(
+                        source_wav,
+                        silence_ms=entry.pause_after_ms,
+                    )
+                except (RuntimeError, ValueError) as exc:
+                    raise PipelineError(
+                        ErrorCode.ARTIFACT_CORRUPT,
+                        "sentence_archive",
+                        "sentence audio source is not a valid standalone WAV",
+                        retryable=False,
+                        details=details,
+                    ) from exc
+                with bundle.open(info, "w") as target:
+                    target.write(exported_wav)
         os.replace(partial, output_path)
         return output_path
     finally:

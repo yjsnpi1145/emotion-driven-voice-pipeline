@@ -54,6 +54,65 @@ class ArtifactStore:
         _require_sha256(content_sha256)
         return self._root / "blobs" / "sha256" / content_sha256[:2] / f"{content_sha256}.wav"
 
+    def verified_blob_path(
+        self,
+        *,
+        content_sha256: str,
+        relative_path: Path,
+    ) -> Path:
+        """Resolve a persisted blob reference without trusting its stored path."""
+        _require_sha256(content_sha256)
+        relative = PurePosixPath(relative_path.as_posix())
+        if relative.is_absolute() or ".." in relative.parts:
+            raise PipelineError(
+                ErrorCode.ARTIFACT_CORRUPT,
+                "artifact",
+                "artifact version path escapes the managed blob store",
+                retryable=False,
+            )
+        expected = self.blob_path(content_sha256)
+        expected_relative = PurePosixPath(expected.relative_to(self._root).as_posix())
+        if relative != expected_relative:
+            raise PipelineError(
+                ErrorCode.ARTIFACT_CORRUPT,
+                "artifact",
+                "artifact version path does not match its content-addressed blob",
+                retryable=False,
+            )
+        candidate = self._root / Path(relative)
+        if candidate.is_symlink():
+            raise PipelineError(
+                ErrorCode.ARTIFACT_CORRUPT,
+                "artifact",
+                "artifact version points to a symlink",
+                retryable=False,
+            )
+        if not candidate.is_file():
+            raise PipelineError(
+                ErrorCode.ARTIFACT_MISSING,
+                "artifact",
+                "artifact version blob is missing",
+                retryable=False,
+            )
+        try:
+            resolved = candidate.resolve(strict=True)
+            actual_sha256 = sha256_file(resolved)
+        except OSError as exc:
+            raise PipelineError(
+                ErrorCode.ARTIFACT_MISSING,
+                "artifact",
+                "artifact version blob became unavailable",
+                retryable=True,
+            ) from exc
+        if resolved != expected or actual_sha256 != content_sha256:
+            raise PipelineError(
+                ErrorCode.ARTIFACT_CORRUPT,
+                "artifact",
+                "artifact version no longer matches its content-addressed blob",
+                retryable=False,
+            )
+        return resolved
+
     def stage_audio(self, job_id: UUID, source_path: Path) -> StagedArtifact:
         source = _require_regular_absolute_file(source_path, label="audio source")
         source_sha = sha256_file(source)

@@ -1356,7 +1356,10 @@ class DirectorGenerationService:
                     retryable=False,
                 )
             version = await self._versions.get_version(segment.active_gsv_version_id)
-            blob_path = (self._artifacts.root / version.blob_relative_path).resolve()
+            blob_path = self._artifacts.verified_blob_path(
+                content_sha256=version.blob_sha256,
+                relative_path=version.blob_relative_path,
+            )
             inputs.append(
                 ComposeInput(
                     ordinal=len(inputs),
@@ -1373,6 +1376,8 @@ class DirectorGenerationService:
                     ordinal=ordinal,
                     source_text=utterance.source_text,
                     audio_path=blob_path,
+                    pause_after_ms=segment.pause_after_ms,
+                    source_content_sha256=version.blob_sha256,
                 )
             )
         output_dir = self._artifacts.root / "directors" / str(generation_id)

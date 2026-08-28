@@ -654,9 +654,18 @@ async def test_director_end_to_end_uses_confirmed_preprocessing_and_filters_punc
             assert spoken_generated
             assert all(row.segment_id is not None for row in spoken_generated)
             assert all(row.working_text.strip() for row in spoken_generated)
+            generated_segments = []
             for row in spoken_generated:
                 segment = await app.state.plane.segment_store.get_segment(row.segment_id)
                 assert segment.synthesis_text.strip()
+                generated_segments.append(segment)
+            first_segment = generated_segments[0]
+            assert first_segment.pause_after_ms > 0
+            first_version = await app.state.plane.version_store.get_version(
+                first_segment.active_gsv_version_id
+            )
+            first_blob = app.state.plane.artifact_store.root / first_version.blob_relative_path
+            first_source_duration = sf.info(first_blob).duration
             audio = await client.get(f"/api/v1/director-projects/{project['project_id']}/audio")
             assert audio.status_code == 200
             assert audio.content.startswith(b"RIFF")
@@ -671,6 +680,11 @@ async def test_director_end_to_end_uses_confirmed_preprocessing_and_filters_punc
                     for index, row in enumerate(spoken_generated)
                 ]
                 assert all(bundle.read(name).startswith(b"RIFF") for name in bundle.namelist())
+                first_exported = bundle.read(bundle.namelist()[0])
+            assert sf.info(BytesIO(first_exported)).duration == pytest.approx(
+                first_source_duration + first_segment.pause_after_ms / 1000,
+                abs=0.002,
+            )
 
 
 async def _wait_project(client, project_id: str, status: str, *, limit: int = 100):

@@ -59,6 +59,46 @@ def test_materialized_job_copy_does_not_mutate_canonical_blob(
     assert sha256_file(blob.absolute_path) == blob.content_sha256
 
 
+def test_verified_blob_path_rejects_corruption_and_path_escape(
+    store: ArtifactStore,
+    tone: Path,
+    tmp_path: Path,
+) -> None:
+    blob = store.publish_blob(store.stage_audio(uuid4(), tone))
+
+    assert (
+        store.verified_blob_path(
+            content_sha256=blob.content_sha256,
+            relative_path=blob.relative_path,
+        )
+        == blob.absolute_path
+    )
+
+    blob.absolute_path.write_bytes(b"different content")
+    with pytest.raises(PipelineError) as corrupt:
+        store.verified_blob_path(
+            content_sha256=blob.content_sha256,
+            relative_path=blob.relative_path,
+        )
+    assert corrupt.value.code == ErrorCode.ARTIFACT_CORRUPT
+
+    outside = tmp_path / "outside.wav"
+    write_tone(outside, seconds=1.0)
+    with pytest.raises(PipelineError) as escaped:
+        store.verified_blob_path(
+            content_sha256=sha256_file(outside),
+            relative_path=Path("..") / outside.name,
+        )
+    assert escaped.value.code == ErrorCode.ARTIFACT_CORRUPT
+
+    with pytest.raises(PipelineError) as wrong_path:
+        store.verified_blob_path(
+            content_sha256=sha256_file(outside),
+            relative_path=Path("blobs") / "sha256" / "00" / "missing.wav",
+        )
+    assert wrong_path.value.code == ErrorCode.ARTIFACT_CORRUPT
+
+
 def test_manifest_publish_is_exclusive(store: ArtifactStore) -> None:
     relative = Path("manifests") / "a.json"
     first = store.publish_version_manifest(relative, {"version": 1})
