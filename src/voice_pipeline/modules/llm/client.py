@@ -341,6 +341,7 @@ class OpenAiDirectorClient:
     async def direct_emotions(
         self,
         *,
+        performance_direction: str | None,
         utterances: tuple[EmotionDirectionInput, ...],
         activity_id: UUID | None = None,
     ) -> EmotionDirectionResult:
@@ -352,14 +353,18 @@ class OpenAiDirectorClient:
                     "speaker role_name, previous_units, and next_units. Infer intent, subtext, "
                     "speaker continuity, narration, and stage directions. Do not judge an "
                     "interjection in isolation; short reactions inherit meaning from the scene "
-                    "and surrounding turns. Use low intensity or calm when context is ambiguous. "
+                    "and surrounding turns. Treat performance_direction as a soft global "
+                    "performance bias that explicit scene evidence or dramatic turns may "
+                    "override. Use low intensity or calm when context is ambiguous. "
                     "Preserve every utterance_id and revision exactly and return one item per "
-                    "input in the same order. Do not rewrite or return any text. emotion_vector "
+                    "input in the same order. The result must not rewrite or return any text. "
+                    "Direct only emotion_vector, speed_factor, and pause_after_ms. emotion_vector "
                     "must contain exactly eight values ordered joy, anger, sadness, fear, "
                     "disgust, melancholy, surprise, calm; each value is within 0..1 and the total "
                     "is <= 0.8. Never output a uniform vector."
                 ),
                 payload={
+                    "performance_direction": performance_direction,
                     "utterances": [item.model_dump(mode="json") for item in utterances],
                 },
             ),

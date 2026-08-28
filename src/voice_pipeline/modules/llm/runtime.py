@@ -84,6 +84,7 @@ class _Director(Protocol):
     async def direct_emotions(
         self,
         *,
+        performance_direction: str | None,
         utterances: tuple[EmotionDirectionInput, ...],
         activity_id: UUID | None = None,
     ) -> EmotionDirectionResult: ...
@@ -368,6 +369,7 @@ class RuntimeDirector:
     async def direct_emotions(
         self,
         *,
+        performance_direction: str | None,
         utterances: tuple[EmotionDirectionInput, ...],
     ) -> EmotionDirectionResult:
         operation_id = uuid4()
@@ -381,6 +383,7 @@ class RuntimeDirector:
                 director = await self._begin_staged_call()
                 try:
                     result = await director.direct_emotions(
+                        performance_direction=performance_direction,
                         utterances=utterances,
                         activity_id=operation_id,
                     )

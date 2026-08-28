@@ -450,6 +450,8 @@ async def test_emotion_direction_sends_scene_speaker_and_timeline_context() -> N
                                         "utterance_id": str(utterance_id),
                                         "revision": 3,
                                         "emotion_vector": [0, 0, 0.35, 0, 0, 0.2, 0, 0.1],
+                                        "speed_factor": 0.9,
+                                        "pause_after_ms": 250,
                                     }
                                 ]
                             }
@@ -491,17 +493,27 @@ async def test_emotion_direction_sends_scene_speaker_and_timeline_context() -> N
             api_key="secret",
             activity=activity,
         )
-        result = await client.direct_emotions(utterances=(context,))
+        result = await client.direct_emotions(
+            performance_direction="整体偏平静，避免夸张。",
+            utterances=(context,),
+        )
 
     request = json.loads(route.calls[0].request.content)
     prompt = request["messages"][0]["content"]
     payload = json.loads(request["messages"][1]["content"])
-    assert payload == {"utterances": [context.model_dump(mode="json")]}
+    assert payload == {
+        "performance_direction": "整体偏平静，避免夸张。",
+        "utterances": [context.model_dump(mode="json")],
+    }
     assert "Do not judge an interjection in isolation" in prompt
     assert "scene_context" in prompt
     assert "speaker" in prompt
     assert "Never output a uniform vector" in prompt
+    assert "soft global performance bias" in prompt
+    assert "must not rewrite" in prompt
     assert result.items[0].utterance_id == utterance_id
+    assert result.items[0].speed_factor == 0.9
+    assert result.items[0].pause_after_ms == 250
     events = (await activity.snapshot()).events
     assert [event.operation for event in events] == ["emotion_direction"] * 2
 

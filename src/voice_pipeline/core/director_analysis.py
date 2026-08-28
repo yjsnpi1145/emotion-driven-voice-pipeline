@@ -54,6 +54,7 @@ class StagedDirector(Protocol):
     async def direct_emotions(
         self,
         *,
+        performance_direction: str | None,
         utterances: tuple[EmotionDirectionInput, ...],
     ) -> EmotionDirectionResult: ...
 
@@ -178,7 +179,10 @@ class ScriptAnalysisService:
         ]
         directed_results = await _gather_fail_fast(
             *(
-                self._director.direct_emotions(utterances=batch)
+                self._director.direct_emotions(
+                    performance_direction=project.performance_direction,
+                    utterances=batch,
+                )
                 for batch in emotion_batches
             )
         )
@@ -300,15 +304,19 @@ def _apply_directed_emotions(
             "emotion direction IDs or revisions do not match translated utterances",
             retryable=False,
         )
-    direction_by_key = {
-        (item.utterance_id, item.revision): item.emotion_vector for item in directions
-    }
+    direction_by_key = {(item.utterance_id, item.revision): item for item in directions}
     return tuple(
         item.model_copy(
             update={
                 "emotion_vector": normalize_directed_vector(
-                    direction_by_key[(item.utterance_id, item.revision)]
-                )
+                    direction_by_key[(item.utterance_id, item.revision)].emotion_vector
+                ),
+                "speed_factor": direction_by_key[
+                    (item.utterance_id, item.revision)
+                ].speed_factor,
+                "pause_after_ms": direction_by_key[
+                    (item.utterance_id, item.revision)
+                ].pause_after_ms,
             }
         )
         for item in translations

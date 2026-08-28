@@ -169,6 +169,8 @@ class EmotionDirectionResultItem(StrictModel):
     utterance_id: UUID
     revision: int = Field(ge=0)
     emotion_vector: EmotionVector
+    speed_factor: float = Field(ge=0.5, le=2.0)
+    pause_after_ms: int = Field(ge=0, le=30_000)
 
 
 class EmotionDirectionResult(StrictModel):

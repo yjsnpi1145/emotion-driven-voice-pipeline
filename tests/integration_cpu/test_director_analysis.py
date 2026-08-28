@@ -101,10 +101,12 @@ class FailingBatchDirector(FakeDirector):
 class ContextCapturingDirector(FakeDirector):
     def __init__(self, *, mismatch: bool = False) -> None:
         self.emotion_inputs = []
+        self.performance_directions = []
         self.mismatch = mismatch
 
-    async def direct_emotions(self, *, utterances, **kwargs):
+    async def direct_emotions(self, *, performance_direction, utterances, **kwargs):
         del kwargs
+        self.performance_directions.append(performance_direction)
         self.emotion_inputs.extend(utterances)
         return EmotionDirectionResult(
             items=tuple(
@@ -116,6 +118,8 @@ class ContextCapturingDirector(FakeDirector):
                         if index == 0
                         else (0.0, 0.0, 0.35, 0.0, 0.0, 0.2, 0.0, 0.1)
                     ),
+                    speed_factor=0.85 if index == 0 else 1.1,
+                    pause_after_ms=900 if index == 0 else 150,
                 )
                 for index, item in enumerate(utterances)
             )
@@ -163,6 +167,7 @@ async def test_analysis_and_translation_are_separate_and_use_no_gpu(resources: D
             source_text=source,
             source_language="zh",
             target_language="ja",
+            performance_direction="整体偏平静，避免夸张。",
         )
     )
     director = CountingDirector()
@@ -288,6 +293,7 @@ async def test_translation_uses_edited_working_text_instead_of_source(
             source_text=source,
             source_language="zh",
             target_language="ja",
+            performance_direction="整体偏平静，避免夸张。",
         )
     )
     director = CapturingDirector()
@@ -332,6 +338,7 @@ async def _context_project(store: DirectorStore) -> DirectorProjectRecord:
             source_text=source,
             source_language="zh",
             target_language="ja",
+            performance_direction="整体偏平静，避免夸张。",
         )
     )
     project = await confirmed_for_analysis(store, project)
@@ -386,6 +393,7 @@ async def test_translation_replaces_provisional_emotions_using_full_timeline_con
     )
 
     assert translated.status == "translation_review"
+    assert director.performance_directions == ["整体偏平静，避免夸张。"]
     assert [item.role_name for item in director.emotion_inputs] == ["甲", "乙"]
     assert "她收到噩耗" in director.emotion_inputs[0].scene_context
     assert [item.text for item in director.emotion_inputs[0].previous_units] == [
@@ -402,6 +410,10 @@ async def test_translation_replaces_provisional_emotions_using_full_timeline_con
     ]
     assert rows[0].emotion_vector == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2)
     assert rows[1].emotion_vector == (0.0, 0.0, 0.35, 0.0, 0.0, 0.2, 0.0, 0.1)
+    assert (rows[0].speed_factor, rows[0].pause_after_ms) == (0.85, 900)
+    assert (rows[1].speed_factor, rows[1].pause_after_ms) == (1.1, 150)
+    assert rows[0].synthesis_text == "甲：\u201c我没事。\u201d"
+    assert rows[0].ref_text_cn == "这是一句需要配音的台词。"
 
 
 @pytest.mark.asyncio

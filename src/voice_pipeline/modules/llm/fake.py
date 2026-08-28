@@ -211,16 +211,19 @@ class FakeDirector:
     async def direct_emotions(
         self,
         *,
+        performance_direction: str | None,
         utterances: tuple[EmotionDirectionInput, ...],
         activity_id: UUID | None = None,
     ) -> EmotionDirectionResult:
-        del activity_id
+        del performance_direction, activity_id
         return EmotionDirectionResult(
             items=tuple(
                 EmotionDirectionResultItem(
                     utterance_id=item.utterance_id,
                     revision=item.revision,
                     emotion_vector=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3),
+                    speed_factor=1.0,
+                    pause_after_ms=400,
                 )
                 for item in utterances
             )
