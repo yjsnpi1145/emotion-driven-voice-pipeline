@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from pathlib import Path
 
 import psutil
@@ -9,6 +11,66 @@ import pytest
 from tests.unit.conftest import fake_fingerprint
 from voice_pipeline.models.schemas import EngineIdentity
 from voice_pipeline.runtime.supervisor import ProcessSupervisor
+
+
+@pytest.mark.asyncio
+async def test_registry_defaults_to_current_control_process_identity(
+    fake_processes, tmp_path: Path
+) -> None:
+    registry = tmp_path / "processes.json"
+    supervisor = ProcessSupervisor(
+        mode="exclusive_process",
+        processes=fake_processes,
+        registry_path=registry,
+    )
+
+    await supervisor.start()
+
+    payload = json.loads(registry.read_text(encoding="utf-8"))
+    assert payload["control"]["pid"] == os.getpid()
+    assert payload["control"]["create_time"] == pytest.approx(
+        psutil.Process().create_time(), abs=1.0
+    )
+
+    await supervisor.stop()
+
+
+def test_supervisor_rejects_unavailable_control_process_identity(
+    fake_processes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def deny_process(_pid: int) -> psutil.Process:
+        raise psutil.AccessDenied(pid=os.getpid())
+
+    monkeypatch.setattr(psutil, "Process", deny_process)
+
+    with pytest.raises(RuntimeError, match="control process identity"):
+        ProcessSupervisor(mode="exclusive_process", processes=fake_processes)
+
+
+@pytest.mark.parametrize(
+    ("control_pid", "control_create_time"),
+    [(0, None), (-1, None), (os.getpid(), 0.0), (os.getpid(), -1.0)],
+)
+def test_supervisor_rejects_nonpositive_control_identity(
+    fake_processes, control_pid: int, control_create_time: float | None
+) -> None:
+    with pytest.raises(ValueError, match="control (PID|create time)"):
+        ProcessSupervisor(
+            mode="exclusive_process",
+            processes=fake_processes,
+            control_pid=control_pid,
+            control_create_time=control_create_time,
+        )
+
+
+def test_supervisor_rejects_mismatched_control_create_time(fake_processes) -> None:
+    with pytest.raises(ValueError, match="does not match"):
+        ProcessSupervisor(
+            mode="exclusive_process",
+            processes=fake_processes,
+            control_pid=os.getpid(),
+            control_create_time=psutil.Process().create_time() - 60.0,
+        )
 
 
 @pytest.mark.asyncio
