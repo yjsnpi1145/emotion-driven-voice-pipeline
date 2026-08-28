@@ -594,6 +594,37 @@ def build_director_router(plane: Any) -> APIRouter:
             raise HTTPException(status_code=409, detail="director audio is unavailable")
         return FileResponse(path, media_type="audio/wav")
 
+    @router.get("/api/v1/director-projects/{project_id}/sentence-audio.zip")
+    async def generation_sentence_archive(project_id: UUID) -> FileResponse:
+        try:
+            generation, _ = await _generation(plane).get_for_project(project_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="director project not found") from exc
+        if (
+            generation is None
+            or generation.status != "succeeded"
+            or generation.final_relative_path is None
+        ):
+            raise HTTPException(status_code=409, detail="director sentence audio is not ready")
+        root = plane.artifact_store.root.resolve()
+        directors_root = (root / "directors").resolve()
+        final_path = (root / generation.final_relative_path).resolve()
+        archive_path = (final_path.parent / "sentences.zip").resolve()
+        try:
+            final_path.relative_to(directors_root)
+            archive_path.relative_to(directors_root)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409, detail="director sentence audio path is invalid"
+            ) from exc
+        if not archive_path.is_file() or archive_path.is_symlink():
+            raise HTTPException(status_code=409, detail="director sentence audio is unavailable")
+        return FileResponse(
+            archive_path,
+            media_type="application/zip",
+            filename=f"director-{project_id}-sentences.zip",
+        )
+
     return router
 
 
@@ -780,6 +811,11 @@ def _public_project(record: DirectorProjectRecord) -> dict[str, Any]:
         if record.status == "succeeded"
         else None
     )
+    payload["sentence_audio_url"] = (
+        f"/api/v1/director-projects/{record.project_id}/sentence-audio.zip"
+        if record.status == "succeeded"
+        else None
+    )
     return payload
 
 
@@ -790,6 +826,11 @@ def _public_generation(record: Any) -> dict[str, Any]:
     )
     payload["audio_url"] = (
         f"/api/v1/director-projects/{record.project_id}/audio"
+        if record.status == "succeeded"
+        else None
+    )
+    payload["sentence_audio_url"] = (
+        f"/api/v1/director-projects/{record.project_id}/sentence-audio.zip"
         if record.status == "succeeded"
         else None
     )

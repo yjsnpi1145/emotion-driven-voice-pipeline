@@ -13,6 +13,7 @@ from voice_pipeline.core.pipeline import SynthesisService
 from voice_pipeline.core.reference_duration_probe import ServiceReferenceDurationProbe
 from voice_pipeline.core.role_preset_service import RolePresetService
 from voice_pipeline.core.segment_job_service import SegmentJobService
+from voice_pipeline.core.sentence_archive import SentenceArchiveEntry, write_sentence_archive
 from voice_pipeline.models.director import (
     DirectorGenerationItemRecord,
     DirectorGenerationRecord,
@@ -585,6 +586,7 @@ class DirectorGenerationService:
         utterances: list[DirectorUtteranceRecord],
     ) -> None:
         inputs: list[ComposeInput] = []
+        archive_entries: list[SentenceArchiveEntry] = []
         for ordinal, utterance in enumerate(utterances):
             segment = await self._segments.get_segment(materialized[utterance.utterance_id])
             if segment.active_gsv_version_id is None:
@@ -595,15 +597,23 @@ class DirectorGenerationService:
                     retryable=False,
                 )
             version = await self._versions.get_version(segment.active_gsv_version_id)
+            blob_path = (self._artifacts.root / version.blob_relative_path).resolve()
             inputs.append(
                 ComposeInput(
                     ordinal=ordinal,
                     segment_id=segment.segment_id,
                     gsv_version_id=version.version_id,
                     gsv_content_sha256=version.blob_sha256,
-                    blob_path=(self._artifacts.root / version.blob_relative_path).resolve(),
+                    blob_path=blob_path,
                     pause_after_ms=segment.pause_after_ms,
                     state=version.state,
+                )
+            )
+            archive_entries.append(
+                SentenceArchiveEntry(
+                    ordinal=ordinal,
+                    source_text=utterance.source_text,
+                    audio_path=blob_path,
                 )
             )
         output_dir = self._artifacts.root / "directors" / str(generation_id)
@@ -615,6 +625,7 @@ class DirectorGenerationService:
             output_path=output_dir / "final.wav",
             timeline_path=output_dir / "timeline.json",
         )
+        write_sentence_archive(tuple(archive_entries), output_dir / "sentences.zip")
         await self._directors.finish_generation(
             generation_id,
             succeeded=True,

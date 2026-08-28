@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
 from uuid import uuid4
+from zipfile import ZipFile
 
 import httpx
 import numpy as np
@@ -295,6 +297,17 @@ async def test_director_end_to_end_uses_confirmed_preprocessing_and_filters_punc
             audio = await client.get(f"/api/v1/director-projects/{project['project_id']}/audio")
             assert audio.status_code == 200
             assert audio.content.startswith(b"RIFF")
+            archive = await client.get(
+                f"/api/v1/director-projects/{project['project_id']}/sentence-audio.zip"
+            )
+            assert archive.status_code == 200
+            assert archive.headers["content-type"] == "application/zip"
+            with ZipFile(BytesIO(archive.content)) as bundle:
+                assert bundle.namelist() == [
+                    f"{index + 1:04d}_{row.source_text.strip()}.wav"
+                    for index, row in enumerate(spoken_generated)
+                ]
+                assert all(bundle.read(name).startswith(b"RIFF") for name in bundle.namelist())
 
 
 async def _wait_project(client, project_id: str, status: str, *, limit: int = 100):

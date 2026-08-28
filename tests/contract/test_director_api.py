@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
 from uuid import UUID
+from zipfile import ZipFile
 
 import httpx
 import pytest
@@ -636,6 +638,10 @@ async def test_director_generation_uses_role_presets_and_completes(fake_settings
                 await client.get(f"/api/v1/director-projects/{project['project_id']}")
             ).json()
             assert project["status"] == "ready"
+            pending_archive = await client.get(
+                f"/api/v1/director-projects/{project['project_id']}/sentence-audio.zip"
+            )
+            assert pending_archive.status_code == 409
             submitted = await client.post(
                 f"/api/v1/director-projects/{project['project_id']}/start-generation",
                 json={"expected_revision": project["revision"]},
@@ -698,6 +704,13 @@ async def test_director_generation_uses_role_presets_and_completes(fake_settings
             audio = await client.get(f"/api/v1/director-projects/{project['project_id']}/audio")
             assert audio.status_code == 200
             assert audio.content.startswith(b"RIFF")
+            archive = await client.get(
+                f"/api/v1/director-projects/{project['project_id']}/sentence-audio.zip"
+            )
+            assert archive.status_code == 200
+            with ZipFile(BytesIO(archive.content)) as bundle:
+                assert bundle.namelist()
+                assert all(name.endswith(".wav") for name in bundle.namelist())
 
 
 async def _wait_status(client, project_id: str, expected: str, *, limit: int = 100):
