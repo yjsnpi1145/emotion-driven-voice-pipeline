@@ -18,6 +18,8 @@ from voice_pipeline.models.director_llm import (
     AnalyzedUtterance,
     CastReconciliationResult,
     ChunkAnalysisResult,
+    EmotionDirectionInput,
+    EmotionDirectionResult,
     PreprocessRewriteResult,
     PreprocessRewriteUnit,
     ScriptChunk,
@@ -335,6 +337,36 @@ class OpenAiDirectorClient:
             operation="script_translation",
         )
         return _validate_payload(ScriptTranslationResult, content)
+
+    async def direct_emotions(
+        self,
+        *,
+        utterances: tuple[EmotionDirectionInput, ...],
+        activity_id: UUID | None = None,
+    ) -> EmotionDirectionResult:
+        content = await self._post_json(
+            _schema_messages(
+                EmotionDirectionResult,
+                instruction=(
+                    "Direct the performance emotion of every utterance from its scene_context, "
+                    "speaker role_name, previous_units, and next_units. Infer intent, subtext, "
+                    "speaker continuity, narration, and stage directions. Do not judge an "
+                    "interjection in isolation; short reactions inherit meaning from the scene "
+                    "and surrounding turns. Use low intensity or calm when context is ambiguous. "
+                    "Preserve every utterance_id and revision exactly and return one item per "
+                    "input in the same order. Do not rewrite or return any text. emotion_vector "
+                    "must contain exactly eight values ordered joy, anger, sadness, fear, "
+                    "disgust, melancholy, surprise, calm; each value is within 0..1 and the total "
+                    "is <= 0.8. Never output a uniform vector."
+                ),
+                payload={
+                    "utterances": [item.model_dump(mode="json") for item in utterances],
+                },
+            ),
+            operation_id=activity_id or uuid4(),
+            operation="emotion_direction",
+        )
+        return _validate_payload(EmotionDirectionResult, content)
 
     async def test_connection(self, *, activity_id: UUID | None = None) -> int:
         started = perf_counter()
