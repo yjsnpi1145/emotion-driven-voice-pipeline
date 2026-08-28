@@ -91,6 +91,7 @@ class DirectorGenerationService:
         self._reference_pool = reference_pool
         self._index_fingerprint = index_fingerprint
         self._active: dict[UUID, asyncio.Task[None]] = {}
+        self._pool_rebuilds: dict[tuple[UUID, UUID], asyncio.Task[None]] = {}
         self._pool_locks: dict[str, asyncio.Lock] = {}
 
     async def start(self, project_id: UUID, *, expected_revision: int) -> DirectorGenerationRecord:
@@ -216,6 +217,16 @@ class DirectorGenerationService:
             if current.segment_id is not None:
                 segment = await self._segments.get_segment(current.segment_id)
                 if segment.active_gsv_version_id is not None:
+                    gsv_version = await self._versions.get_version(
+                        segment.active_gsv_version_id
+                    )
+                    gsv_matches_reference = (
+                        segment.active_ref_version_id is not None
+                        and gsv_version.ref_version_id == segment.active_ref_version_id
+                    )
+                else:
+                    gsv_matches_reference = False
+                if gsv_matches_reference:
                     await self._directors.attach_utterance_versions(
                         item.utterance_id,
                         gsv_version_id=segment.active_gsv_version_id,
@@ -247,6 +258,135 @@ class DirectorGenerationService:
         self._active[generation.generation_id] = task
         task.add_done_callback(lambda completed: self._forget(generation.generation_id, completed))
         return generation
+
+    async def force_rebuild_pool_reference(
+        self, generation_id: UUID, utterance_id: UUID
+    ) -> None:
+        generation = await self._directors.get_generation(generation_id)
+        active = self._active.get(generation_id)
+        key = (generation_id, utterance_id)
+        rebuild = self._pool_rebuilds.get(key)
+        if (active is not None and not active.done()) or (
+            rebuild is not None and not rebuild.done()
+        ):
+            raise PipelineError(
+                ErrorCode.DIRECTOR_STATE_CONFLICT,
+                "director_reference_pool",
+                "this Director item is already running",
+                retryable=True,
+            )
+        items = {
+            item.utterance_id: item
+            for item in await self._directors.list_generation_items(generation_id)
+        }
+        item = items.get(utterance_id)
+        if item is None:
+            raise KeyError("unknown director generation item")
+        if item.reference_mode != "pooled":
+            raise PipelineError(
+                ErrorCode.DIRECTOR_STATE_CONFLICT,
+                "director_reference_pool",
+                "only pooled Director references can be rebuilt",
+                retryable=False,
+            )
+        current = {
+            row.utterance_id: row
+            for row in await self._directors.list_utterances(generation.project_id)
+        }.get(utterance_id)
+        if current is None or current.segment_id is None or current.role_id is None:
+            raise PipelineError(
+                ErrorCode.DIRECTOR_STATE_CONFLICT,
+                "director_reference_pool",
+                "Director utterance is not materialized and mapped",
+                retryable=False,
+            )
+        _, _, preset_by_role = _snapshot_inputs(generation)
+        preset = preset_by_role.get(current.role_id)
+        if preset is None:
+            raise PipelineError(
+                ErrorCode.ROLE_PRESET_UNAVAILABLE,
+                "director_reference_pool",
+                "Director role preset is unavailable",
+                retryable=False,
+            )
+        task = asyncio.create_task(
+            self._run_pool_rebuild(generation, current, preset)
+        )
+        self._pool_rebuilds[key] = task
+        task.add_done_callback(lambda completed: self._forget_pool_rebuild(key, completed))
+
+    async def _run_pool_rebuild(
+        self,
+        generation: DirectorGenerationRecord,
+        utterance: DirectorUtteranceRecord,
+        preset: RolePresetRecord,
+    ) -> None:
+        try:
+            segment = await self._segments.get_segment(utterance.segment_id)  # type: ignore[arg-type]
+            prepared = await self._prepare_pooled_reference(
+                generation_id=generation.generation_id,
+                segment=segment,
+                utterance=utterance,
+                base_voice=self._presets.audio_path(preset),
+                force_new=True,
+            )
+            if prepared.segment.active_ref_version_id is None or prepared.pool_entry is None:
+                raise PipelineError(
+                    ErrorCode.VERSION_NOT_READY,
+                    "director_reference_pool",
+                    "rebuilt pooled reference has no ready version",
+                    retryable=False,
+                )
+            await self._directors.attach_utterance_versions(
+                utterance.utterance_id,
+                reference_version_id=prepared.segment.active_ref_version_id,
+            )
+            await self._directors.set_generation_item(
+                generation.generation_id,
+                utterance.utterance_id,
+                status="reference_ready",
+                reference_job_id=prepared.job_id,
+                reference_mode="pooled",
+                reference_pool_entry_id=prepared.pool_entry.entry_id,
+                reference_emotion_bucket=prepared.pool_entry.emotion_bucket,
+                reference_degraded_from=prepared.degraded_from,
+            )
+            await self._directors.finish_generation(
+                generation.generation_id,
+                succeeded=False,
+                final_relative_path=generation.final_relative_path,
+                timeline=cast(dict[str, object] | None, generation.timeline),
+                error={
+                    "code": "DIRECTOR_REFERENCE_REBUILT",
+                    "stage": "director_reference_pool",
+                    "message": "pooled reference rebuilt; resume to regenerate GSV",
+                    "retryable": True,
+                    "details": {"utterance_id": str(utterance.utterance_id)},
+                },
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            error = exc.as_dict() if isinstance(exc, PipelineError) else {
+                "code": ErrorCode.ENGINE_UNAVAILABLE.value,
+                "stage": "director_reference_pool",
+                "message": str(exc),
+                "retryable": True,
+                "details": {},
+            }
+            await self._directors.set_generation_item(
+                generation.generation_id,
+                utterance.utterance_id,
+                status="failed",
+                error=error,
+            )
+            await self._directors.finish_generation(
+                generation.generation_id,
+                succeeded=False,
+                final_relative_path=generation.final_relative_path,
+                timeline=cast(dict[str, object] | None, generation.timeline),
+                error=error,
+            )
 
     async def recompose(
         self, project_id: UUID, *, expected_revision: int
@@ -306,7 +446,7 @@ class DirectorGenerationService:
         return await self._directors.mark_running_generations_interrupted()
 
     async def stop(self, *, deadline: float) -> None:
-        tasks = tuple(self._active.values())
+        tasks = tuple(self._active.values()) + tuple(self._pool_rebuilds.values())
         for task in tasks:
             task.cancel()
         if tasks:
@@ -316,6 +456,12 @@ class DirectorGenerationService:
     def _forget(self, generation_id: UUID, completed: asyncio.Future[None]) -> None:
         if self._active.get(generation_id) is completed:
             self._active.pop(generation_id, None)
+
+    def _forget_pool_rebuild(
+        self, key: tuple[UUID, UUID], completed: asyncio.Future[None]
+    ) -> None:
+        if self._pool_rebuilds.get(key) is completed:
+            self._pool_rebuilds.pop(key, None)
 
     async def _run(
         self,
@@ -571,6 +717,7 @@ class DirectorGenerationService:
         segment: SegmentRecord,
         utterance: DirectorUtteranceRecord,
         base_voice: Path,
+        force_new: bool = False,
     ) -> _PreparedReference:
         bucket = select_emotion_bucket(segment.current_emotion_vector)
         try:
@@ -581,6 +728,7 @@ class DirectorGenerationService:
                 base_voice=base_voice,
                 bucket=bucket,
                 degraded_from=None,
+                force_new=force_new,
             )
         except _PoolAttemptsExhausted as exhausted:
             if bucket == "calm":
@@ -593,6 +741,7 @@ class DirectorGenerationService:
                     base_voice=base_voice,
                     bucket="calm",
                     degraded_from=bucket,
+                    force_new=force_new,
                 )
             except _PoolAttemptsExhausted as calm_exhausted:
                 raise calm_exhausted.last_error from calm_exhausted
@@ -606,6 +755,7 @@ class DirectorGenerationService:
         base_voice: Path,
         bucket: EmotionBucket,
         degraded_from: EmotionBucket | None,
+        force_new: bool = False,
     ) -> _PreparedReference:
         fingerprint = self._index_fingerprint()
         output_spec = OutputAudioSpec()
@@ -618,7 +768,7 @@ class DirectorGenerationService:
         )
         lock = self._pool_locks.setdefault(family_key, asyncio.Lock())
         async with lock:
-            ready = await self._reference_pool.latest_ready(family_key)
+            ready = None if force_new else await self._reference_pool.latest_ready(family_key)
             if ready is not None:
                 try:
                     job_id, refreshed = await self._submit_pool_job(

@@ -342,6 +342,10 @@ async def test_director_short_utterance_uses_emotion_pool_without_llm_expansion(
             assert item["reference_emotion_bucket"] == "surprise"
             assert item["reference_degraded_from"] is None
             assert item["reference_pool_entry_id"]
+            assert item["reference_pool"]["prompt_text"] == (
+                "我完全没有想到，事情竟然会变成这样。"
+            )
+            assert item["reference_pool"]["status"] == "ready"
             stored = next(
                 row
                 for row in await app.state.plane.director_store.list_utterances(
@@ -360,6 +364,42 @@ async def test_director_short_utterance_uses_emotion_pool_without_llm_expansion(
             )
             assert version.input_snapshot["emotion_vector"] == [0, 0, 0, 0, 0, 0, 0.6, 0.2]
             assert index.calls == len(progress["items"])
+
+            old_reference_version_id = segment.active_ref_version_id
+            rebuilt = await client.post(
+                f"/api/v1/director-generations/{progress['generation']['generation_id']}"
+                f"/utterances/{spoken['utterance_id']}/rebuild-pooled-reference"
+            )
+            assert rebuilt.status_code == 202, rebuilt.text
+            project = await _wait_project(
+                client, project["project_id"], "generation_incomplete", limit=800
+            )
+            progress = (
+                await client.get(f"/api/v1/director-projects/{project['project_id']}/progress")
+            ).json()
+            item = next(
+                candidate
+                for candidate in progress["items"]
+                if candidate["utterance_id"] == spoken["utterance_id"]
+            )
+            assert item["status"] == "reference_ready"
+            assert item["reference_pool"]["revision"] == 1
+            rebuilt_segment = await app.state.plane.segment_store.get_segment(
+                stored.segment_id
+            )
+            assert rebuilt_segment.active_ref_version_id != old_reference_version_id
+
+            resumed = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}/resume-generation",
+                json={"expected_revision": project["revision"]},
+            )
+            assert resumed.status_code == 202, resumed.text
+            await _wait_project(client, project["project_id"], "succeeded", limit=800)
+            final_segment = await app.state.plane.segment_store.get_segment(stored.segment_id)
+            final_gsv = await app.state.plane.version_store.get_version(
+                final_segment.active_gsv_version_id
+            )
+            assert final_gsv.ref_version_id == final_segment.active_ref_version_id
 
 
 @pytest.mark.asyncio

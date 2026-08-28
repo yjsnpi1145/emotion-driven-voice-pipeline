@@ -298,6 +298,11 @@ details summary { cursor: pointer; color: #aebed1; font-size: .82rem; }
 .director-generation-items > div { display: grid; grid-template-columns: auto 1fr; gap: .3rem .5rem; padding: .45rem .55rem; border: 1px solid var(--line); border-radius: .42rem; background: var(--panel-raised); font-size: .72rem; }
 .director-generation-items > div[data-state="failed"] { border-color: #7f3944; }
 .director-generation-items small { grid-column: 1 / -1; color: var(--danger); }
+.director-pool-badge { color: #71d9b2; font-weight: 700; }
+.director-pool-details { grid-column: 1 / -1; color: var(--muted); }
+.director-pool-details summary { cursor: pointer; }
+.director-pool-details p { margin: .35rem 0 0; color: var(--text); line-height: 1.5; }
+.director-generation-items .director-inline-button { grid-column: 1 / -1; justify-self: start; }
 .director-command-error { align-self: center; max-width: 34rem; color: var(--danger); font-size: .8rem; }
 .director-preset-card { cursor: default; }
 .director-preset-card select { width: 100%; }
