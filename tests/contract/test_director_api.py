@@ -7,12 +7,14 @@ from zipfile import ZipFile
 
 import httpx
 import pytest
+from sqlalchemy import update
 
 from tests.integration_cpu.conftest import write_tone
 from tests.integration_cpu.test_chapter_pipeline import _import_profile
 from voice_pipeline.api.app import create_app
 from voice_pipeline.core.director_analysis import ScriptAnalysisService
 from voice_pipeline.core.errors import ErrorCode, PipelineError
+from voice_pipeline.storage.orm import segments
 
 
 class _FailingAnalysis:
@@ -575,7 +577,7 @@ async def test_director_generation_uses_role_presets_and_completes(fake_settings
                     "/api/v1/director-projects",
                     json={
                         "title": "生成测试",
-                        "source_text": "甲：你好。乙：再见。",
+                        "source_text": "甲：你好。乙：再见。丙：晚安。",
                         "source_language": "zh",
                         "target_language": "ja",
                     },
@@ -711,6 +713,51 @@ async def test_director_generation_uses_role_presets_and_completes(fake_settings
             with ZipFile(BytesIO(archive.content)) as bundle:
                 assert bundle.namelist()
                 assert all(name.endswith(".wav") for name in bundle.namelist())
+
+            items = await app.state.plane.director_store.list_generation_items(
+                generation.generation_id
+            )
+            assert len(items) >= 2
+            utterances = {
+                row.utterance_id: row
+                for row in await app.state.plane.director_store.list_utterances(
+                    project["project_id"]
+                )
+            }
+            missing = items[0]
+            missing_segment_id = utterances[missing.utterance_id].segment_id
+            assert missing_segment_id is not None
+            async with app.state.plane.database.write_session() as session:
+                await session.execute(
+                    update(segments)
+                    .where(segments.c.segment_id == str(missing_segment_id))
+                    .values(active_gsv_version_id=None)
+                )
+            await app.state.plane.director_store.set_generation_item(
+                generation.generation_id,
+                missing.utterance_id,
+                status="failed",
+                error={"code": "TEST_FAILURE"},
+            )
+            await app.state.plane.director_store.finish_generation(
+                generation.generation_id,
+                succeeded=False,
+                error={"code": "TEST_FAILURE"},
+            )
+            project = (
+                await client.get(f"/api/v1/director-projects/{project['project_id']}")
+            ).json()
+            partial = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}/recompose",
+                json={"expected_revision": project["revision"]},
+            )
+            assert partial.status_code == 202, partial.text
+            partial_archive = await client.get(
+                f"/api/v1/director-projects/{project['project_id']}/sentence-audio.zip"
+            )
+            assert partial_archive.status_code == 200
+            with ZipFile(BytesIO(partial_archive.content)) as bundle:
+                assert len(bundle.namelist()) == len(items) - 1
 
 
 async def _wait_status(client, project_id: str, expected: str, *, limit: int = 100):
