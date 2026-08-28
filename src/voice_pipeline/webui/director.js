@@ -555,6 +555,15 @@ function actionButton(label, handler, kind = "primary-button") {
   return button;
 }
 
+function triggerDownload(url) {
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "";
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
 function labeledControl(label, control) {
   const wrapper = document.createElement("label");
   wrapper.append(document.createTextNode(label), control);
@@ -633,7 +642,7 @@ function renderActions() {
   } else if (project.status === "voice_mapping") {
     const note = document.createElement("span");
     note.className = "help";
-    note.textContent = "为所有有效角色选择右侧角色预设后即可生成。";
+    note.textContent = "为角色选择预设，或选择不予映射以跳过该角色的配音。";
     buttons.push(note);
   } else if (project.status === "ready") {
     buttons.push(actionButton("确认快照并开始多角色生成", async () => {
@@ -661,13 +670,22 @@ function renderActions() {
     audio.controls = true;
     audio.preload = "metadata";
     audio.src = `/api/v1/director-projects/${project.project_id}/audio`;
-    buttons.push(audio, actionButton("重新拼接", async () => {
+    buttons.push(
+      audio,
+      actionButton("下载完整 WAV", async () => {
+        triggerDownload(`/api/v1/director-projects/${project.project_id}/audio`);
+      }, "secondary-button"),
+      actionButton("下载逐句 ZIP", async () => {
+        triggerDownload(`/api/v1/director-projects/${project.project_id}/sentence-audio.zip`);
+      }, "secondary-button"),
+      actionButton("重新拼接", async () => {
       await api(`/api/v1/director-projects/${project.project_id}/recompose`, {
         method: "POST", body: JSON.stringify({ expected_revision: project.revision }),
       });
       notify("已按当前成功版本重新拼接");
       await selectProject(project.project_id);
-    }, "secondary-button"));
+      }, "secondary-button"),
+    );
   }
   root.replaceChildren(...buttons);
 }
@@ -712,17 +730,40 @@ function renderRoles() {
     aliases.textContent = role.aliases?.length ? `别名：${role.aliases.join("、")}` : "无别名";
     const select = document.createElement("select");
     select.setAttribute("aria-label", `${role.canonical_name} 的角色预设`);
-    select.append(new Option("选择角色预设", ""));
+    select.append(new Option(
+      "选择角色预设",
+      "",
+      false,
+      role.dubbing_enabled !== false && !role.preset_id,
+    ));
+    select.append(new Option(
+      "不予映射（跳过配音）",
+      "__skip__",
+      false,
+      role.dubbing_enabled === false,
+    ));
     for (const preset of directorState.presets) {
-      select.append(new Option(preset.name, preset.preset_id, false, preset.preset_id === role.preset_id));
+      select.append(new Option(
+        preset.name,
+        preset.preset_id,
+        false,
+        role.dubbing_enabled !== false && preset.preset_id === role.preset_id,
+      ));
     }
     select.disabled = !["voice_mapping", "ready"].includes(directorState.project.status);
     select.onchange = async () => {
       if (!select.value) return;
       try {
+        const skip = select.value === "__skip__";
+        const mapping = skip
+          ? { mapping_mode: "skip", preset_id: null }
+          : { mapping_mode: "preset", preset_id: select.value };
         await api(`/api/v1/director-roles/${role.role_id}/preset`, {
           method: "POST",
-          body: JSON.stringify({ expected_revision: role.revision, preset_id: select.value }),
+          body: JSON.stringify({
+            expected_revision: role.revision,
+            ...mapping,
+          }),
         });
         await selectProject(directorState.project.project_id);
       } catch (error) { notify(error, true); }

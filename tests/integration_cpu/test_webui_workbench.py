@@ -33,6 +33,16 @@ def test_director_preprocessing_review_assets_are_wired() -> None:
     }
 
 
+def test_director_role_skip_and_sentence_archive_controls_are_wired() -> None:
+    script = (WEBUI / "director.js").read_text(encoding="utf-8")
+
+    assert "不予映射（跳过配音）" in script
+    assert 'mapping_mode: "skip"' in script
+    assert 'mapping_mode: "preset"' in script
+    assert "sentence-audio.zip" in script
+    assert "下载逐句 ZIP" in script
+
+
 async def _import_profile(client: httpx.AsyncClient, tmp_path: Path) -> str:
     source = tmp_path / "models"
     source.mkdir()
