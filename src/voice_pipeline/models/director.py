@@ -42,6 +42,18 @@ DirectorGenerationStatus = Literal[
 DirectorGenerationItemStatus = Literal[
     "queued", "reference_running", "reference_ready", "gsv_running", "ready", "failed"
 ]
+DirectorReferenceMode = Literal["independent", "pooled"]
+DirectorReferencePoolStatus = Literal["building", "ready", "failed"]
+DirectorEmotionBucket = Literal[
+    "joy",
+    "anger",
+    "sadness",
+    "fear",
+    "disgust",
+    "melancholy",
+    "surprise",
+    "calm",
+]
 
 
 class CreateDirectorProjectRequest(StrictModel):
@@ -342,3 +354,31 @@ class DirectorGenerationItemRecord(StrictModel):
     reference_job_id: UUID | None = None
     gsv_job_id: UUID | None = None
     error: dict[str, PydanticJsonValue] | None = None
+    reference_mode: DirectorReferenceMode = "independent"
+    reference_pool_entry_id: UUID | None = None
+    reference_emotion_bucket: DirectorEmotionBucket | None = None
+    reference_degraded_from: DirectorEmotionBucket | None = None
+
+
+class DirectorReferencePoolEntry(StrictModel):
+    entry_id: UUID
+    family_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+    revision: int = Field(ge=0)
+    attempt: int = Field(ge=0, le=2)
+    status: DirectorReferencePoolStatus
+    base_voice_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    emotion_bucket: DirectorEmotionBucket
+    template_version: int = Field(ge=1)
+    prompt_text: str
+    emotion_vector: EmotionVector
+    seed: int
+    engine_fingerprint: dict[str, PydanticJsonValue]
+    output_spec: dict[str, PydanticJsonValue]
+    reference_job_id: UUID | None = None
+    reference_version_id: UUID | None = None
+    blob_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    quality_result: dict[str, PydanticJsonValue] | None = None
+    error: dict[str, PydanticJsonValue] | None = None
+    degraded_from: DirectorEmotionBucket | None = None
+    created_at_utc: datetime
+    updated_at_utc: datetime

@@ -2144,6 +2144,10 @@ class DirectorStore:
         reference_job_id: UUID | None = None,
         gsv_job_id: UUID | None = None,
         error: dict[str, object] | None = None,
+        reference_mode: str | None = None,
+        reference_pool_entry_id: UUID | None = None,
+        reference_emotion_bucket: str | None = None,
+        reference_degraded_from: str | None = None,
     ) -> None:
         values: dict[str, object | None] = {
             "status": status,
@@ -2153,6 +2157,13 @@ class DirectorStore:
             values["reference_job_id"] = str(reference_job_id)
         if gsv_job_id is not None:
             values["gsv_job_id"] = str(gsv_job_id)
+        if reference_mode is not None:
+            values["reference_mode"] = reference_mode
+            values["reference_pool_entry_id"] = (
+                str(reference_pool_entry_id) if reference_pool_entry_id else None
+            )
+            values["reference_emotion_bucket"] = reference_emotion_bucket
+            values["reference_degraded_from"] = reference_degraded_from
         async with self._database.write_session() as session:
             result = await session.execute(
                 update(director_generation_items)
@@ -2612,6 +2623,22 @@ def _generation_item(row: dict[str, Any]) -> DirectorGenerationItemRecord:
         ),
         gsv_job_id=UUID(str(row["gsv_job_id"])) if row.get("gsv_job_id") else None,
         error=(json.loads(str(row["error_json"])) if row.get("error_json") else None),
+        reference_mode=str(row.get("reference_mode") or "independent"),  # type: ignore[arg-type]
+        reference_pool_entry_id=(
+            UUID(str(row["reference_pool_entry_id"]))
+            if row.get("reference_pool_entry_id")
+            else None
+        ),
+        reference_emotion_bucket=(
+            str(row["reference_emotion_bucket"])
+            if row.get("reference_emotion_bucket")
+            else None
+        ),  # type: ignore[arg-type]
+        reference_degraded_from=(
+            str(row["reference_degraded_from"])
+            if row.get("reference_degraded_from")
+            else None
+        ),  # type: ignore[arg-type]
     )
 
 
