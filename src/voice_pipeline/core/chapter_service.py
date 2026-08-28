@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Protocol, cast
@@ -10,6 +9,7 @@ from uuid import UUID, uuid4
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.core.gpu_queue import SerialGpuQueue
 from voice_pipeline.core.pipeline import SynthesisService
+from voice_pipeline.core.reference_duration_probe import ServiceReferenceDurationProbe
 from voice_pipeline.core.segment_job_service import SegmentJobService
 from voice_pipeline.models.chapter import (
     ChapterRunRecord,
@@ -25,12 +25,7 @@ from voice_pipeline.models.persistence import (
     SegmentRecord,
     SegmentReferenceJobRequest,
 )
-from voice_pipeline.models.schemas import (
-    EngineFingerprint,
-    ExecutionContext,
-    LanguageCode,
-    ReferenceJobRequest,
-)
+from voice_pipeline.models.schemas import EngineFingerprint, LanguageCode
 from voice_pipeline.modules.audio.composer import ComposeInput, compose_final
 from voice_pipeline.modules.audio.wav_probe import sha256_file
 from voice_pipeline.modules.llm.director import ReferenceTextDirector, validate_director_plan
@@ -205,7 +200,7 @@ class ChapterService:
             )
             resolved = await resolver.resolve_reference_text(
                 directed,
-                _ServiceReferenceDurationProbe(
+                ServiceReferenceDurationProbe(
                     synthesis=self._synthesis,
                     queue=self._queue,
                     jobs_root=self._jobs_root / "chapter-reference-probes",
@@ -461,45 +456,3 @@ class ChapterService:
             final_relative_path=relative_path,
             timeline=composed.timeline,
         )
-
-
-class _ServiceReferenceDurationProbe:
-    def __init__(
-        self,
-        *,
-        synthesis: SynthesisService,
-        queue: SerialGpuQueue,
-        jobs_root: Path,
-        base_voice: Path,
-    ) -> None:
-        self._synthesis = synthesis
-        self._queue = queue
-        self._jobs_root = jobs_root
-        self._base_voice = base_voice
-
-    async def generate_and_measure(self, text: str, vector: tuple[float, ...], seed: int) -> float:
-        request_id = uuid4()
-        job_id = uuid4()
-        context = ExecutionContext(
-            job_id=job_id,
-            request_id=request_id,
-            job_dir=self._jobs_root / str(job_id),
-        )
-        request = ReferenceJobRequest(
-            request_id=request_id,
-            base_voice_path=self._base_voice,
-            ref_text_cn=text,
-            emotion_vector=vector,  # type: ignore[arg-type]
-            seed=seed,
-        )
-        try:
-            result = await self._queue.run(
-                lambda: self._synthesis.generate_reference(
-                    context,
-                    request,
-                    enforce_reference_window=False,
-                )
-            )
-            return result.reference.audio.duration_seconds
-        finally:
-            await asyncio.to_thread(shutil.rmtree, context.job_dir, True)

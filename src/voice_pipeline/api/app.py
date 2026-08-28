@@ -340,6 +340,11 @@ def create_app(
             segment_jobs=plane.segment_jobs,
             versions=plane.version_store,
             artifacts=plane.artifact_store,
+            director=plane.llm_client,
+            synthesis=service,
+            queue=queue,
+            jobs_root=runtime_dir / "jobs",
+            max_reference_corrections=settings.llm.max_reference_corrections,
             notify_jobs=lambda: _notify_dispatcher(plane),
         )
         try:

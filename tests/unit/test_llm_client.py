@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -10,7 +11,7 @@ import respx
 
 from voice_pipeline.core.config import LlmSettings
 from voice_pipeline.core.errors import ErrorCode, PipelineError
-from voice_pipeline.models.director_llm import PreprocessRewriteUnit
+from voice_pipeline.models.director_llm import PreprocessRewriteUnit, TranslationInput
 from voice_pipeline.modules.llm.activity import LlmActivityLog
 from voice_pipeline.modules.llm.client import OpenAiDirectorClient
 from voice_pipeline.modules.llm.script_chunking import build_analysis_units, split_script
@@ -368,3 +369,101 @@ async def test_script_analysis_rejects_a_second_invalid_unit_id_response() -> No
     assert route.call_count == 2
     assert exc.value.code == ErrorCode.LLM_INVALID_RESPONSE
     assert "unit IDs" in exc.value.message
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_translation_prompt_expands_only_chinese_reference_for_short_dialogue() -> None:
+    utterance_id = uuid4()
+    route = respx.post("https://llm.example/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": {
+                                "items": [
+                                    {
+                                        "utterance_id": str(utterance_id),
+                                        "revision": 3,
+                                        "synthesis_text": "え？",
+                                        "ref_text_cn": "咦？我刚才似乎听见了什么声音。",
+                                        "emotion_vector": [0, 0, 0, 0, 0, 0, 0.2, 0.1],
+                                        "speed_factor": 1.0,
+                                        "pause_after_ms": 400,
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                ]
+            },
+        )
+    )
+    settings = LlmSettings(
+        mode="openai",
+        base_url="https://llm.example/v1",
+        model="director",
+        api_key_env="PIPELINE_LLM_KEY",
+    )
+
+    async with httpx.AsyncClient(base_url=settings.base_url + "/") as http:
+        client = OpenAiDirectorClient(settings, http_client=http, api_key="secret")
+        await client.translate_utterances(
+            target_language="ja",
+            utterances=(
+                TranslationInput(
+                    utterance_id=utterance_id,
+                    revision=3,
+                    source_text="诶？",
+                ),
+            ),
+        )
+
+    prompt = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert "3 to 10 seconds" in prompt
+    assert "expand ref_text_cn" in prompt
+    assert "do not change synthesis_text" in prompt
+    assert "emotion_vector" in prompt
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reference_correction_prompt_preserves_emotion_and_changes_only_length() -> None:
+    route = respx.post("https://llm.example/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": {
+                                "ref_text_cn": "咦？我刚才似乎听见了什么声音。"
+                            }
+                        }
+                    }
+                ]
+            },
+        )
+    )
+    settings = LlmSettings(
+        mode="openai",
+        base_url="https://llm.example/v1",
+        model="director",
+        api_key_env="PIPELINE_LLM_KEY",
+    )
+
+    async with httpx.AsyncClient(base_url=settings.base_url + "/") as http:
+        client = OpenAiDirectorClient(settings, http_client=http, api_key="secret")
+        await client.correct_reference_text(
+            current="诶？",
+            direction="lengthen",
+            emotion_description="保持当前情绪向量和表演强度",
+        )
+
+    prompt = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert "Simplified Chinese" in prompt
+    assert "only its spoken duration" in prompt
+    assert "preserve" in prompt.casefold()
+    assert "3.0..10.0" in prompt

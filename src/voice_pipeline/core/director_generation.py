@@ -3,10 +3,14 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 from voice_pipeline.core.errors import ErrorCode, PipelineError
+from voice_pipeline.core.gpu_queue import SerialGpuQueue
+from voice_pipeline.core.pipeline import SynthesisService
+from voice_pipeline.core.reference_duration_probe import ServiceReferenceDurationProbe
 from voice_pipeline.core.role_preset_service import RolePresetService
 from voice_pipeline.core.segment_job_service import SegmentJobService
 from voice_pipeline.models.director import (
@@ -22,9 +26,13 @@ from voice_pipeline.models.persistence import (
     CreateSegmentRequest,
     OutputAudioSpec,
     SegmentGsvJobRequest,
+    SegmentInputsPatch,
+    SegmentRecord,
     SegmentReferenceJobRequest,
 )
 from voice_pipeline.modules.audio.composer import ComposeInput, compose_final
+from voice_pipeline.modules.llm.director import ReferenceTextDirector
+from voice_pipeline.modules.llm.models import DirectedSegment
 from voice_pipeline.storage.artifact_store import ArtifactStore
 from voice_pipeline.storage.director_store import DirectorStore
 from voice_pipeline.storage.job_store import SqliteJobStore
@@ -45,6 +53,11 @@ class DirectorGenerationService:
         segment_jobs: SegmentJobService,
         versions: VersionStore,
         artifacts: ArtifactStore,
+        director: Any,
+        synthesis: SynthesisService,
+        queue: SerialGpuQueue,
+        jobs_root: Path,
+        max_reference_corrections: int,
         notify_jobs: Callable[[], Awaitable[None]],
     ) -> None:
         self._directors = directors
@@ -54,6 +67,11 @@ class DirectorGenerationService:
         self._segment_jobs = segment_jobs
         self._versions = versions
         self._artifacts = artifacts
+        self._director = director
+        self._synthesis = synthesis
+        self._queue = queue
+        self._jobs_root = jobs_root
+        self._max_reference_corrections = max_reference_corrections
         self._notify_jobs = notify_jobs
         self._active: dict[UUID, asyncio.Task[None]] = {}
 
@@ -308,8 +326,14 @@ class DirectorGenerationService:
                         utterance.utterance_id,
                         status="reference_running",
                     )
+                    segment = await self._segments.get_segment(segment_id)
+                    segment = await self._resolve_reference_text(
+                        segment,
+                        utterance,
+                        self._presets.audio_path(preset),
+                    )
                     context = await self._segment_jobs.submit_reference(
-                        segment_id,
+                        segment.segment_id,
                         SegmentReferenceJobRequest(
                             request_id=uuid4(),
                             base_voice_path=self._presets.audio_path(preset),
@@ -323,7 +347,7 @@ class DirectorGenerationService:
                     )
                     await self._notify_jobs()
                     await self._await_job(context.job_id)
-                    segment = await self._segments.get_segment(segment_id)
+                    segment = await self._segments.get_segment(segment.segment_id)
                     await self._directors.attach_utterance_versions(
                         utterance.utterance_id,
                         reference_version_id=segment.active_ref_version_id,
@@ -429,6 +453,60 @@ class DirectorGenerationService:
                 succeeded=False,
                 error=_error_payload(exc),
             )
+
+    async def _resolve_reference_text(
+        self,
+        segment: SegmentRecord,
+        utterance: DirectorUtteranceRecord,
+        base_voice: Path,
+    ) -> SegmentRecord:
+        resolver = ReferenceTextDirector(self._director)
+        current = segment
+        for conflict_attempt in range(2):
+            directed = DirectedSegment(
+                ordinal=utterance.ordinal,
+                source_start=utterance.source_start,
+                source_end=utterance.source_end,
+                emotion_description="保持当前情绪向量和表演强度",
+                emotion_vector=current.current_emotion_vector,
+                synthesis_text=current.synthesis_text,
+                ref_text_cn=current.ref_text_cn,
+                pause_after_ms=current.pause_after_ms,
+                speed_factor=current.speed_factor,
+                seed=current.seed,
+            )
+            resolved = await resolver.resolve_reference_text(
+                directed,
+                ServiceReferenceDurationProbe(
+                    synthesis=self._synthesis,
+                    queue=self._queue,
+                    jobs_root=self._jobs_root / "director-reference-probes",
+                    base_voice=base_voice,
+                ),
+                max_corrections=getattr(
+                    self._director,
+                    "max_reference_corrections",
+                    self._max_reference_corrections,
+                ),
+            )
+            if resolved.ref_text_cn == current.ref_text_cn:
+                return current
+            try:
+                return await self._segments.patch_inputs(
+                    current.segment_id,
+                    SegmentInputsPatch(
+                        expected_ref_draft_revision=current.ref_draft_revision,
+                        expected_gsv_draft_revision=current.gsv_draft_revision,
+                        ref_text_cn=resolved.ref_text_cn,
+                    ),
+                )
+            except PipelineError as exc:
+                if exc.code != ErrorCode.VERSION_CONFLICT:
+                    raise
+                current = await self._segments.get_segment(current.segment_id)
+                if conflict_attempt == 1:
+                    return current
+        raise AssertionError("reference resolution loop must return or raise")
 
     async def _materialize(
         self, project: DirectorProjectRecord, utterances: list[DirectorUtteranceRecord]
