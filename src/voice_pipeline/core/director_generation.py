@@ -415,20 +415,10 @@ class DirectorGenerationService:
         for utterance in utterances:
             record = current[utterance.utterance_id]
             if record.segment_id is None:
-                raise PipelineError(
-                    ErrorCode.VERSION_NOT_READY,
-                    "director_generation",
-                    "a spoken utterance has not been materialized",
-                    retryable=False,
-                )
+                continue
             segment = await self._segments.get_segment(record.segment_id)
             if segment.active_gsv_version_id is None:
-                raise PipelineError(
-                    ErrorCode.VERSION_NOT_READY,
-                    "director_generation",
-                    "a spoken utterance has no ready GSV version",
-                    retryable=False,
-                )
+                continue
             materialized[utterance.utterance_id] = record.segment_id
             await self._directors.attach_utterance_versions(
                 utterance.utterance_id,
@@ -438,6 +428,13 @@ class DirectorGenerationService:
                 generation.generation_id,
                 utterance.utterance_id,
                 status="ready",
+            )
+        if not materialized:
+            raise PipelineError(
+                ErrorCode.VERSION_NOT_READY,
+                "director_generation",
+                "no spoken utterance has a ready GSV version",
+                retryable=False,
             )
         await self._compose(generation.generation_id, materialized, utterances)
         return await self._directors.get_generation(generation.generation_id)
@@ -988,6 +985,8 @@ class DirectorGenerationService:
         inputs: list[ComposeInput] = []
         archive_entries: list[SentenceArchiveEntry] = []
         for ordinal, utterance in enumerate(utterances):
+            if utterance.utterance_id not in materialized:
+                continue
             segment = await self._segments.get_segment(materialized[utterance.utterance_id])
             if segment.active_gsv_version_id is None:
                 raise PipelineError(
@@ -1000,7 +999,7 @@ class DirectorGenerationService:
             blob_path = (self._artifacts.root / version.blob_relative_path).resolve()
             inputs.append(
                 ComposeInput(
-                    ordinal=ordinal,
+                    ordinal=len(inputs),
                     segment_id=segment.segment_id,
                     gsv_version_id=version.version_id,
                     gsv_content_sha256=version.blob_sha256,
