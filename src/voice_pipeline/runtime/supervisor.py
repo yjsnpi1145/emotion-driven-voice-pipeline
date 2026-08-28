@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import sys
 import tempfile
@@ -10,6 +11,8 @@ from datetime import UTC
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
+
+import psutil
 
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.core.inference_tracker import InferenceTracker, TrackerLease
@@ -23,6 +26,27 @@ from voice_pipeline.models.schemas import (
 )
 
 _ENGINES: tuple[WorkerName, ...] = ("indextts", "gpt_sovits")
+
+
+def _validate_control_identity(
+    *, control_pid: int | None, control_create_time: float | None
+) -> tuple[int, float]:
+    pid = os.getpid() if control_pid is None else control_pid
+    if pid <= 0:
+        raise ValueError("control PID must be positive")
+    if control_create_time is not None and (
+        not math.isfinite(control_create_time) or control_create_time <= 0
+    ):
+        raise ValueError("control create time must be a positive finite timestamp")
+    try:
+        observed_create_time = psutil.Process(pid).create_time()
+    except psutil.Error as exc:
+        raise RuntimeError(f"cannot verify control process identity for PID {pid}") from exc
+    if control_create_time is None:
+        return pid, observed_create_time
+    if abs(observed_create_time - control_create_time) >= 1.0:
+        raise ValueError("control create time does not match the observed process")
+    return pid, control_create_time
 
 
 class ProcessSupervisor:
@@ -54,8 +78,10 @@ class ProcessSupervisor:
         self._registry_path = registry_path
         self._instance_id = instance_id or str(uuid.uuid4())
         self._audit_log = audit_log
-        self._control_pid = control_pid
-        self._control_create_time = control_create_time
+        self._control_pid, self._control_create_time = _validate_control_identity(
+            control_pid=control_pid,
+            control_create_time=control_create_time,
+        )
         self._engine_lifecycle = engine_lifecycle or mode
         self._python_version = sys.version.split()[0]
         self._ready: dict[WorkerName, bool] = {
@@ -230,8 +256,8 @@ class ProcessSupervisor:
             "instance_id": self._instance_id,
             "audit_log": str(self._audit_log) if self._audit_log else None,
             "control": {
-                "pid": self._control_pid if self._control_pid else os.getpid(),
-                "create_time": self._control_create_time if self._control_create_time else 0.0,
+                "pid": self._control_pid,
+                "create_time": self._control_create_time,
             },
             "engine_lifecycle": self._engine_lifecycle,
             "workers": {
