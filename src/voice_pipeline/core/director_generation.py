@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import UUID, uuid4
 
+from voice_pipeline.core.director_adjustment import resolve_adjustment
 from voice_pipeline.core.director_reference_pool import (
     EmotionBucket,
     build_pool_family_key,
@@ -23,6 +24,8 @@ from voice_pipeline.core.role_preset_service import RolePresetService
 from voice_pipeline.core.segment_job_service import SegmentJobService
 from voice_pipeline.core.sentence_archive import SentenceArchiveEntry, write_sentence_archive
 from voice_pipeline.models.director import (
+    AdjustDirectorUtteranceRequest,
+    DirectorAdjustmentResult,
     DirectorGenerationItemRecord,
     DirectorGenerationRecord,
     DirectorProjectRecord,
@@ -92,6 +95,7 @@ class DirectorGenerationService:
         self._index_fingerprint = index_fingerprint
         self._active: dict[UUID, asyncio.Task[None]] = {}
         self._pool_rebuilds: dict[tuple[UUID, UUID], asyncio.Task[None]] = {}
+        self._adjustments: dict[tuple[UUID, UUID], asyncio.Task[None]] = {}
         self._pool_locks: dict[str, asyncio.Lock] = {}
 
     async def start(self, project_id: UUID, *, expected_revision: int) -> DirectorGenerationRecord:
@@ -185,6 +189,322 @@ class DirectorGenerationService:
         if generation is None:
             return None, []
         return generation, await self._directors.list_generation_items(generation.generation_id)
+
+    async def adjust_utterance(
+        self,
+        project_id: UUID,
+        utterance_id: UUID,
+        request: AdjustDirectorUtteranceRequest,
+    ) -> DirectorAdjustmentResult:
+        project = await self._directors.get_project(project_id)
+        if project.revision != request.expected_project_revision:
+            raise PipelineError(
+                ErrorCode.VERSION_CONFLICT,
+                "director_adjustment",
+                "director data changed; refresh before adjusting the utterance",
+                retryable=False,
+            )
+        utterance = next(
+            (
+                item
+                for item in await self._directors.list_utterances(project_id)
+                if item.utterance_id == utterance_id
+            ),
+            None,
+        )
+        if utterance is None:
+            raise KeyError("unknown director utterance")
+        if utterance.revision != request.expected_utterance_revision:
+            raise PipelineError(
+                ErrorCode.VERSION_CONFLICT,
+                "director_adjustment",
+                "director utterance changed; refresh before saving",
+                retryable=False,
+            )
+        changed = frozenset(
+            name
+            for name in (
+                "synthesis_text",
+                "ref_text_cn",
+                "emotion_vector",
+                "speed_factor",
+                "pause_after_ms",
+            )
+            if getattr(utterance, name) != getattr(request, name)
+        )
+        decision = resolve_adjustment(
+            changed_fields=changed,
+            requested_action=request.action,
+            reference_valid=utterance.reference_version_id is not None,
+        )
+        generation = await self._directors.current_generation(project_id)
+        if generation is None:
+            if project.status != "translation_review" or request.action != "save":
+                raise PipelineError(
+                    ErrorCode.DIRECTOR_STATE_CONFLICT,
+                    "director_adjustment",
+                    "audio regeneration requires an existing Director generation",
+                    retryable=False,
+                )
+            patched = await self._directors.patch_utterance(
+                utterance_id,
+                expected_revision=request.expected_utterance_revision,
+                synthesis_text=request.synthesis_text,
+                ref_text_cn=request.ref_text_cn,
+                emotion_vector=request.emotion_vector,
+                speed_factor=request.speed_factor,
+                pause_after_ms=request.pause_after_ms,
+            )
+            return DirectorAdjustmentResult(
+                utterance=patched,
+                requested_action=decision.requested_action,
+                effective_action=decision.effective_action,
+            )
+        active = self._active.get(generation.generation_id)
+        key = (generation.generation_id, utterance_id)
+        local = self._adjustments.get(key)
+        if (active is not None and not active.done()) or (local is not None and not local.done()):
+            raise PipelineError(
+                ErrorCode.DIRECTOR_STATE_CONFLICT,
+                "director_adjustment",
+                "this Director utterance is already running",
+                retryable=True,
+            )
+        if utterance.segment_id is None:
+            raise PipelineError(
+                ErrorCode.DIRECTOR_STATE_CONFLICT,
+                "director_adjustment",
+                "Director utterance has no materialized segment",
+                retryable=False,
+            )
+        patched = await self._directors.patch_utterance(
+            utterance_id,
+            expected_revision=request.expected_utterance_revision,
+            synthesis_text=request.synthesis_text,
+            ref_text_cn=request.ref_text_cn,
+            emotion_vector=request.emotion_vector,
+            speed_factor=request.speed_factor,
+            pause_after_ms=request.pause_after_ms,
+        )
+        segment = await self._segments.get_segment(utterance.segment_id)
+        if changed:
+            segment = await self._segments.patch_inputs(
+                segment.segment_id,
+                SegmentInputsPatch(
+                    expected_ref_draft_revision=segment.ref_draft_revision,
+                    expected_gsv_draft_revision=segment.gsv_draft_revision,
+                    ref_text_cn=(request.ref_text_cn if "ref_text_cn" in changed else None),
+                    current_emotion_vector=(
+                        request.emotion_vector if "emotion_vector" in changed else None
+                    ),
+                    synthesis_text=(
+                        request.synthesis_text if "synthesis_text" in changed else None
+                    ),
+                    speed_factor=(
+                        request.speed_factor if "speed_factor" in changed else None
+                    ),
+                    pause_after_ms=(
+                        request.pause_after_ms if "pause_after_ms" in changed else None
+                    ),
+                ),
+            )
+        project = await self._directors.get_project(project_id)
+        generation = await self._directors.begin_generation_adjustment(
+            project_id,
+            generation.generation_id,
+            expected_revision=project.revision,
+            utterance_id=utterance_id,
+            action=decision.effective_action,
+        )
+        item = next(
+            item
+            for item in await self._directors.list_generation_items(generation.generation_id)
+            if item.utterance_id == utterance_id
+        )
+        if decision.effective_action == "save":
+            await self._directors.set_generation_item(
+                generation.generation_id,
+                utterance_id,
+                status=(
+                    "queued"
+                    if decision.reference_stale
+                    else "reference_ready"
+                    if decision.gsv_stale
+                    else "ready"
+                ),
+            )
+            generation = await self._directors.finish_generation(
+                generation.generation_id,
+                succeeded=False,
+                final_relative_path=generation.final_relative_path,
+                error={
+                    "code": "DIRECTOR_UTTERANCE_STALE",
+                    "stage": "director_adjustment",
+                    "message": "utterance changes were saved and require regeneration",
+                    "retryable": True,
+                    "details": {"utterance_id": str(utterance_id)},
+                },
+            )
+        else:
+            task = asyncio.create_task(
+                self._run_adjustment(
+                    generation,
+                    patched,
+                    item,
+                    decision.effective_action,
+                )
+            )
+            self._adjustments[key] = task
+            task.add_done_callback(
+                lambda completed: self._forget_adjustment(key, completed)
+            )
+        return DirectorAdjustmentResult(
+            utterance=patched,
+            requested_action=decision.requested_action,
+            effective_action=decision.effective_action,
+            generation_id=generation.generation_id,
+            generation_status=generation.status,
+        )
+
+    async def _run_adjustment(
+        self,
+        generation: DirectorGenerationRecord,
+        utterance: DirectorUtteranceRecord,
+        item: DirectorGenerationItemRecord,
+        action: str,
+    ) -> None:
+        try:
+            if utterance.segment_id is None or utterance.role_id is None:
+                raise PipelineError(
+                    ErrorCode.DIRECTOR_STATE_CONFLICT,
+                    "director_adjustment",
+                    "Director utterance is not materialized or mapped",
+                    retryable=False,
+                )
+            _, _, preset_by_role = _snapshot_inputs(generation)
+            preset = preset_by_role.get(utterance.role_id)
+            if preset is None:
+                raise _preset_blocker("spoken utterance has no usable role preset", utterance)
+            segment = await self._segments.get_segment(utterance.segment_id)
+            if action in {"reference", "both"}:
+                await self._directors.set_generation_item(
+                    generation.generation_id,
+                    utterance.utterance_id,
+                    status="reference_running",
+                )
+                prepared = await self._prepare_reference(
+                    generation_id=generation.generation_id,
+                    segment=segment,
+                    utterance=utterance,
+                    base_voice=self._presets.audio_path(preset),
+                )
+                segment = prepared.segment
+                await self._directors.attach_utterance_versions(
+                    utterance.utterance_id,
+                    reference_version_id=segment.active_ref_version_id,
+                )
+                await self._directors.set_generation_item(
+                    generation.generation_id,
+                    utterance.utterance_id,
+                    status="reference_ready",
+                    reference_job_id=prepared.job_id,
+                    reference_mode=("pooled" if prepared.pool_entry else "independent"),
+                    reference_pool_entry_id=(
+                        prepared.pool_entry.entry_id if prepared.pool_entry else None
+                    ),
+                    reference_emotion_bucket=(
+                        prepared.pool_entry.emotion_bucket if prepared.pool_entry else None
+                    ),
+                    reference_degraded_from=prepared.degraded_from,
+                )
+                if action == "reference":
+                    await self._directors.finish_generation(
+                        generation.generation_id,
+                        succeeded=False,
+                        final_relative_path=generation.final_relative_path,
+                        error={
+                            "code": "DIRECTOR_REFERENCE_REBUILT",
+                            "stage": "director_adjustment",
+                            "message": "reference is ready; GSV regeneration is still required",
+                            "retryable": True,
+                            "details": {"utterance_id": str(utterance.utterance_id)},
+                        },
+                    )
+                    return
+            if action in {"gsv", "both"}:
+                await self._directors.set_generation_item(
+                    generation.generation_id,
+                    utterance.utterance_id,
+                    status="gsv_running",
+                )
+                context = await self._segment_jobs.submit_gsv(
+                    segment.segment_id,
+                    SegmentGsvJobRequest(
+                        request_id=uuid4(),
+                        model_profile_id=item.model_profile_id,
+                    ),
+                )
+                await self._directors.set_generation_item(
+                    generation.generation_id,
+                    utterance.utterance_id,
+                    status="gsv_running",
+                    gsv_job_id=context.job_id,
+                )
+                await self._notify_jobs()
+                await self._await_job(context.job_id)
+                segment = await self._segments.get_segment(segment.segment_id)
+                await self._directors.attach_utterance_versions(
+                    utterance.utterance_id,
+                    gsv_version_id=segment.active_gsv_version_id,
+                )
+                await self._directors.set_generation_item(
+                    generation.generation_id,
+                    utterance.utterance_id,
+                    status="ready",
+                )
+            await self._compose_current_generation(generation)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            await self._directors.set_generation_item(
+                generation.generation_id,
+                utterance.utterance_id,
+                status="failed",
+                error=_error_payload(exc),
+            )
+            await self._directors.finish_generation(
+                generation.generation_id,
+                succeeded=False,
+                final_relative_path=generation.final_relative_path,
+                error=_error_payload(exc),
+            )
+
+    async def _compose_current_generation(self, generation: DirectorGenerationRecord) -> None:
+        items = await self._directors.list_generation_items(generation.generation_id)
+        if any(item.status != "ready" for item in items):
+            await self._directors.finish_generation(
+                generation.generation_id,
+                succeeded=False,
+                final_relative_path=generation.final_relative_path,
+                error={
+                    "code": "DIRECTOR_ITEMS_INCOMPLETE",
+                    "stage": "director_adjustment",
+                    "message": "one or more Director utterances still require regeneration",
+                    "retryable": True,
+                },
+            )
+            return
+        by_id = {
+            row.utterance_id: row
+            for row in await self._directors.list_utterances(generation.project_id)
+        }
+        utterances = [by_id[item.utterance_id] for item in items]
+        materialized = {
+            row.utterance_id: row.segment_id
+            for row in utterances
+            if row.segment_id is not None
+        }
+        await self._compose(generation.generation_id, materialized, utterances)
 
     async def resume(self, project_id: UUID, *, expected_revision: int) -> DirectorGenerationRecord:
         project = await self._directors.get_project(project_id)
@@ -459,6 +779,12 @@ class DirectorGenerationService:
     ) -> None:
         if self._pool_rebuilds.get(key) is completed:
             self._pool_rebuilds.pop(key, None)
+
+    def _forget_adjustment(
+        self, key: tuple[UUID, UUID], completed: asyncio.Future[None]
+    ) -> None:
+        if self._adjustments.get(key) is completed:
+            self._adjustments.pop(key, None)
 
     async def _run(
         self,

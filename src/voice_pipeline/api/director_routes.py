@@ -15,6 +15,7 @@ from voice_pipeline.core.director_preprocessing import PreprocessingService
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.core.role_preset_service import RolePresetService
 from voice_pipeline.models.director import (
+    AdjustDirectorUtteranceRequest,
     BindRolePresetRequest,
     BulkDirectorUtterancePatch,
     CreateDirectorProjectRequest,
@@ -355,6 +356,26 @@ def build_director_router(plane: Any) -> APIRouter:
             raise HTTPException(status_code=404, detail="director utterance not found") from exc
         except PipelineError as exc:
             raise _pipeline_error(exc) from exc
+
+    @router.post(
+        "/api/v1/director-projects/{project_id}/utterances/{utterance_id}/adjust"
+    )
+    async def adjust_utterance(
+        project_id: UUID,
+        utterance_id: UUID,
+        request: AdjustDirectorUtteranceRequest,
+    ) -> dict[str, Any]:
+        try:
+            result = await _generation(plane).adjust_utterance(
+                project_id,
+                utterance_id,
+                request,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="director utterance not found") from exc
+        except PipelineError as exc:
+            raise _pipeline_error(exc) from exc
+        return _dump(result)
 
     @router.post("/api/v1/director-projects/{project_id}/assign-role")
     async def bulk_assign(

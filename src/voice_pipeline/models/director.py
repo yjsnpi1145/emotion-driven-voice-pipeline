@@ -54,6 +54,7 @@ DirectorEmotionBucket = Literal[
     "surprise",
     "calm",
 ]
+DirectorAdjustmentAction = Literal["save", "reference", "gsv", "both", "recompose"]
 
 
 class CreateDirectorProjectRequest(StrictModel):
@@ -238,6 +239,25 @@ class DirectorUtterancePatch(StrictModel):
     emotion_vector: EmotionVector | None = None
     speed_factor: float | None = Field(default=None, ge=0.5, le=2.0)
     pause_after_ms: int | None = Field(default=None, ge=0, le=30_000)
+
+
+class AdjustDirectorUtteranceRequest(StrictModel):
+    expected_project_revision: int = Field(ge=0)
+    expected_utterance_revision: int = Field(ge=0)
+    synthesis_text: NonBlankText
+    ref_text_cn: ChineseReferenceText
+    emotion_vector: EmotionVector
+    speed_factor: float = Field(ge=0.5, le=2.0)
+    pause_after_ms: int = Field(ge=0, le=30_000)
+    action: DirectorAdjustmentAction
+
+
+class DirectorAdjustmentResult(StrictModel):
+    utterance: DirectorUtteranceRecord
+    requested_action: DirectorAdjustmentAction
+    effective_action: DirectorAdjustmentAction
+    generation_id: UUID | None = None
+    generation_status: DirectorGenerationStatus | None = None
 
 
 class BulkDirectorUtterancePatch(StrictModel):

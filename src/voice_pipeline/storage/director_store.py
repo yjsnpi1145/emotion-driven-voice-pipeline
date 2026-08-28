@@ -2149,6 +2149,62 @@ class DirectorStore:
             )
         return await self.get_generation(generation_id)
 
+    async def begin_generation_adjustment(
+        self,
+        project_id: UUID,
+        generation_id: UUID,
+        *,
+        expected_revision: int,
+        utterance_id: UUID,
+        action: str,
+    ) -> DirectorGenerationRecord:
+        async with self._database.write_session() as session:
+            project = await _locked_project(session, project_id)
+            _require_revision(project, expected_revision)
+            if str(project.get("current_generation_id")) != str(generation_id):
+                raise _state_conflict(str(project["status"]), "adjust an older generation")
+            generation = (
+                (
+                    await session.execute(
+                        select(director_generations).where(
+                            director_generations.c.generation_id == str(generation_id)
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if generation is None:
+                raise KeyError(f"unknown director generation: {generation_id}")
+            if str(generation["status"]) not in {"succeeded", "generation_incomplete"}:
+                raise _state_conflict(str(generation["status"]), "adjust generation")
+            now = _now()
+            await session.execute(
+                update(director_generations)
+                .where(director_generations.c.generation_id == str(generation_id))
+                .values(status="running", error_json=None, finished_at_utc=None)
+            )
+            await session.execute(
+                update(director_projects)
+                .where(director_projects.c.project_id == str(project_id))
+                .values(
+                    status="generating",
+                    revision=expected_revision + 1,
+                    last_error_json=None,
+                    updated_at_utc=now,
+                )
+            )
+            await _append_event(
+                session,
+                project_id,
+                operation="utterance_adjustment_started",
+                object_id=utterance_id,
+                before_revision=expected_revision,
+                after_revision=expected_revision + 1,
+                details={"generation_id": str(generation_id), "action": action},
+            )
+        return await self.get_generation(generation_id)
+
     async def mark_generation_interrupted(
         self, generation_id: UUID, *, error: dict[str, object]
     ) -> None:

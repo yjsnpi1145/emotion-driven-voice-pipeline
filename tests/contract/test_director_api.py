@@ -155,6 +155,82 @@ async def test_director_project_persists_revisioned_performance_direction(fake_s
 
 
 @pytest.mark.asyncio
+async def test_director_adjustment_saves_translation_review_utterance(fake_settings) -> None:
+    app = create_app(fake_settings)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            project = (
+                await client.post(
+                    "/api/v1/director-projects",
+                    json={
+                        "title": "单句调整",
+                        "source_text": "甲：我没事。",
+                        "source_language": "zh",
+                        "target_language": "ja",
+                    },
+                )
+            ).json()
+            project = await _preprocess_to_review(client, project)
+            project = await _confirm_and_wait_for_roles(client, project)
+            project = (
+                await client.post(
+                    f"/api/v1/director-projects/{project['project_id']}/confirm-roles",
+                    json={"expected_revision": project["revision"]},
+                )
+            ).json()
+            await client.post(
+                f"/api/v1/director-projects/{project['project_id']}/translate",
+                json={"expected_revision": project["revision"]},
+            )
+            project = await _wait_project_status(
+                client,
+                project["project_id"],
+                "translation_review",
+            )
+            utterance = next(
+                item
+                for item in (
+                    await client.get(
+                        f"/api/v1/director-projects/{project['project_id']}/utterances"
+                    )
+                ).json()
+                if item["speak_enabled"]
+            )
+            payload = {
+                "expected_project_revision": project["revision"],
+                "expected_utterance_revision": utterance["revision"],
+                "synthesis_text": "静かに、大丈夫です。",
+                "ref_text_cn": "我没事，请不用担心。",
+                "emotion_vector": [0, 0, 0.2, 0, 0, 0.1, 0, 0.3],
+                "speed_factor": 0.9,
+                "pause_after_ms": 600,
+                "action": "save",
+            }
+            saved = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}"
+                f"/utterances/{utterance['utterance_id']}/adjust",
+                json=payload,
+            )
+            assert saved.status_code == 200, saved.text
+            result = saved.json()
+            assert result["requested_action"] == "save"
+            assert result["effective_action"] == "save"
+            assert result["generation_id"] is None
+            assert result["utterance"]["synthesis_text"] == "静かに、大丈夫です。"
+            assert result["utterance"]["speed_factor"] == 0.9
+
+            stale = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}"
+                f"/utterances/{utterance['utterance_id']}/adjust",
+                json=payload,
+            )
+            assert stale.status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_director_preprocessing_api_supports_review_edit_restore_and_confirm(
     fake_settings,
 ) -> None:
@@ -744,6 +820,212 @@ async def test_director_generation_uses_role_presets_and_completes(fake_settings
             items = await app.state.plane.director_store.list_generation_items(
                 generation.generation_id
             )
+            adjusted_before = next(
+                row
+                for row in generated_rows
+                if row.speak_enabled and row.segment_id is not None
+            )
+            old_reference_version_id = adjusted_before.reference_version_id
+            old_gsv_version_id = adjusted_before.gsv_version_id
+            assert old_reference_version_id is not None
+            assert old_gsv_version_id is not None
+            adjusted = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}"
+                f"/utterances/{adjusted_before.utterance_id}/adjust",
+                json={
+                    "expected_project_revision": project["revision"],
+                    "expected_utterance_revision": adjusted_before.revision,
+                    "synthesis_text": "局部重新生成后的台词。",
+                    "ref_text_cn": adjusted_before.ref_text_cn,
+                    "emotion_vector": list(adjusted_before.emotion_vector),
+                    "speed_factor": 1.1,
+                    "pause_after_ms": adjusted_before.pause_after_ms,
+                    "action": "gsv",
+                },
+            )
+            assert adjusted.status_code == 200, adjusted.text
+            assert adjusted.json()["effective_action"] == "gsv"
+            project = await _wait_status(
+                client,
+                project["project_id"],
+                "succeeded",
+                limit=500,
+            )
+            adjusted_after = next(
+                row
+                for row in await app.state.plane.director_store.list_utterances(
+                    project["project_id"]
+                )
+                if row.utterance_id == adjusted_before.utterance_id
+            )
+            assert adjusted_after.reference_version_id == old_reference_version_id
+            assert adjusted_after.gsv_version_id != old_gsv_version_id
+            assert adjusted_after.synthesis_text == "局部重新生成后的台词。"
+            old_version = await app.state.plane.version_store.get_version(old_gsv_version_id)
+            assert old_version.state == "ready"
+
+            reference_only = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}"
+                f"/utterances/{adjusted_after.utterance_id}/adjust",
+                json={
+                    "expected_project_revision": project["revision"],
+                    "expected_utterance_revision": adjusted_after.revision,
+                    "synthesis_text": adjusted_after.synthesis_text,
+                    "ref_text_cn": adjusted_after.ref_text_cn,
+                    "emotion_vector": list(adjusted_after.emotion_vector),
+                    "speed_factor": adjusted_after.speed_factor,
+                    "pause_after_ms": adjusted_after.pause_after_ms,
+                    "action": "reference",
+                },
+            )
+            assert reference_only.status_code == 200, reference_only.text
+            project = await _wait_status(
+                client,
+                project["project_id"],
+                "generation_incomplete",
+                limit=500,
+            )
+            progress_after_reference = (
+                await client.get(
+                    f"/api/v1/director-projects/{project['project_id']}/progress"
+                )
+            ).json()
+            reference_item = next(
+                candidate
+                for candidate in progress_after_reference["items"]
+                if candidate["utterance_id"] == str(adjusted_after.utterance_id)
+            )
+            assert reference_item["status"] == "reference_ready"
+            adjusted_after = next(
+                row
+                for row in await app.state.plane.director_store.list_utterances(
+                    project["project_id"]
+                )
+                if row.utterance_id == adjusted_after.utterance_id
+            )
+            gsv_after_reference = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}"
+                f"/utterances/{adjusted_after.utterance_id}/adjust",
+                json={
+                    "expected_project_revision": project["revision"],
+                    "expected_utterance_revision": adjusted_after.revision,
+                    "synthesis_text": adjusted_after.synthesis_text,
+                    "ref_text_cn": adjusted_after.ref_text_cn,
+                    "emotion_vector": list(adjusted_after.emotion_vector),
+                    "speed_factor": adjusted_after.speed_factor,
+                    "pause_after_ms": adjusted_after.pause_after_ms,
+                    "action": "gsv",
+                },
+            )
+            assert gsv_after_reference.status_code == 200, gsv_after_reference.text
+            project = await _wait_status(client, project["project_id"], "succeeded", limit=500)
+            adjusted_after = next(
+                row
+                for row in await app.state.plane.director_store.list_utterances(
+                    project["project_id"]
+                )
+                if row.utterance_id == adjusted_after.utterance_id
+            )
+
+            recomposed_pause = adjusted_after.pause_after_ms + 150
+            recomposed = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}"
+                f"/utterances/{adjusted_after.utterance_id}/adjust",
+                json={
+                    "expected_project_revision": project["revision"],
+                    "expected_utterance_revision": adjusted_after.revision,
+                    "synthesis_text": adjusted_after.synthesis_text,
+                    "ref_text_cn": adjusted_after.ref_text_cn,
+                    "emotion_vector": list(adjusted_after.emotion_vector),
+                    "speed_factor": adjusted_after.speed_factor,
+                    "pause_after_ms": recomposed_pause,
+                    "action": "recompose",
+                },
+            )
+            assert recomposed.status_code == 200, recomposed.text
+            project = await _wait_status(client, project["project_id"], "succeeded", limit=500)
+            adjusted_after = next(
+                row
+                for row in await app.state.plane.director_store.list_utterances(
+                    project["project_id"]
+                )
+                if row.utterance_id == adjusted_after.utterance_id
+            )
+            adjusted_segment = await app.state.plane.segment_store.get_segment(
+                adjusted_after.segment_id
+            )
+            assert adjusted_segment.pause_after_ms == recomposed_pause
+
+            escalated = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}"
+                f"/utterances/{adjusted_after.utterance_id}/adjust",
+                json={
+                    "expected_project_revision": project["revision"],
+                    "expected_utterance_revision": adjusted_after.revision,
+                    "synthesis_text": adjusted_after.synthesis_text,
+                    "ref_text_cn": adjusted_after.ref_text_cn,
+                    "emotion_vector": [0, 0, 0.3, 0, 0, 0.1, 0, 0.2],
+                    "speed_factor": adjusted_after.speed_factor,
+                    "pause_after_ms": adjusted_after.pause_after_ms,
+                    "action": "gsv",
+                },
+            )
+            assert escalated.status_code == 200, escalated.text
+            assert escalated.json()["effective_action"] == "both"
+            project = await _wait_status(client, project["project_id"], "succeeded", limit=500)
+            adjusted_after = next(
+                row
+                for row in await app.state.plane.director_store.list_utterances(
+                    project["project_id"]
+                )
+                if row.utterance_id == adjusted_after.utterance_id
+            )
+
+            saved_only = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}"
+                f"/utterances/{adjusted_after.utterance_id}/adjust",
+                json={
+                    "expected_project_revision": project["revision"],
+                    "expected_utterance_revision": adjusted_after.revision,
+                    "synthesis_text": adjusted_after.synthesis_text,
+                    "ref_text_cn": adjusted_after.ref_text_cn,
+                    "emotion_vector": list(adjusted_after.emotion_vector),
+                    "speed_factor": 1.2,
+                    "pause_after_ms": adjusted_after.pause_after_ms,
+                    "action": "save",
+                },
+            )
+            assert saved_only.status_code == 200, saved_only.text
+            project = await _wait_status(
+                client,
+                project["project_id"],
+                "generation_incomplete",
+                limit=100,
+            )
+            adjusted_after = next(
+                row
+                for row in await app.state.plane.director_store.list_utterances(
+                    project["project_id"]
+                )
+                if row.utterance_id == adjusted_after.utterance_id
+            )
+            finished_save = await client.post(
+                f"/api/v1/director-projects/{project['project_id']}"
+                f"/utterances/{adjusted_after.utterance_id}/adjust",
+                json={
+                    "expected_project_revision": project["revision"],
+                    "expected_utterance_revision": adjusted_after.revision,
+                    "synthesis_text": adjusted_after.synthesis_text,
+                    "ref_text_cn": adjusted_after.ref_text_cn,
+                    "emotion_vector": list(adjusted_after.emotion_vector),
+                    "speed_factor": adjusted_after.speed_factor,
+                    "pause_after_ms": adjusted_after.pause_after_ms,
+                    "action": "gsv",
+                },
+            )
+            assert finished_save.status_code == 200, finished_save.text
+            project = await _wait_status(client, project["project_id"], "succeeded", limit=500)
+
             await app.state.plane.director_store.set_generation_item(
                 generation.generation_id,
                 items[0].utterance_id,
