@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Coroutine
+from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
@@ -606,13 +607,11 @@ def build_director_router(plane: Any) -> APIRouter:
             or generation.final_relative_path is None
         ):
             raise HTTPException(status_code=409, detail="director sentence audio is not ready")
-        root = plane.artifact_store.root.resolve()
-        directors_root = (root / "directors").resolve()
-        final_path = (root / generation.final_relative_path).resolve()
-        archive_path = (final_path.parent / "sentences.zip").resolve()
         try:
-            final_path.relative_to(directors_root)
-            archive_path.relative_to(directors_root)
+            archive_path = _resolve_sentence_archive_path(
+                plane.artifact_store.root,
+                generation.final_relative_path,
+            )
         except ValueError as exc:
             raise HTTPException(
                 status_code=409, detail="director sentence audio path is invalid"
@@ -839,6 +838,35 @@ def _public_generation(record: Any) -> dict[str, Any]:
 
 def _dump(record: Any) -> dict[str, Any]:
     return cast(dict[str, Any], record.model_dump(mode="json"))
+
+
+def _resolve_sentence_archive_path(root: Path, final_relative_path: str) -> Path:
+    root = root.resolve()
+    directors_root = (root / "directors").resolve()
+    final_candidate = root / final_relative_path
+    archive_candidate = final_candidate.parent / "sentences.zip"
+    final_path = final_candidate.resolve()
+    archive_path = archive_candidate.resolve()
+    final_path.relative_to(directors_root)
+    archive_path.relative_to(directors_root)
+    if _path_chain_contains_symlink(final_candidate, root) or _path_chain_contains_symlink(
+        archive_candidate, root
+    ):
+        raise ValueError("director sentence audio path contains a symlink")
+    return archive_path
+
+
+def _path_chain_contains_symlink(candidate: Path, root: Path) -> bool:
+    current = candidate
+    while True:
+        if current.is_symlink():
+            return True
+        if current == root:
+            return False
+        parent = current.parent
+        if parent == current:
+            raise ValueError("director sentence audio path is outside the artifact root")
+        current = parent
 
 
 def _pipeline_error(error: PipelineError) -> HTTPException:

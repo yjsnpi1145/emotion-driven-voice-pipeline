@@ -484,10 +484,9 @@ class DirectorGenerationService:
                     jobs_root=self._jobs_root / "director-reference-probes",
                     base_voice=base_voice,
                 ),
-                max_corrections=getattr(
+                max_corrections=_director_reference_correction_budget(
                     self._director,
-                    "max_reference_corrections",
-                    self._max_reference_corrections,
+                    fallback=self._max_reference_corrections,
                 ),
             )
             if resolved.ref_text_cn == current.ref_text_cn:
@@ -512,12 +511,13 @@ class DirectorGenerationService:
     async def _materialize(
         self, project: DirectorProjectRecord, utterances: list[DirectorUtteranceRecord]
     ) -> dict[UUID, UUID]:
+        desired_ids = {item.utterance_id for item in utterances}
         existing = {
             item.utterance_id: item.segment_id
             for item in await self._directors.list_utterances(project.project_id)
-            if item.speak_enabled and item.segment_id is not None
+            if item.utterance_id in desired_ids and item.segment_id is not None
         }
-        if len(existing) == len(utterances):
+        if set(existing) == desired_ids:
             return {key: value for key, value in existing.items() if value is not None}
         task = await self._segments.create_task(
             CreateDubbingTaskRequest(
@@ -527,8 +527,10 @@ class DirectorGenerationService:
                 output_spec=OutputAudioSpec(),
             )
         )
-        mapping: dict[UUID, UUID] = {}
+        mapping = {key: value for key, value in existing.items() if value is not None}
         for ordinal, utterance in enumerate(utterances):
+            if utterance.utterance_id in mapping:
+                continue
             if (
                 utterance.synthesis_text is None
                 or utterance.ref_text_cn is None
@@ -642,6 +644,11 @@ def _preset_blocker(message: str, utterance: DirectorUtteranceRecord) -> Pipelin
         retryable=False,
         details={"utterance_id": str(utterance.utterance_id)},
     )
+
+
+def _director_reference_correction_budget(director: Any, *, fallback: int) -> int:
+    configured = int(getattr(director, "max_reference_corrections", fallback))
+    return max(0, min(2, configured))
 
 
 def _error_payload(error: BaseException) -> dict[str, Any]:
