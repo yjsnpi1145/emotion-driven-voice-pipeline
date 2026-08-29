@@ -124,7 +124,8 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert stylesheet.status_code == 200
     assert re.search(r"\.workbench\s*\{[^}]*grid-template-columns", stylesheet.text)
     assert "color-scheme: dark" in stylesheet.text
-    assert "--bg: #080d15" in stylesheet.text
+    assert "--surface-canvas: #070c13" in stylesheet.text
+    assert "--bg: var(--surface-canvas)" in stylesheet.text
     assert ".brand-mark" not in stylesheet.text
     assert "background: #fff;" not in stylesheet.text
     assert "background: rgb(255 255 255" not in stylesheet.text
