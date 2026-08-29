@@ -15,6 +15,7 @@ from voice_pipeline.models.director import (
     CreateDirectorProjectRequest,
     CreateDirectorRole,
     CreateDirectorUtterance,
+    DirectorEmotionBucket,
     DirectorGenerationItemRecord,
     DirectorGenerationRecord,
     DirectorPreprocessParagraphPage,
@@ -2727,16 +2728,22 @@ def _generation_item(row: dict[str, Any]) -> DirectorGenerationItemRecord:
             if row.get("reference_pool_entry_id")
             else None
         ),
-        reference_emotion_bucket=(
-            str(row["reference_emotion_bucket"])
-            if row.get("reference_emotion_bucket")
-            else None
-        ),  # type: ignore[arg-type]
-        reference_degraded_from=(
-            str(row["reference_degraded_from"])
-            if row.get("reference_degraded_from")
-            else None
-        ),  # type: ignore[arg-type]
+        reference_emotion_bucket=cast(
+            DirectorEmotionBucket | None,
+            (
+                str(row["reference_emotion_bucket"])
+                if row.get("reference_emotion_bucket")
+                else None
+            ),
+        ),
+        reference_degraded_from=cast(
+            DirectorEmotionBucket | None,
+            (
+                str(row["reference_degraded_from"])
+                if row.get("reference_degraded_from")
+                else None
+            ),
+        ),
     )
 
 

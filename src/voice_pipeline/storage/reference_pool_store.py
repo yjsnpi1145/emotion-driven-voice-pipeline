@@ -184,7 +184,7 @@ def _entry(row: dict[str, Any]) -> DirectorReferencePoolEntry:
         emotion_bucket=str(row["emotion_bucket"]),  # type: ignore[arg-type]
         template_version=int(row["template_version"]),
         prompt_text=str(row["prompt_text"]),
-        emotion_vector=tuple(json.loads(str(row["emotion_vector_json"]))),  # type: ignore[arg-type]
+        emotion_vector=tuple(json.loads(str(row["emotion_vector_json"]))),
         seed=int(row["seed"]),
         engine_fingerprint=json.loads(str(row["engine_fingerprint_json"])),
         output_spec=json.loads(str(row["output_spec_json"])),
