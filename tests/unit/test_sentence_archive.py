@@ -24,7 +24,7 @@ def _tone(path: Path, *, seconds: float, sample_rate: int = 32_000) -> None:
 
 
 def test_sentence_filename_is_ordered_sanitized_and_has_a_blank_fallback() -> None:
-    assert sanitize_sentence_filename(0, '“为什么:这样/呢？”') == "0001_“为什么这样呢？”.wav"
+    assert sanitize_sentence_filename(0, "“为什么:这样/呢？”") == "0001_“为什么这样呢？”.wav"
     assert sanitize_sentence_filename(1, "  \n ") == "0002_句子.wav"
     assert sanitize_sentence_filename(11, "a" * 100, max_stem_chars=8) == "0012_aaaaaaaa.wav"
 
@@ -50,6 +50,31 @@ def test_sentence_archive_keeps_input_order_and_chinese_names(tmp_path) -> None:
         assert bundle.read("0001_第一句.wav") == b"first"
         assert bundle.read("0002_第一句.wav") == b"second"
     assert not list(archive.parent.glob("*.partial.zip"))
+
+
+def test_sentence_archive_uses_windows_shell_compatible_metadata(tmp_path: Path) -> None:
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"audio")
+    archive = write_sentence_archive(
+        tuple(
+            SentenceArchiveEntry(
+                ordinal=ordinal,
+                source_text="这是一条用于验证资源管理器兼容性的中文长句" * 8,
+                audio_path=source,
+            )
+            for ordinal in range(59)
+        ),
+        tmp_path / "sentences.zip",
+    )
+
+    with ZipFile(archive) as bundle:
+        infos = bundle.infolist()
+        assert len(infos) == 59
+        assert bundle.testzip() is None
+        assert all(info.date_time != (1980, 1, 1, 0, 0, 0) for info in infos)
+        assert all(len(info.filename.encode("utf-8")) <= 160 for info in infos)
+        assert all(info.create_system == 0 for info in infos)
+        assert all(info.external_attr == 0x20 for info in infos)
 
 
 def test_sentence_archive_appends_each_utterance_pause_without_mutating_source(
