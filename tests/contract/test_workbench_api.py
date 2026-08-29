@@ -46,8 +46,8 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert 'data-theme="dark-console"' in page.text
     assert 'class="brand-mark"' not in page.text
     assert ">声</div>" not in page.text
-    assert "20260828a" in page.text
-    assert 'href="/ui/styles.css?v=20260828a"' in page.text
+    assert "20260829a" in page.text
+    assert 'href="/ui/styles.css?v=20260829a"' in page.text
     assert page.headers["cache-control"] == "no-store"
     assert 'id="segment-list"' in page.text
     assert 'id="segment-editor"' in page.text
@@ -196,11 +196,11 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "/api/v1/director-roles/merge" in director_script.text
     assert "/resume-generation" in director_script.text
     assert "/recompose" in director_script.text
-    assert 'from "./director-dnd.js?v=20260828a"' in director_script.text
+    assert 'from "./director-dnd.js?v=20260829a"' in director_script.text
     assert "canEditRoleReview" in director_script.text
-    assert 'from "./director-lazy-editor.js?v=20260828a"' not in director_script.text
-    assert 'from "./director-llm-activity.js?v=20260828a"' in director_script.text
-    assert 'from "./director-preprocessing.js?v=20260828a"' in director_script.text
+    assert 'from "./director-lazy-editor.js?v=20260829a"' not in director_script.text
+    assert 'from "./director-llm-activity.js?v=20260829a"' in director_script.text
+    assert 'from "./director-preprocessing.js?v=20260829a"' in director_script.text
     assert "/api/v1/llm/activity" in director_script.text
     assert "output.textContent = event.content" in director_script.text
     assert "log.scrollHeight - log.scrollTop - log.clientHeight < 32" in director_script.text
@@ -214,7 +214,7 @@ async def test_workbench_serves_local_static_shell_and_public_chapter_listing(
     assert "script_translation" in director_activity_script.text
     assert "script_preprocessing" in director_activity_script.text
     assert "dirtyTranslations" in director_script.text
-    assert 'from "./director-adjustment.js?v=20260828a"' in director_script.text
+    assert 'from "./director-adjustment.js?v=20260829a"' in director_script.text
     assert "function openAdjustmentDialog(utterance)" in director_script.text
     assert "调整配音" in director_script.text
     assert "card.append(lazyTranslatedEditor(utterance))" not in director_script.text

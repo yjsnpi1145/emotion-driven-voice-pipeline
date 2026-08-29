@@ -56,3 +56,18 @@ def test_global_controls_use_shared_height_and_motion_tokens() -> None:
     assert "var(--motion-fast)" in button_rule
     assert "min-height: var(--control-height)" in field_rule
     assert "var(--radius-control)" in field_rule
+
+
+def test_navigation_uses_local_accessible_svg_icons_and_new_cache_version() -> None:
+    page = _asset("index.html")
+    director_script = _asset("director.js")
+    assert 'class="icon-sprite" aria-hidden="true"' in page
+    assert page.count('class="tab-icon" aria-hidden="true"') == 5
+    assert 'class="button-icon" aria-hidden="true"' in page
+    for glyph in ("◉", "◎", "◆", "✦", "▦", "↻"):
+        assert glyph not in page
+    assert 'href="/ui/styles.css?v=20260829a"' in page
+    assert 'src="/ui/app.js?v=20260829a"' in page
+    assert 'src="/ui/director.js?v=20260829a"' in page
+    assert 'from "./director-dnd.js?v=20260829a"' in director_script
+    assert 'from "./director-adjustment.js?v=20260829a"' in director_script

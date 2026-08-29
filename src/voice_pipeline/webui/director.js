@@ -3,7 +3,7 @@ import {
   canEditRoleReview,
   contiguousMergePair,
   toggleSelection,
-} from "./director-dnd.js?v=20260828a";
+} from "./director-dnd.js?v=20260829a";
 import {
   buildAdjustmentPayload,
   changedAdjustmentFields,
@@ -13,22 +13,22 @@ import {
   isEmotionVectorValid,
   normalizeAdjustmentNumber,
   preserveAdjustmentDraft,
-} from "./director-adjustment.js?v=20260828a";
+} from "./director-adjustment.js?v=20260829a";
 import {
   directorActivityView,
   directorOperationLabels,
-} from "./director-llm-activity.js?v=20260828a";
+} from "./director-llm-activity.js?v=20260829a";
 import {
   canConfirmPreprocessing,
   nextPreprocessOffset,
   preprocessDraftState,
   preprocessStatusLabel,
-} from "./director-preprocessing.js?v=20260828a";
+} from "./director-preprocessing.js?v=20260829a";
 import {
   canSplitWorkingText,
   hasUnsavedDirectorDrafts,
   isWorkingTextDirty,
-} from "./director-working-text.js?v=20260828a";
+} from "./director-working-text.js?v=20260829a";
 
 const $ = (selector) => document.querySelector(selector);
 const directorState = {
