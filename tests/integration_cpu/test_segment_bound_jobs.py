@@ -277,6 +277,10 @@ async def test_direct_gsv_job_freezes_active_model_profile_before_queue_executio
     sovits_b.write_bytes(b"sovits-b")
     fake_settings.model_library.models_root = tmp_path / "model-library"
     fake_settings.model_library.allowed_import_roots = [source]
+    # This test exercises profile snapshotting, not queue-expiry behavior. Keep
+    # slow Windows CI filesystem/AV activity from consuming the 1s fake default
+    # before the durable dispatcher can claim the first reference job.
+    fake_settings.queue.queue_timeout_seconds = 10
 
     base_voice = tmp_path / "voice.wav"
     write_tone(base_voice, seconds=5.0)
@@ -317,7 +321,7 @@ async def test_direct_gsv_job_freezes_active_model_profile_before_queue_executio
                 },
             )
             reference_record = await _wait(client, reference.json()["job_id"])
-            assert reference_record["status"] == "succeeded"
+            assert reference_record["status"] == "succeeded", reference_record
             manifest_path = reference_record["result"]["manifest_path"]
 
             blocker = await client.post(
