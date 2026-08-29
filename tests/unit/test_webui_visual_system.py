@@ -71,3 +71,30 @@ def test_navigation_uses_local_accessible_svg_icons_and_new_cache_version() -> N
     assert 'src="/ui/director.js?v=20260829a"' in page
     assert 'from "./director-dnd.js?v=20260829a"' in director_script
     assert 'from "./director-adjustment.js?v=20260829a"' in director_script
+
+
+def test_shared_panels_and_workbench_use_semantic_component_tokens() -> None:
+    stylesheet = _asset("styles.css")
+    panel_rule = _rule(stylesheet, ".panel")
+    toolbar_rule = _rule(stylesheet, ".chapter-toolbar")
+    selected_rule = _rule(stylesheet, '.segment-row[data-selected="true"]')
+    scroll_rule = _rule(stylesheet, ".workbench > .panel")
+    assert "var(--radius-lg)" in panel_rule
+    assert "var(--shadow-panel)" in panel_rule
+    assert "var(--radius-lg)" in toolbar_rule
+    assert "var(--space-4)" in toolbar_rule
+    assert "inset 3px 0 var(--interactive)" in selected_rule
+    assert "scrollbar-gutter: stable" in scroll_rule
+
+
+def test_workbench_keeps_three_two_one_column_progression() -> None:
+    stylesheet = _asset("styles.css")
+    assert re.search(
+        r"\.workbench\s*\{[^}]*grid-template-columns:\s*"
+        r"minmax\(17rem,\s*\.82fr\)\s+minmax\(20rem,\s*1fr\)\s+"
+        r"minmax\(30rem,\s*1\.65fr\)",
+        stylesheet,
+    )
+    assert "@media (max-width: 1220px)" in stylesheet
+    assert "@media (max-width: 820px)" in stylesheet
+    assert ".chapter-action-buttons" in stylesheet
