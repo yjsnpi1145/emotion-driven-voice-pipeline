@@ -11,7 +11,12 @@ import respx
 
 from voice_pipeline.core.config import LlmSettings
 from voice_pipeline.core.errors import ErrorCode, PipelineError
-from voice_pipeline.models.director_llm import PreprocessRewriteUnit, TranslationInput
+from voice_pipeline.models.director_llm import (
+    EmotionContextUnit,
+    EmotionDirectionInput,
+    PreprocessRewriteUnit,
+    TranslationInput,
+)
 from voice_pipeline.modules.llm.activity import LlmActivityLog
 from voice_pipeline.modules.llm.client import OpenAiDirectorClient
 from voice_pipeline.modules.llm.script_chunking import build_analysis_units, split_script
@@ -426,6 +431,91 @@ async def test_translation_prompt_expands_only_chinese_reference_for_short_dialo
     assert "expand ref_text_cn" in prompt
     assert "do not change synthesis_text" in prompt
     assert "emotion_vector" in prompt
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_emotion_direction_sends_scene_speaker_and_timeline_context() -> None:
+    utterance_id = uuid4()
+    route = respx.post("https://llm.example/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": {
+                                "items": [
+                                    {
+                                        "utterance_id": str(utterance_id),
+                                        "revision": 3,
+                                        "emotion_vector": [0, 0, 0.35, 0, 0, 0.2, 0, 0.1],
+                                        "speed_factor": 0.9,
+                                        "pause_after_ms": 250,
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                ]
+            },
+        )
+    )
+    context = EmotionDirectionInput(
+        utterance_id=utterance_id,
+        revision=3,
+        role_name="甲",
+        source_text="嗯。",
+        scene_context="她收到噩耗，却强忍泪水。甲：\u201c我没事。\u201d乙：\u201c真的吗？\u201d甲：\u201c嗯。\u201d",
+        previous_units=(
+            EmotionContextUnit(
+                ordinal=1,
+                role_name="乙",
+                kind="dialogue",
+                speak_enabled=True,
+                text="真的吗？",
+            ),
+        ),
+        next_units=(),
+    )
+    settings = LlmSettings(
+        mode="openai",
+        base_url="https://llm.example/v1",
+        model="director",
+        api_key_env="PIPELINE_LLM_KEY",
+    )
+    activity = LlmActivityLog()
+
+    async with httpx.AsyncClient(base_url=settings.base_url + "/") as http:
+        client = OpenAiDirectorClient(
+            settings,
+            http_client=http,
+            api_key="secret",
+            activity=activity,
+        )
+        result = await client.direct_emotions(
+            performance_direction="整体偏平静，避免夸张。",
+            utterances=(context,),
+        )
+
+    request = json.loads(route.calls[0].request.content)
+    prompt = request["messages"][0]["content"]
+    payload = json.loads(request["messages"][1]["content"])
+    assert payload == {
+        "performance_direction": "整体偏平静，避免夸张。",
+        "utterances": [context.model_dump(mode="json")],
+    }
+    assert "Do not judge an interjection in isolation" in prompt
+    assert "scene_context" in prompt
+    assert "speaker" in prompt
+    assert "Never output a uniform vector" in prompt
+    assert "soft global performance bias" in prompt
+    assert "must not rewrite" in prompt
+    assert result.items[0].utterance_id == utterance_id
+    assert result.items[0].speed_factor == 0.9
+    assert result.items[0].pause_after_ms == 250
+    events = (await activity.snapshot()).events
+    assert [event.operation for event in events] == ["emotion_direction"] * 2
 
 
 @pytest.mark.asyncio

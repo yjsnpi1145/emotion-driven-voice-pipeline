@@ -24,7 +24,7 @@ def storage_settings(tmp_path: Path) -> StorageSettings:
 async def test_director_migration_creates_all_tables(tmp_path: Path) -> None:
     database = await Database.open(storage_settings(tmp_path), instance_id=uuid4(), migrate=True)
     try:
-        assert await database.alembic_revision() == "0007_director_role_dubbing"
+        assert await database.alembic_revision() == "0009_director_performance_controls"
         async with database.read_session() as session:
             rows = await session.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
             names = {str(row[0]) for row in rows}
@@ -32,6 +32,10 @@ async def test_director_migration_creates_all_tables(tmp_path: Path) -> None:
             columns = {str(row[1]) for row in utterance_rows}
             project_rows = await session.execute(text("PRAGMA table_info(director_projects)"))
             project_columns = {str(row[1]) for row in project_rows}
+            item_rows = await session.execute(
+                text("PRAGMA table_info(director_generation_items)")
+            )
+            item_columns = {str(row[1]) for row in item_rows}
         assert {
             "director_projects",
             "director_analysis_chunks",
@@ -42,6 +46,7 @@ async def test_director_migration_creates_all_tables(tmp_path: Path) -> None:
             "director_generations",
             "director_generation_items",
             "director_preprocess_paragraphs",
+            "director_reference_pool_entries",
         } <= names
         assert "working_text" in columns
         assert "preprocess_paragraph_id" in columns
@@ -51,6 +56,13 @@ async def test_director_migration_creates_all_tables(tmp_path: Path) -> None:
             "preprocessed_text",
             "preprocess_revision",
         } <= project_columns
+        assert "performance_direction" in project_columns
+        assert {
+            "reference_mode",
+            "reference_pool_entry_id",
+            "reference_emotion_bucket",
+            "reference_degraded_from",
+        } <= item_columns
     finally:
         await database.close()
 
@@ -84,7 +96,7 @@ async def test_director_working_text_migration_backfills_existing_source(tmp_pat
 
     database = await Database.open(settings, instance_id=uuid4(), migrate=True)
     try:
-        assert await database.alembic_revision() == "0007_director_role_dubbing"
+        assert await database.alembic_revision() == "0009_director_performance_controls"
         async with database.read_session() as session:
             row = (
                 await session.execute(

@@ -58,6 +58,7 @@ const llmOperationLabels = {
   script_analysis: "剧本分析",
   cast_reconciliation: "角色归并",
   script_translation: "台词翻译",
+  emotion_direction: "上下文情绪",
 };
 
 function readPersistedSelection() {

@@ -5,6 +5,10 @@ from collections.abc import Awaitable
 from typing import Protocol, TypeVar
 from uuid import UUID
 
+from voice_pipeline.core.contextual_emotion import (
+    build_emotion_inputs,
+    normalize_directed_vector,
+)
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.models.director import (
     CreateDirectorRole,
@@ -15,9 +19,13 @@ from voice_pipeline.models.director_llm import (
     AnalyzedUtterance,
     CastReconciliationResult,
     ChunkAnalysisResult,
+    EmotionDirectionInput,
+    EmotionDirectionResult,
+    EmotionDirectionResultItem,
     ScriptChunk,
     ScriptTranslationResult,
     TranslationInput,
+    TranslationResultItem,
 )
 from voice_pipeline.models.schemas import LanguageCode
 from voice_pipeline.modules.llm.script_chunking import split_script, validate_chunk_analysis
@@ -42,6 +50,13 @@ class StagedDirector(Protocol):
         target_language: LanguageCode,
         utterances: tuple[TranslationInput, ...],
     ) -> ScriptTranslationResult: ...
+
+    async def direct_emotions(
+        self,
+        *,
+        performance_direction: str | None,
+        utterances: tuple[EmotionDirectionInput, ...],
+    ) -> EmotionDirectionResult: ...
 
 
 class ScriptAnalysisService:
@@ -118,8 +133,9 @@ class ScriptAnalysisService:
                 f"cannot translate while project is {project.status}",
                 retryable=False,
             )
+        timeline = await self._store.list_utterances(project_id)
         spoken = []
-        for item in await self._store.list_utterances(project_id):
+        for item in timeline:
             if not item.speak_enabled:
                 continue
             if not is_speakable_text(item.working_text):
@@ -151,10 +167,106 @@ class ScriptAnalysisService:
             )
         )
         items = tuple(item for result in results for item in result.items)
+        roles = await self._store.list_roles(project_id)
+        emotion_inputs = build_emotion_inputs(
+            utterances=timeline,
+            role_names={item.role_id: item.canonical_name for item in roles},
+            reviewed_source=await self._store.analysis_text(project_id),
+        )
+        emotion_batches = [
+            emotion_inputs[index : index + self._translation_batch_size]
+            for index in range(0, len(emotion_inputs), self._translation_batch_size)
+        ]
+        directed_results = await _gather_fail_fast(
+            *(
+                self._director.direct_emotions(
+                    performance_direction=project.performance_direction,
+                    utterances=batch,
+                )
+                for batch in emotion_batches
+            )
+        )
+        directed_items = tuple(item for result in directed_results for item in result.items)
+        items = _apply_directed_emotions(
+            translations=items,
+            directions=directed_items,
+            expected=tuple(spoken),
+        )
         return await self._store.publish_translation(
             project_id,
             expected_revision=project.revision,
             items=items,
+        )
+
+    async def direct_current_performance(
+        self,
+        project_id: UUID,
+        *,
+        expected_revision: int,
+        performance_direction: str | None,
+    ) -> tuple[EmotionDirectionResultItem, ...]:
+        """Re-evaluate only vector, speed and pause for already translated rows."""
+        project = await self._store.get_project(project_id)
+        if project.revision != expected_revision:
+            raise PipelineError(
+                ErrorCode.VERSION_CONFLICT,
+                "director",
+                "director data changed; refresh before reapplying performance direction",
+                retryable=False,
+            )
+        allowed = {
+            "translation_review",
+            "voice_mapping",
+            "ready",
+            "generation_incomplete",
+            "succeeded",
+        }
+        if project.status not in allowed:
+            raise PipelineError(
+                ErrorCode.DIRECTOR_STATE_CONFLICT,
+                "director",
+                f"cannot reapply performance direction while project is {project.status}",
+                retryable=False,
+            )
+        timeline = await self._store.list_utterances(project_id)
+        roles = await self._store.list_roles(project_id)
+        inputs = build_emotion_inputs(
+            utterances=timeline,
+            role_names={item.role_id: item.canonical_name for item in roles},
+            reviewed_source=await self._store.analysis_text(project_id),
+        )
+        batches = [
+            inputs[index : index + self._translation_batch_size]
+            for index in range(0, len(inputs), self._translation_batch_size)
+        ]
+        results = await _gather_fail_fast(
+            *(
+                self._director.direct_emotions(
+                    performance_direction=performance_direction,
+                    utterances=batch,
+                )
+                for batch in batches
+            )
+        )
+        directions = tuple(item for result in results for item in result.items)
+        expected_keys = tuple((item.utterance_id, item.revision) for item in inputs)
+        direction_keys = tuple((item.utterance_id, item.revision) for item in directions)
+        if (
+            len(set(direction_keys)) != len(direction_keys)
+            or set(direction_keys) != set(expected_keys)
+        ):
+            raise PipelineError(
+                ErrorCode.LLM_INVALID_RESPONSE,
+                "llm",
+                "emotion direction IDs or revisions do not match current utterances",
+                retryable=False,
+            )
+        by_key = {(item.utterance_id, item.revision): item for item in directions}
+        return tuple(
+            by_key[key].model_copy(
+                update={"emotion_vector": normalize_directed_vector(by_key[key].emotion_vector)}
+            )
+            for key in expected_keys
         )
 
 
@@ -238,4 +350,45 @@ def _invalid_cast(message: str) -> PipelineError:
         "llm",
         message,
         retryable=False,
+    )
+
+
+def _apply_directed_emotions(
+    *,
+    translations: tuple[TranslationResultItem, ...],
+    directions: tuple[EmotionDirectionResultItem, ...],
+    expected: tuple[TranslationInput, ...],
+) -> tuple[TranslationResultItem, ...]:
+    expected_keys = tuple((item.utterance_id, item.revision) for item in expected)
+    translation_keys = tuple((item.utterance_id, item.revision) for item in translations)
+    direction_keys = tuple((item.utterance_id, item.revision) for item in directions)
+    if (
+        len(set(expected_keys)) != len(expected_keys)
+        or len(set(translation_keys)) != len(translation_keys)
+        or len(set(direction_keys)) != len(direction_keys)
+        or set(translation_keys) != set(expected_keys)
+        or set(direction_keys) != set(expected_keys)
+    ):
+        raise PipelineError(
+            ErrorCode.LLM_INVALID_RESPONSE,
+            "llm",
+            "emotion direction IDs or revisions do not match translated utterances",
+            retryable=False,
+        )
+    direction_by_key = {(item.utterance_id, item.revision): item for item in directions}
+    return tuple(
+        item.model_copy(
+            update={
+                "emotion_vector": normalize_directed_vector(
+                    direction_by_key[(item.utterance_id, item.revision)].emotion_vector
+                ),
+                "speed_factor": direction_by_key[
+                    (item.utterance_id, item.revision)
+                ].speed_factor,
+                "pause_after_ms": direction_by_key[
+                    (item.utterance_id, item.revision)
+                ].pause_after_ms,
+            }
+        )
+        for item in translations
     )

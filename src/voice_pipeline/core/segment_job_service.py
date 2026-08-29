@@ -8,6 +8,7 @@ from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.models.model_profiles import ModelProfileSnapshot, ResolvedModelProfile
 from voice_pipeline.models.persistence import (
     GsvModelSnapshot,
+    ReferenceInputOverride,
     SegmentGsvJobRequest,
     SegmentJobSnapshot,
     SegmentReferenceJobRequest,
@@ -52,7 +53,11 @@ class SegmentJobService:
         self._require_model_profile = require_model_profile
 
     async def submit_reference(
-        self, segment_id: UUID, request: SegmentReferenceJobRequest
+        self,
+        segment_id: UUID,
+        request: SegmentReferenceJobRequest,
+        *,
+        reference_override: ReferenceInputOverride | None = None,
     ) -> ExecutionContext:
         segment = await self._segments.get_segment(segment_id)
         task = await self._segments.get_task(segment.task_id)
@@ -60,9 +65,15 @@ class SegmentJobService:
         frozen = ReferenceJobRequest(
             request_id=request.request_id,
             base_voice_path=request.base_voice_path,
-            ref_text_cn=segment.ref_text_cn,
-            emotion_vector=segment.current_emotion_vector,
-            seed=segment.seed,
+            ref_text_cn=(
+                reference_override.ref_text_cn if reference_override else segment.ref_text_cn
+            ),
+            emotion_vector=(
+                reference_override.emotion_vector
+                if reference_override
+                else segment.current_emotion_vector
+            ),
+            seed=reference_override.seed if reference_override else segment.seed,
         )
         return await self._jobs.create(
             request_id=request.request_id,

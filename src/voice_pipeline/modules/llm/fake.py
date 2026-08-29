@@ -8,6 +8,9 @@ from voice_pipeline.models.director_llm import (
     CandidateRoleAssignment,
     CastReconciliationResult,
     ChunkAnalysisResult,
+    EmotionDirectionInput,
+    EmotionDirectionResult,
+    EmotionDirectionResultItem,
     PreprocessRewriteItem,
     PreprocessRewriteResult,
     PreprocessRewriteUnit,
@@ -197,6 +200,27 @@ class FakeDirector:
                         if target_language in {"zh", "yue"} and _contains_han(item.source_text)
                         else "这是一句需要配音的台词。"
                     ),
+                    emotion_vector=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3),
+                    speed_factor=1.0,
+                    pause_after_ms=400,
+                )
+                for item in utterances
+            )
+        )
+
+    async def direct_emotions(
+        self,
+        *,
+        performance_direction: str | None,
+        utterances: tuple[EmotionDirectionInput, ...],
+        activity_id: UUID | None = None,
+    ) -> EmotionDirectionResult:
+        del performance_direction, activity_id
+        return EmotionDirectionResult(
+            items=tuple(
+                EmotionDirectionResultItem(
+                    utterance_id=item.utterance_id,
+                    revision=item.revision,
                     emotion_vector=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3),
                     speed_factor=1.0,
                     pause_after_ms=400,

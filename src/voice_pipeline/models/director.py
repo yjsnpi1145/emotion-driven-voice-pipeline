@@ -42,6 +42,19 @@ DirectorGenerationStatus = Literal[
 DirectorGenerationItemStatus = Literal[
     "queued", "reference_running", "reference_ready", "gsv_running", "ready", "failed"
 ]
+DirectorReferenceMode = Literal["independent", "pooled"]
+DirectorReferencePoolStatus = Literal["building", "ready", "failed"]
+DirectorEmotionBucket = Literal[
+    "joy",
+    "anger",
+    "sadness",
+    "fear",
+    "disgust",
+    "melancholy",
+    "surprise",
+    "calm",
+]
+DirectorAdjustmentAction = Literal["save", "reference", "gsv", "both", "recompose"]
 
 
 class CreateDirectorProjectRequest(StrictModel):
@@ -51,6 +64,15 @@ class CreateDirectorProjectRequest(StrictModel):
     target_language: LanguageCode
     narration_enabled: bool = True
     preprocessing_mode: PreprocessMode = "structural"
+    performance_direction: str | None = Field(default=None, max_length=2_000)
+
+    @field_validator("performance_direction", mode="before")
+    @classmethod
+    def normalize_performance_direction(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        return normalized or None
 
 
 class DirectorProjectRecord(StrictModel):
@@ -62,6 +84,7 @@ class DirectorProjectRecord(StrictModel):
     target_language: LanguageCode
     narration_enabled: bool
     preprocessing_mode: PreprocessMode
+    performance_direction: str | None = None
     structural_text: str | None = None
     preprocessed_text: str | None = None
     status: DirectorProjectStatus
@@ -218,6 +241,25 @@ class DirectorUtterancePatch(StrictModel):
     pause_after_ms: int | None = Field(default=None, ge=0, le=30_000)
 
 
+class AdjustDirectorUtteranceRequest(StrictModel):
+    expected_project_revision: int = Field(ge=0)
+    expected_utterance_revision: int = Field(ge=0)
+    synthesis_text: NonBlankText
+    ref_text_cn: ChineseReferenceText
+    emotion_vector: EmotionVector
+    speed_factor: float = Field(ge=0.5, le=2.0)
+    pause_after_ms: int = Field(ge=0, le=30_000)
+    action: DirectorAdjustmentAction
+
+
+class DirectorAdjustmentResult(StrictModel):
+    utterance: DirectorUtteranceRecord
+    requested_action: DirectorAdjustmentAction
+    effective_action: DirectorAdjustmentAction
+    generation_id: UUID | None = None
+    generation_status: DirectorGenerationStatus | None = None
+
+
 class BulkDirectorUtterancePatch(StrictModel):
     utterance_ids: tuple[UUID, ...] = Field(min_length=1)
     expected_revisions: dict[UUID, int]
@@ -239,6 +281,20 @@ class MergeDirectorUtterancesRequest(StrictModel):
 
 class ExpectedProjectRevision(StrictModel):
     expected_revision: int = Field(ge=0)
+
+
+class UpdateDirectorPerformanceDirection(StrictModel):
+    expected_revision: int = Field(ge=0)
+    performance_direction: str | None = Field(default=None, max_length=2_000)
+    reapply: bool = False
+
+    @field_validator("performance_direction", mode="before")
+    @classmethod
+    def normalize_performance_direction(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        return normalized or None
 
 
 class BindRolePresetRequest(StrictModel):
@@ -342,3 +398,31 @@ class DirectorGenerationItemRecord(StrictModel):
     reference_job_id: UUID | None = None
     gsv_job_id: UUID | None = None
     error: dict[str, PydanticJsonValue] | None = None
+    reference_mode: DirectorReferenceMode = "independent"
+    reference_pool_entry_id: UUID | None = None
+    reference_emotion_bucket: DirectorEmotionBucket | None = None
+    reference_degraded_from: DirectorEmotionBucket | None = None
+
+
+class DirectorReferencePoolEntry(StrictModel):
+    entry_id: UUID
+    family_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+    revision: int = Field(ge=0)
+    attempt: int = Field(ge=0, le=2)
+    status: DirectorReferencePoolStatus
+    base_voice_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    emotion_bucket: DirectorEmotionBucket
+    template_version: int = Field(ge=1)
+    prompt_text: str
+    emotion_vector: EmotionVector
+    seed: int
+    engine_fingerprint: dict[str, PydanticJsonValue]
+    output_spec: dict[str, PydanticJsonValue]
+    reference_job_id: UUID | None = None
+    reference_version_id: UUID | None = None
+    blob_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    quality_result: dict[str, PydanticJsonValue] | None = None
+    error: dict[str, PydanticJsonValue] | None = None
+    degraded_from: DirectorEmotionBucket | None = None
+    created_at_utc: datetime
+    updated_at_utc: datetime

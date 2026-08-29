@@ -18,6 +18,7 @@ LlmOperation = Literal[
     "script_analysis",
     "cast_reconciliation",
     "script_translation",
+    "emotion_direction",
 ]
 LlmActivityKind = Literal[
     "started",

@@ -50,6 +50,7 @@ from voice_pipeline.storage.model_importer import ModelProfileImporter
 from voice_pipeline.storage.model_profile_store import SqliteModelProfileStore
 from voice_pipeline.storage.quality_cache import QualityCacheStore
 from voice_pipeline.storage.recovery import StorageRecovery
+from voice_pipeline.storage.reference_pool_store import ReferencePoolStore
 from voice_pipeline.storage.retention import RetentionExecutor, RetentionPlanner
 from voice_pipeline.storage.role_preset_store import RolePresetStore
 from voice_pipeline.storage.segment_store import SegmentStore
@@ -103,6 +104,7 @@ class ControlPlane:
         self.director_preprocessing: PreprocessingService | None = None
         self.director_analysis: ScriptAnalysisService | None = None
         self.director_generation: DirectorGenerationService | None = None
+        self.reference_pool: ReferencePoolStore | None = None
         self.role_presets: RolePresetService | None = None
         self.director_tasks: set[asyncio.Task[object]] = set()
         self.director_commands: dict[tuple[UUID, str], asyncio.Task[object]] = {}
@@ -265,6 +267,7 @@ def create_app(
         )
         await plane.llm_client.start()
         plane.director_store = DirectorStore(database)
+        plane.reference_pool = ReferencePoolStore(database)
         plane.director_preprocessing = PreprocessingService(
             plane.director_store,
             plane.llm_client,
@@ -346,6 +349,8 @@ def create_app(
             jobs_root=runtime_dir / "jobs",
             max_reference_corrections=settings.llm.max_reference_corrections,
             notify_jobs=lambda: _notify_dispatcher(plane),
+            reference_pool=plane.reference_pool,
+            index_fingerprint=index.fingerprint,
         )
         try:
             plane.last_recovery_report = await StorageRecovery(

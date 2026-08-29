@@ -15,6 +15,7 @@ from voice_pipeline.core.director_preprocessing import PreprocessingService
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.core.role_preset_service import RolePresetService
 from voice_pipeline.models.director import (
+    AdjustDirectorUtteranceRequest,
     BindRolePresetRequest,
     BulkDirectorUtterancePatch,
     CreateDirectorProjectRequest,
@@ -32,10 +33,13 @@ from voice_pipeline.models.director import (
     RolePresetRecord,
     SplitDirectorRoleRequest,
     SplitDirectorUtteranceRequest,
+    UpdateDirectorPerformanceDirection,
     UpdateRolePresetRequest,
 )
+from voice_pipeline.models.director_llm import EmotionDirectionResultItem
 from voice_pipeline.modules.audio.wav_probe import sha256_file
 from voice_pipeline.storage.director_store import DirectorStore
+from voice_pipeline.storage.reference_pool_store import ReferencePoolStore
 
 
 def build_director_router(plane: Any) -> APIRouter:
@@ -55,6 +59,59 @@ def build_director_router(plane: Any) -> APIRouter:
             return _public_project(await _store(plane).get_project(project_id))
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="director project not found") from exc
+
+    @router.patch("/api/v1/director-projects/{project_id}/performance-direction")
+    async def update_performance_direction(
+        project_id: UUID,
+        request: UpdateDirectorPerformanceDirection,
+    ) -> dict[str, Any]:
+        try:
+            directions: tuple[EmotionDirectionResultItem, ...] = ()
+            if request.reapply:
+                directions = await _analysis(plane).direct_current_performance(
+                    project_id,
+                    expected_revision=request.expected_revision,
+                    performance_direction=request.performance_direction,
+                )
+            project = await _store(plane).update_performance_direction(
+                project_id,
+                expected_revision=request.expected_revision,
+                performance_direction=request.performance_direction,
+                reapply=request.reapply,
+            )
+            if request.reapply:
+                for direction in directions:
+                    project = await _store(plane).get_project(project_id)
+                    utterance = await _store(plane).get_utterance(
+                        direction.utterance_id
+                    )
+                    if utterance.synthesis_text is None or utterance.ref_text_cn is None:
+                        raise PipelineError(
+                            ErrorCode.DIRECTOR_STATE_CONFLICT,
+                            "director",
+                            "translated utterance is missing text required for performance reapply",
+                            retryable=False,
+                        )
+                    await _generation(plane).adjust_utterance(
+                        project_id,
+                        utterance.utterance_id,
+                        AdjustDirectorUtteranceRequest(
+                            expected_project_revision=project.revision,
+                            expected_utterance_revision=utterance.revision,
+                            synthesis_text=utterance.synthesis_text,
+                            ref_text_cn=utterance.ref_text_cn,
+                            emotion_vector=direction.emotion_vector,
+                            speed_factor=direction.speed_factor,
+                            pause_after_ms=direction.pause_after_ms,
+                            action="save",
+                        ),
+                    )
+                project = await _store(plane).get_project(project_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="director project not found") from exc
+        except PipelineError as exc:
+            raise _pipeline_error(exc) from exc
+        return _public_project(project)
 
     @router.delete("/api/v1/director-projects/{project_id}")
     async def delete_project(project_id: UUID, request: ExpectedProjectRevision) -> dict[str, str]:
@@ -336,6 +393,26 @@ def build_director_router(plane: Any) -> APIRouter:
         except PipelineError as exc:
             raise _pipeline_error(exc) from exc
 
+    @router.post(
+        "/api/v1/director-projects/{project_id}/utterances/{utterance_id}/adjust"
+    )
+    async def adjust_utterance(
+        project_id: UUID,
+        utterance_id: UUID,
+        request: AdjustDirectorUtteranceRequest,
+    ) -> dict[str, Any]:
+        try:
+            result = await _generation(plane).adjust_utterance(
+                project_id,
+                utterance_id,
+                request,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="director utterance not found") from exc
+        except PipelineError as exc:
+            raise _pipeline_error(exc) from exc
+        return _dump(result)
+
     @router.post("/api/v1/director-projects/{project_id}/assign-role")
     async def bulk_assign(
         project_id: UUID, request: BulkDirectorUtterancePatch
@@ -542,9 +619,29 @@ def build_director_router(plane: Any) -> APIRouter:
             generation, items = await _generation(plane).get_for_project(project_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="director project not found") from exc
+        public_items: list[dict[str, Any]] = []
+        for item in items:
+            payload = _dump(item)
+            payload["reference_pool"] = None
+            if item.reference_pool_entry_id is not None:
+                try:
+                    entry = await _reference_pool(plane).get(item.reference_pool_entry_id)
+                except KeyError:
+                    pass
+                else:
+                    payload["reference_pool"] = {
+                        "entry_id": str(entry.entry_id),
+                        "prompt_text": entry.prompt_text,
+                        "emotion_bucket": entry.emotion_bucket,
+                        "revision": entry.revision,
+                        "attempt": entry.attempt,
+                        "status": entry.status,
+                        "seed": entry.seed,
+                    }
+            public_items.append(payload)
         return {
             "generation": _public_generation(generation) if generation is not None else None,
-            "items": [_dump(item) for item in items],
+            "items": public_items,
         }
 
     @router.post("/api/v1/director-projects/{project_id}/resume-generation", status_code=202)
@@ -560,6 +657,29 @@ def build_director_router(plane: Any) -> APIRouter:
         except PipelineError as exc:
             raise _pipeline_error(exc) from exc
         return _public_generation(generation)
+
+    @router.post(
+        "/api/v1/director-generations/{generation_id}/utterances/{utterance_id}/rebuild-pooled-reference",
+        status_code=202,
+    )
+    async def rebuild_pooled_reference(
+        generation_id: UUID, utterance_id: UUID
+    ) -> dict[str, str]:
+        try:
+            await _generation(plane).force_rebuild_pool_reference(
+                generation_id, utterance_id
+            )
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404, detail="director generation item not found"
+            ) from exc
+        except PipelineError as exc:
+            raise _pipeline_error(exc) from exc
+        return {
+            "generation_id": str(generation_id),
+            "utterance_id": str(utterance_id),
+            "status": "queued",
+        }
 
     @router.post("/api/v1/director-projects/{project_id}/recompose", status_code=202)
     async def recompose(project_id: UUID, request: ExpectedProjectRevision) -> dict[str, Any]:
@@ -660,6 +780,13 @@ def _generation(plane: Any) -> DirectorGenerationService:
     if value is None:
         raise HTTPException(status_code=503, detail="director generation is not ready")
     return cast(DirectorGenerationService, value)
+
+
+def _reference_pool(plane: Any) -> ReferencePoolStore:
+    value = getattr(plane, "reference_pool", None)
+    if value is None:
+        raise HTTPException(status_code=503, detail="reference pool is not ready")
+    return cast(ReferencePoolStore, value)
 
 
 async def _require_project_revision(plane: Any, project_id: UUID, revision: int) -> None:

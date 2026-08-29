@@ -14,8 +14,14 @@ from voice_pipeline.models.director import (
     CreateDirectorProjectRequest,
     CreateDirectorRole,
     CreateDirectorUtterance,
+    DirectorProjectRecord,
 )
-from voice_pipeline.models.director_llm import UnitAnalysis, UnitAnalysisResult
+from voice_pipeline.models.director_llm import (
+    EmotionDirectionResult,
+    EmotionDirectionResultItem,
+    UnitAnalysis,
+    UnitAnalysisResult,
+)
 from voice_pipeline.modules.llm.fake import FakeDirector
 from voice_pipeline.modules.llm.script_chunking import (
     build_analysis_units,
@@ -92,6 +98,34 @@ class FailingBatchDirector(FakeDirector):
             raise
 
 
+class ContextCapturingDirector(FakeDirector):
+    def __init__(self, *, mismatch: bool = False) -> None:
+        self.emotion_inputs = []
+        self.performance_directions = []
+        self.mismatch = mismatch
+
+    async def direct_emotions(self, *, performance_direction, utterances, **kwargs):
+        del kwargs
+        self.performance_directions.append(performance_direction)
+        self.emotion_inputs.extend(utterances)
+        return EmotionDirectionResult(
+            items=tuple(
+                EmotionDirectionResultItem(
+                    utterance_id=uuid4() if self.mismatch else item.utterance_id,
+                    revision=item.revision,
+                    emotion_vector=(
+                        (0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1)
+                        if index == 0
+                        else (0.0, 0.0, 0.35, 0.0, 0.0, 0.2, 0.0, 0.1)
+                    ),
+                    speed_factor=0.85 if index == 0 else 1.1,
+                    pause_after_ms=900 if index == 0 else 150,
+                )
+                for index, item in enumerate(utterances)
+            )
+        )
+
+
 @pytest.fixture
 async def resources(tmp_path: Path):
     runtime = tmp_path / "runtime"
@@ -133,6 +167,7 @@ async def test_analysis_and_translation_are_separate_and_use_no_gpu(resources: D
             source_text=source,
             source_language="zh",
             target_language="ja",
+            performance_direction="整体偏平静，避免夸张。",
         )
     )
     director = CountingDirector()
@@ -258,6 +293,7 @@ async def test_translation_uses_edited_working_text_instead_of_source(
             source_text=source,
             source_language="zh",
             target_language="ja",
+            performance_direction="整体偏平静，避免夸张。",
         )
     )
     director = CapturingDirector()
@@ -286,6 +322,116 @@ async def test_translation_uses_edited_working_text_instead_of_source(
     assert stored.source_text == source
     assert stored.working_text == "甲：修改后才进入翻译的台词。"
     assert stored.synthesis_text == "甲：修改后才进入翻译的台词。"
+
+
+async def _context_project(store: DirectorStore) -> DirectorProjectRecord:
+    parts = (
+        "她收到噩耗。",
+        "甲：\u201c我没事。\u201d",
+        "（她攥紧信纸）",
+        "乙：\u201c真的吗？\u201d",
+    )
+    source = "".join(parts)
+    project = await store.create_project(
+        CreateDirectorProjectRequest(
+            title="上下文情绪",
+            source_text=source,
+            source_language="zh",
+            target_language="ja",
+            performance_direction="整体偏平静，避免夸张。",
+        )
+    )
+    project = await confirmed_for_analysis(store, project)
+    starts = []
+    cursor = 0
+    for part in parts:
+        starts.append(cursor)
+        cursor += len(part)
+    project = await store.publish_analysis(
+        project.project_id,
+        expected_revision=project.revision,
+        roles=(
+            CreateDirectorRole(canonical_name="旁白", kind="narrator"),
+            CreateDirectorRole(canonical_name="甲", kind="character"),
+            CreateDirectorRole(canonical_name="乙", kind="character"),
+        ),
+        utterances=tuple(
+            CreateDirectorUtterance(
+                ordinal=index,
+                source_start=starts[index],
+                source_end=starts[index] + len(part),
+                source_text=part,
+                kind=(
+                    "dialogue"
+                    if index in {1, 3}
+                    else "stage_direction"
+                    if index == 2
+                    else "narration"
+                ),
+                speak_enabled=index in {1, 3},
+                role_name=("甲" if index in {1, 2} else "乙" if index == 3 else "旁白"),
+            )
+            for index, part in enumerate(parts)
+        ),
+    )
+    return await store.confirm_role_review(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+
+
+@pytest.mark.asyncio
+async def test_translation_replaces_provisional_emotions_using_full_timeline_context(
+    resources: DirectorStore,
+) -> None:
+    project = await _context_project(resources)
+    director = ContextCapturingDirector()
+
+    translated = await ScriptAnalysisService(resources, director).translate(
+        project.project_id,
+        expected_revision=project.revision,
+    )
+
+    assert translated.status == "translation_review"
+    assert director.performance_directions == ["整体偏平静，避免夸张。"]
+    assert [item.role_name for item in director.emotion_inputs] == ["甲", "乙"]
+    assert "她收到噩耗" in director.emotion_inputs[0].scene_context
+    assert [item.text for item in director.emotion_inputs[0].previous_units] == [
+        "她收到噩耗。"
+    ]
+    assert [item.text for item in director.emotion_inputs[0].next_units] == [
+        "（她攥紧信纸）",
+        "乙：\u201c真的吗？\u201d",
+    ]
+    rows = [
+        item
+        for item in await resources.list_utterances(project.project_id)
+        if item.speak_enabled
+    ]
+    assert rows[0].emotion_vector == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2)
+    assert rows[1].emotion_vector == (0.0, 0.0, 0.35, 0.0, 0.0, 0.2, 0.0, 0.1)
+    assert (rows[0].speed_factor, rows[0].pause_after_ms) == (0.85, 900)
+    assert (rows[1].speed_factor, rows[1].pause_after_ms) == (1.1, 150)
+    assert rows[0].synthesis_text == "甲：\u201c我没事。\u201d"
+    assert rows[0].ref_text_cn == "这是一句需要配音的台词。"
+
+
+@pytest.mark.asyncio
+async def test_translation_rejects_mismatched_emotion_direction_identity(
+    resources: DirectorStore,
+) -> None:
+    project = await _context_project(resources)
+    director = ContextCapturingDirector(mismatch=True)
+
+    with pytest.raises(PipelineError) as exc:
+        await ScriptAnalysisService(resources, director).translate(
+            project.project_id,
+            expected_revision=project.revision,
+        )
+
+    assert exc.value.code == ErrorCode.LLM_INVALID_RESPONSE
+    assert "emotion direction" in exc.value.message
+    assert (await resources.get_project(project.project_id)).status == "translating"
 
 
 @pytest.mark.asyncio

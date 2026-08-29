@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import zipfile
@@ -9,6 +10,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+import soundfile as sf
 
 from tests.integration_cpu.conftest import write_tone
 from tests.integration_cpu.test_chapter_pipeline import FailSecondQualityAnalyzer, _import_profile
@@ -79,6 +81,9 @@ async def test_chapter_routes_submit_status_audio_and_timeline_without_path_leak
             active_gsv_ids = [item["active_gsv_version_id"] for item in progress.json()["segments"]]
             first_version = await app.state.plane.version_store.get_version(active_gsv_ids[0])
             first_blob = app.state.plane.artifact_store.root / first_version.blob_relative_path
+            first_segment = (await app.state.plane.chapter_store.list_segments(run_id))[0]
+            first_source_duration = sf.info(first_blob).duration
+            assert first_segment.pause_after_ms > 0
             first_blob.write_bytes(b"corrupt")
             corrupt_archive = await client.get(f"/api/v1/chapters/{run_id}/export/gsv")
             deleted = await client.delete(f"/api/v1/chapters/{run_id}")
@@ -94,9 +99,19 @@ async def test_chapter_routes_submit_status_audio_and_timeline_without_path_leak
     assert "gsv-segments.zip" in archive.headers["content-disposition"]
     with zipfile.ZipFile(io.BytesIO(archive.content)) as bundle:
         assert bundle.namelist() == ["001.wav", "002.wav", "manifest.json"]
-        assert bundle.read("001.wav")[:4] == b"RIFF"
+        first_exported = bundle.read("001.wav")
+        assert first_exported[:4] == b"RIFF"
         assert bundle.read("002.wav")[:4] == b"RIFF"
         manifest = json.loads(bundle.read("manifest.json"))
+    assert sf.info(io.BytesIO(first_exported)).duration == pytest.approx(
+        first_source_duration + first_segment.pause_after_ms / 1000,
+        abs=0.002,
+    )
+    assert manifest["segments"][0]["tail_padding_ms"] == first_segment.pause_after_ms
+    assert manifest["segments"][0]["content_sha256"] == first_version.blob_sha256
+    assert manifest["segments"][0]["export_content_sha256"] == hashlib.sha256(
+        first_exported
+    ).hexdigest()
     assert manifest["schema_version"] == 1
     assert manifest["run_id"] == run_id
     assert manifest["title"] == "chapter"

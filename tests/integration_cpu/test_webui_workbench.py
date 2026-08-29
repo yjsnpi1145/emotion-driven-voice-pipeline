@@ -23,7 +23,7 @@ def test_director_preprocessing_review_assets_are_wired() -> None:
     assert 'id="director-preprocess-list"' in page
     assert 'id="director-confirm-preprocessing"' in page
     assert "创建并开始预处理" in page
-    assert 'from "./director-preprocessing.js?v=20260828a"' in script
+    assert 'from "./director-preprocessing.js?v=20260829a"' in script
     assert "/confirm-preprocessing" in script
     assert "/preprocess-paragraphs/" in script
     assert "IntersectionObserver" in script

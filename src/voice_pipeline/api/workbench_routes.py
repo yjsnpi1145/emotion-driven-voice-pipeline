@@ -31,6 +31,7 @@ _WEBUI_CACHE_HEADERS = {"Cache-Control": "no-store"}
 _WEBUI_FILES = {
     "index.html",
     "app.js",
+    "director-adjustment.js",
     "director-dnd.js",
     "director-lazy-editor.js",
     "director-llm-activity.js",

@@ -13,6 +13,8 @@ from voice_pipeline.models.director_llm import (
     AnalyzedUtterance,
     CastReconciliationResult,
     ChunkAnalysisResult,
+    EmotionDirectionInput,
+    EmotionDirectionResult,
     PreprocessRewriteResult,
     PreprocessRewriteUnit,
     ScriptChunk,
@@ -78,6 +80,14 @@ class _Director(Protocol):
         utterances: tuple[TranslationInput, ...],
         activity_id: UUID | None = None,
     ) -> ScriptTranslationResult: ...
+
+    async def direct_emotions(
+        self,
+        *,
+        performance_direction: str | None,
+        utterances: tuple[EmotionDirectionInput, ...],
+        activity_id: UUID | None = None,
+    ) -> EmotionDirectionResult: ...
 
 
 class RuntimeDirector:
@@ -352,6 +362,40 @@ class RuntimeDirector:
             operation_id,
             "script_translation",
             f"剧本翻译完成 · {len(result.items)} 条语句",
+            result.model_dump_json(),
+        )
+        return result
+
+    async def direct_emotions(
+        self,
+        *,
+        performance_direction: str | None,
+        utterances: tuple[EmotionDirectionInput, ...],
+    ) -> EmotionDirectionResult:
+        operation_id = uuid4()
+        await self._record_started(
+            operation_id,
+            "emotion_direction",
+            f"开始按上下文分析 {len(utterances)} 条语句的情绪",
+        )
+        try:
+            async with self._parallel_calls:
+                director = await self._begin_staged_call()
+                try:
+                    result = await director.direct_emotions(
+                        performance_direction=performance_direction,
+                        utterances=utterances,
+                        activity_id=operation_id,
+                    )
+                finally:
+                    await self._end_staged_call()
+        except BaseException as exc:
+            await self._record_failed(operation_id, "emotion_direction", exc)
+            raise
+        await self._record_completed(
+            operation_id,
+            "emotion_direction",
+            f"上下文情绪分析完成 · {len(result.items)} 条语句",
             result.model_dump_json(),
         )
         return result

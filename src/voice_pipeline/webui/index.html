@@ -4,9 +4,35 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>情绪配音工作台</title>
-    <link rel="stylesheet" href="/ui/styles.css?v=20260828a" />
+    <link rel="stylesheet" href="/ui/styles.css?v=20260829a" />
   </head>
   <body>
+    <svg class="icon-sprite" aria-hidden="true" focusable="false">
+      <symbol id="icon-waveform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 12h2m2-4v8m3-11v14m3-9v4m3-7v10m3-5h2" />
+      </symbol>
+      <symbol id="icon-director" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 7h16v12H4zM4 7l3-3h13l-3 3M8 4l3 3m2-3 3 3" />
+        <path d="m10 11 5 2.5-5 2.5z" />
+      </symbol>
+      <symbol id="icon-model" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9zM4 7.5l8 4.5 8-4.5M12 12v9" />
+      </symbol>
+      <symbol id="icon-spark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3c.7 4.6 2.4 6.3 7 7-4.6.7-6.3 2.4-7 7-.7-4.6-2.4-6.3-7-7 4.6-.7 6.3-2.4 7-7z" />
+        <path d="M19 16c.3 2 1 2.7 3 3-2 .3-2.7 1-3 3-.3-2-1-2.7-3-3 2-.3 2.7-1 3-3z" />
+      </symbol>
+      <symbol id="icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="7" height="7" rx="1" />
+        <rect x="14" y="3" width="7" height="7" rx="1" />
+        <rect x="3" y="14" width="7" height="7" rx="1" />
+        <rect x="14" y="14" width="7" height="7" rx="1" />
+      </symbol>
+      <symbol id="icon-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 7v5h-5M4 17v-5h5" />
+        <path d="M18.5 9A7 7 0 0 0 6.3 6.3L4 9m16 6-2.3 2.7A7 7 0 0 1 5.5 15" />
+      </symbol>
+    </svg>
     <div class="app-shell">
       <header class="appbar">
         <div class="brand-lockup">
@@ -18,7 +44,7 @@
         <div class="appbar-status">
           <span id="service-indicator" class="status-chip" data-state="loading">服务检查中</span>
           <span id="active-model-indicator" class="status-chip">未选择模型</span>
-          <button id="refresh-global" class="icon-button" type="button" title="刷新当前页面" aria-label="刷新当前页面">↻</button>
+          <button id="refresh-global" class="icon-button" type="button" title="刷新当前页面" aria-label="刷新当前页面"><svg class="button-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg></button>
           <label class="quality-toggle" title="关闭后仅跳过 ASR 文本相似度评分；时长和 VAD 检查仍启用">
             <span class="quality-toggle-copy">ASR 文本评分</span>
             <input id="asr-scoring-toggle" type="checkbox" role="switch" aria-label="ASR 文本评分" disabled />
@@ -29,11 +55,11 @@
       </header>
 
       <nav class="primary-tabs" aria-label="主功能">
-        <button class="tab-button" type="button" data-view="workbench" aria-selected="true"><span>◉</span>配音工作台</button>
-        <button class="tab-button" type="button" data-view="director" aria-selected="false"><span>◎</span>导演模式</button>
-        <button class="tab-button" type="button" data-view="models" aria-selected="false"><span>◆</span>模型管理</button>
-        <button class="tab-button" type="button" data-view="llm" aria-selected="false"><span>✦</span>LLM 设置</button>
-        <button class="tab-button" type="button" data-view="system" aria-selected="false"><span>▦</span>系统状态</button>
+        <button class="tab-button" type="button" data-view="workbench" aria-selected="true"><svg class="tab-icon" aria-hidden="true"><use href="#icon-waveform"></use></svg><span class="tab-label">配音工作台</span></button>
+        <button class="tab-button" type="button" data-view="director" aria-selected="false"><svg class="tab-icon" aria-hidden="true"><use href="#icon-director"></use></svg><span class="tab-label">导演模式</span></button>
+        <button class="tab-button" type="button" data-view="models" aria-selected="false"><svg class="tab-icon" aria-hidden="true"><use href="#icon-model"></use></svg><span class="tab-label">模型管理</span></button>
+        <button class="tab-button" type="button" data-view="llm" aria-selected="false"><svg class="tab-icon" aria-hidden="true"><use href="#icon-spark"></use></svg><span class="tab-label">LLM 设置</span></button>
+        <button class="tab-button" type="button" data-view="system" aria-selected="false"><svg class="tab-icon" aria-hidden="true"><use href="#icon-system"></use></svg><span class="tab-label">系统状态</span></button>
       </nav>
 
       <main class="app-content">
@@ -135,6 +161,9 @@
                 <form id="director-project-form" class="stack-form" novalidate>
                   <label>项目标题 <input name="title" value="新导演项目" required /></label>
                   <label>原文 <textarea name="source_text" rows="10" required placeholder="粘贴文章、小说或剧本；原文顺序会被严格保留"></textarea></label>
+                  <label>全局表演指导（可选）
+                    <textarea name="performance_direction" rows="3" maxlength="2000" placeholder="例如：人物整体语气偏平静，避免夸张；后半段逐渐压抑。仅影响情绪、语速和停顿。"></textarea>
+                  </label>
                   <div class="field-row">
                     <label>原文语言
                       <select name="source_language"><option value="auto">自动识别</option><option value="zh">中文</option><option value="ja">日语</option><option value="en">英语</option><option value="ko">韩语</option><option value="yue">粤语</option></select>
@@ -168,6 +197,17 @@
                   <span class="quality-switch" aria-hidden="true"></span>
                 </label>
               </header>
+              <details id="director-performance-panel" class="director-performance-panel" hidden>
+                <summary>全局表演指导</summary>
+                <div class="director-performance-editor">
+                  <label for="director-performance-direction">指导内容（最多 2000 字）</label>
+                  <textarea id="director-performance-direction" rows="3" maxlength="2000" placeholder="未填写时由 LLM 根据上下文决定情绪、语速和停顿"></textarea>
+                  <div class="button-row end">
+                    <span id="director-performance-status" class="help">仅影响情绪向量、语速和句后停顿</span>
+                    <button id="director-save-performance" type="button" class="secondary-button">保存指导</button>
+                  </div>
+                </div>
+              </details>
               <section id="director-llm-activity-console" class="llm-activity-console director-llm-activity-console" aria-label="导演模式 LLM 实时输出">
                 <div class="llm-activity-heading">
                   <div><p class="eyebrow">LLM Monitor</p><strong>导演模式实时输出</strong></div>
@@ -292,6 +332,60 @@
       </main>
     </div>
 
+    <dialog id="director-adjustment-dialog" class="director-adjustment-dialog" aria-labelledby="director-adjustment-title">
+      <form id="director-adjustment-form" method="dialog">
+        <header class="director-adjustment-header">
+          <div>
+            <p class="eyebrow">Utterance Control</p>
+            <h2 id="director-adjustment-title">调整配音</h2>
+            <p id="director-adjustment-meta" class="muted"></p>
+          </div>
+          <button id="director-adjustment-close" class="icon-button" type="button" aria-label="关闭调整窗口">×</button>
+        </header>
+        <div class="director-adjustment-body">
+          <section class="director-adjustment-context" aria-label="原文上下文">
+            <label>原始切片 <textarea id="director-adjustment-source" rows="2" readonly></textarea></label>
+            <label>配音工作文本 <textarea id="director-adjustment-working" rows="2" readonly></textarea></label>
+          </section>
+          <section class="director-adjustment-fields">
+            <label>目标语言配音文本 <textarea id="director-adjustment-synthesis" name="synthesis_text" rows="3" required></textarea></label>
+            <label>IndexTTS2 中文情绪参考文本 <textarea id="director-adjustment-reference" name="ref_text_cn" rows="3" required></textarea></label>
+            <div class="director-linked-control">
+              <label for="director-adjustment-speed-range">语速</label>
+              <input id="director-adjustment-speed-range" type="range" min="0.5" max="2" step="0.05" />
+              <input id="director-adjustment-speed" name="speed_factor" type="number" min="0.5" max="2" step="0.05" />
+            </div>
+            <label>句后停顿（ms） <input id="director-adjustment-pause" name="pause_after_ms" type="number" min="0" max="30000" step="50" /></label>
+          </section>
+          <fieldset class="director-adjustment-emotions">
+            <legend>八维情绪向量 · <span id="director-adjustment-emotion-total">合计 0.00 / 0.80</span></legend>
+            <div id="director-adjustment-emotion-controls"></div>
+          </fieldset>
+          <section class="director-adjustment-audio" aria-label="当前音频版本">
+            <article>
+              <div class="director-adjustment-audio-heading"><strong>当前参考音频</strong><code id="director-adjustment-reference-version">暂无</code></div>
+              <audio id="director-adjustment-reference-audio" controls preload="metadata"></audio>
+            </article>
+            <article>
+              <div class="director-adjustment-audio-heading"><strong>当前 GSV 音频</strong><code id="director-adjustment-gsv-version">暂无</code></div>
+              <audio id="director-adjustment-gsv-audio" controls preload="metadata"></audio>
+            </article>
+          </section>
+          <section id="director-adjustment-operation" class="director-adjustment-operation" aria-live="polite">
+            <span id="director-adjustment-state" class="status-chip">尚未生成</span>
+            <p id="director-adjustment-message" class="help">修改后选择下方操作。</p>
+          </section>
+        </div>
+        <footer class="director-adjustment-footer">
+          <button type="submit" class="secondary-button" data-adjustment-action="save">保存</button>
+          <button type="submit" class="secondary-button" data-adjustment-action="reference">保存并生成参考</button>
+          <button type="submit" class="secondary-button" data-adjustment-action="gsv">保存并生成 GSV</button>
+          <button type="submit" class="primary-button" data-adjustment-action="both">保存并全部重新生成</button>
+          <button type="submit" class="secondary-button" data-adjustment-action="recompose">仅重新拼接</button>
+        </footer>
+      </form>
+    </dialog>
+
     <section id="shutdown-overlay" class="shutdown-overlay" role="status" aria-live="assertive" hidden>
       <div id="shutdown-message" class="shutdown-card" tabindex="-1">
         <p class="eyebrow">System Offline</p>
@@ -302,7 +396,7 @@
     </section>
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
     <template id="segment-row-template"><button class="segment-row" type="button"></button></template>
-    <script type="module" src="/ui/app.js?v=20260828a"></script>
-    <script type="module" src="/ui/director.js?v=20260828a"></script>
+    <script type="module" src="/ui/app.js?v=20260829a"></script>
+    <script type="module" src="/ui/director.js?v=20260829a"></script>
   </body>
 </html>

@@ -15,6 +15,7 @@ from voice_pipeline.models.director import (
     CreateDirectorProjectRequest,
     CreateDirectorRole,
     CreateDirectorUtterance,
+    DirectorEmotionBucket,
     DirectorGenerationItemRecord,
     DirectorGenerationRecord,
     DirectorPreprocessParagraphPage,
@@ -66,6 +67,7 @@ class DirectorStore:
                     target_language=request.target_language,
                     narration_enabled=int(request.narration_enabled),
                     preprocessing_mode=request.preprocessing_mode,
+                    performance_direction=request.performance_direction,
                     structural_text=None,
                     preprocessed_text=None,
                     status="draft",
@@ -114,6 +116,46 @@ class DirectorStore:
                 .all()
             )
         return [_project(dict(row)) for row in rows]
+
+    async def update_performance_direction(
+        self,
+        project_id: UUID,
+        *,
+        expected_revision: int,
+        performance_direction: str | None,
+        reapply: bool,
+    ) -> DirectorProjectRecord:
+        async with self._database.write_session() as session:
+            project = await _locked_project(session, project_id)
+            _require_revision(project, expected_revision)
+            status = str(project["status"])
+            editable_without_reapply = {"draft", "preprocess_review", "role_review"}
+            if status not in editable_without_reapply and not reapply:
+                raise _state_conflict(status, "edit performance direction")
+            if status in {"preprocessing", "analyzing", "translating", "generating"}:
+                raise _state_conflict(status, "edit performance direction")
+            await session.execute(
+                update(director_projects)
+                .where(director_projects.c.project_id == str(project_id))
+                .where(director_projects.c.revision == expected_revision)
+                .values(
+                    performance_direction=performance_direction,
+                    revision=director_projects.c.revision + 1,
+                    updated_at_utc=_now(),
+                )
+            )
+            await _append_event(
+                session,
+                project_id,
+                operation="performance_direction_updated",
+                before_revision=expected_revision,
+                after_revision=expected_revision + 1,
+                details={
+                    "reapply": reapply,
+                    "has_direction": performance_direction is not None,
+                },
+            )
+        return await self.get_project(project_id)
 
     async def health_counts(self) -> dict[str, int]:
         """Return path-free operational counts for the control-plane health payload."""
@@ -2108,6 +2150,62 @@ class DirectorStore:
             )
         return await self.get_generation(generation_id)
 
+    async def begin_generation_adjustment(
+        self,
+        project_id: UUID,
+        generation_id: UUID,
+        *,
+        expected_revision: int,
+        utterance_id: UUID,
+        action: str,
+    ) -> DirectorGenerationRecord:
+        async with self._database.write_session() as session:
+            project = await _locked_project(session, project_id)
+            _require_revision(project, expected_revision)
+            if str(project.get("current_generation_id")) != str(generation_id):
+                raise _state_conflict(str(project["status"]), "adjust an older generation")
+            generation = (
+                (
+                    await session.execute(
+                        select(director_generations).where(
+                            director_generations.c.generation_id == str(generation_id)
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if generation is None:
+                raise KeyError(f"unknown director generation: {generation_id}")
+            if str(generation["status"]) not in {"succeeded", "generation_incomplete"}:
+                raise _state_conflict(str(generation["status"]), "adjust generation")
+            now = _now()
+            await session.execute(
+                update(director_generations)
+                .where(director_generations.c.generation_id == str(generation_id))
+                .values(status="running", error_json=None, finished_at_utc=None)
+            )
+            await session.execute(
+                update(director_projects)
+                .where(director_projects.c.project_id == str(project_id))
+                .values(
+                    status="generating",
+                    revision=expected_revision + 1,
+                    last_error_json=None,
+                    updated_at_utc=now,
+                )
+            )
+            await _append_event(
+                session,
+                project_id,
+                operation="utterance_adjustment_started",
+                object_id=utterance_id,
+                before_revision=expected_revision,
+                after_revision=expected_revision + 1,
+                details={"generation_id": str(generation_id), "action": action},
+            )
+        return await self.get_generation(generation_id)
+
     async def mark_generation_interrupted(
         self, generation_id: UUID, *, error: dict[str, object]
     ) -> None:
@@ -2144,6 +2242,10 @@ class DirectorStore:
         reference_job_id: UUID | None = None,
         gsv_job_id: UUID | None = None,
         error: dict[str, object] | None = None,
+        reference_mode: str | None = None,
+        reference_pool_entry_id: UUID | None = None,
+        reference_emotion_bucket: str | None = None,
+        reference_degraded_from: str | None = None,
     ) -> None:
         values: dict[str, object | None] = {
             "status": status,
@@ -2153,6 +2255,13 @@ class DirectorStore:
             values["reference_job_id"] = str(reference_job_id)
         if gsv_job_id is not None:
             values["gsv_job_id"] = str(gsv_job_id)
+        if reference_mode is not None:
+            values["reference_mode"] = reference_mode
+            values["reference_pool_entry_id"] = (
+                str(reference_pool_entry_id) if reference_pool_entry_id else None
+            )
+            values["reference_emotion_bucket"] = reference_emotion_bucket
+            values["reference_degraded_from"] = reference_degraded_from
         async with self._database.write_session() as session:
             result = await session.execute(
                 update(director_generation_items)
@@ -2472,6 +2581,7 @@ def _project(row: dict[str, Any]) -> DirectorProjectRecord:
         target_language=str(row["target_language"]),  # type: ignore[arg-type]
         narration_enabled=bool(row["narration_enabled"]),
         preprocessing_mode=str(row["preprocessing_mode"]),  # type: ignore[arg-type]
+        performance_direction=cast(str | None, row.get("performance_direction")),
         structural_text=cast(str | None, row.get("structural_text")),
         preprocessed_text=cast(str | None, row.get("preprocessed_text")),
         status=str(row["status"]),  # type: ignore[arg-type]
@@ -2612,6 +2722,28 @@ def _generation_item(row: dict[str, Any]) -> DirectorGenerationItemRecord:
         ),
         gsv_job_id=UUID(str(row["gsv_job_id"])) if row.get("gsv_job_id") else None,
         error=(json.loads(str(row["error_json"])) if row.get("error_json") else None),
+        reference_mode=str(row.get("reference_mode") or "independent"),  # type: ignore[arg-type]
+        reference_pool_entry_id=(
+            UUID(str(row["reference_pool_entry_id"]))
+            if row.get("reference_pool_entry_id")
+            else None
+        ),
+        reference_emotion_bucket=cast(
+            DirectorEmotionBucket | None,
+            (
+                str(row["reference_emotion_bucket"])
+                if row.get("reference_emotion_bucket")
+                else None
+            ),
+        ),
+        reference_degraded_from=cast(
+            DirectorEmotionBucket | None,
+            (
+                str(row["reference_degraded_from"])
+                if row.get("reference_degraded_from")
+                else None
+            ),
+        ),
     )
 
 

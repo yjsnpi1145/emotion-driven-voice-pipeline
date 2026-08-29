@@ -15,6 +15,7 @@ from uuid import UUID
 from voice_pipeline.core.errors import ErrorCode, PipelineError
 from voice_pipeline.models.chapter import ChapterRunRecord
 from voice_pipeline.models.persistence import ArtifactVersionView, SegmentRecord
+from voice_pipeline.modules.audio.wav_export import append_trailing_silence
 from voice_pipeline.modules.audio.wav_probe import sha256_file
 from voice_pipeline.storage.artifact_store import ArtifactStore
 from voice_pipeline.storage.chapter_store import ChapterStore
@@ -40,18 +41,21 @@ class _ArchiveEntry:
     synthesis_text: str
     target_language: str
     ref_version_id: UUID
+    pause_after_ms: int
     source_path: Path
 
-    def manifest_entry(self) -> dict[str, object]:
+    def manifest_entry(self, *, export_content_sha256: str) -> dict[str, object]:
         return {
             "ordinal": self.ordinal,
             "segment_id": str(self.segment_id),
             "version_id": str(self.version_id),
             "file_name": self.file_name,
             "content_sha256": self.content_sha256,
+            "export_content_sha256": export_content_sha256,
             "synthesis_text": self.synthesis_text,
             "target_language": self.target_language,
             "ref_version_id": str(self.ref_version_id),
+            "tail_padding_ms": self.pause_after_ms,
         }
 
 
@@ -151,6 +155,7 @@ class ChapterGsvArchiveBuilder:
             synthesis_text=synthesis_text,
             target_language=segment.target_language,
             ref_version_id=version.ref_version_id,
+            pause_after_ms=segment.pause_after_ms,
             source_path=source_path,
         )
 
@@ -234,14 +239,20 @@ def _write_archive(
             compression=zipfile.ZIP_DEFLATED,
             compresslevel=6,
         ) as archive:
+            manifest_entries: list[dict[str, object]] = []
             for entry in entries:
-                _write_verified_file(archive, entry)
+                export_content_sha256 = _write_verified_file(archive, entry)
+                manifest_entries.append(
+                    entry.manifest_entry(
+                        export_content_sha256=export_content_sha256,
+                    )
+                )
             manifest = {
                 "schema_version": 1,
                 "run_id": str(run_id),
                 "title": title,
                 "created_at_utc": created_at_utc,
-                "segments": [entry.manifest_entry() for entry in entries],
+                "segments": manifest_entries,
             }
             archive.writestr(
                 "manifest.json",
@@ -259,13 +270,14 @@ def _write_archive(
         raise
 
 
-def _write_verified_file(archive: zipfile.ZipFile, entry: _ArchiveEntry) -> None:
+def _write_verified_file(archive: zipfile.ZipFile, entry: _ArchiveEntry) -> str:
     digest = hashlib.sha256()
+    source_wav = bytearray()
     try:
-        with entry.source_path.open("rb") as source, archive.open(entry.file_name, "w") as target:
+        with entry.source_path.open("rb") as source:
             while chunk := source.read(1024 * 1024):
                 digest.update(chunk)
-                target.write(chunk)
+                source_wav.extend(chunk)
     except OSError as exc:
         raise PipelineError(
             ErrorCode.ARTIFACT_MISSING,
@@ -282,6 +294,22 @@ def _write_verified_file(archive: zipfile.ZipFile, entry: _ArchiveEntry) -> None
             retryable=True,
             details={"ordinal": entry.ordinal, "version_id": str(entry.version_id)},
         )
+    try:
+        exported_wav = append_trailing_silence(
+            bytes(source_wav),
+            silence_ms=entry.pause_after_ms,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise PipelineError(
+            ErrorCode.ARTIFACT_CORRUPT,
+            "chapter_export",
+            "a current GSV audio blob could not be rendered for standalone export",
+            retryable=False,
+            details={"ordinal": entry.ordinal, "version_id": str(entry.version_id)},
+        ) from exc
+    with archive.open(entry.file_name, "w") as target:
+        target.write(exported_wav)
+    return hashlib.sha256(exported_wav).hexdigest()
 
 
 def _chapter_title(run: ChapterRunRecord) -> str:
