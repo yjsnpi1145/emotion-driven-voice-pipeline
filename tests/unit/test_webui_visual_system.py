@@ -98,3 +98,27 @@ def test_workbench_keeps_three_two_one_column_progression() -> None:
     assert "@media (max-width: 1220px)" in stylesheet
     assert "@media (max-width: 820px)" in stylesheet
     assert ".chapter-action-buttons" in stylesheet
+
+
+def test_director_settings_system_and_dialog_share_visual_language() -> None:
+    stylesheet = _asset("styles.css")
+    for selector in (
+        ".director-workspace",
+        ".settings-card",
+        ".health-card",
+        ".director-adjustment-dialog",
+    ):
+        rule = _rule(stylesheet, selector)
+        assert "var(--radius-lg)" in rule or "var(--radius-md)" in rule
+    assert "flex-wrap: wrap" in _rule(stylesheet, ".director-actions")
+    assert "min-width: 0" in _rule(stylesheet, ".director-heading-actions")
+
+
+def test_mobile_touch_targets_and_reduced_motion_cover_feedback() -> None:
+    stylesheet = _asset("styles.css")
+    mobile = stylesheet.split("@media (max-width: 560px)", 1)[1]
+    reduced = stylesheet.split("@media (prefers-reduced-motion: reduce)", 1)[1]
+    assert "min-height: var(--touch-target)" in mobile
+    assert ".tab-button" in mobile
+    assert ".toast" in reduced
+    assert "transition-duration: 0.01ms" in reduced
