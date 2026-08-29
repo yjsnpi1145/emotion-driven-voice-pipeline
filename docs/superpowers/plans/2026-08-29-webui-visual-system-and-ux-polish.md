@@ -451,10 +451,10 @@ Expected: every command exits zero.
 - [ ] **Step 2: Run the full non-GPU suite**
 
 ~~~powershell
-.venv-control\Scripts\python.exe -m pytest -m "not gpu" -q
+.venv\Scripts\python.exe -m pytest -m "not gpu and not quality_model and not process and not crash_recovery" -q
 ~~~
 
-Expected: zero failures; GPU-marked tests may be deselected.
+Expected: zero failures; GPU, pinned-quality-model, and subprocess lifecycle tests are deselected because the real service remains active during this run.
 
 - [ ] **Step 3: Build and force-install**
 
